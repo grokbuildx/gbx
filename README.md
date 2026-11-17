@@ -22,7 +22,7 @@
 gbx 的做法：
 
 - **从源码编译**：发布流程在公开的 GitHub Actions 中，从固定提交编译 Grok Build，再把它编进 gbx 二进制（macOS / Linux）。同一提交、同一脚本（[`scripts/build-grok.sh`](scripts/build-grok.sh)），任何人都可以复现。
-- **不会被悄悄替换**：gbx 启动内置版本时关闭 Grok Build 的自动更新，闭源的上游版本不会覆盖它；只有升级 gbx 才会换 agent。
+- **不会被悄悄替换**：gbx 启动内置版本时关闭 Grok Build 的自动更新，闭源的上游版本不会覆盖它；只有升级 gbx 才会换 agent。固定的源码提交没变时，升级 gbx 会沿用已解压的同一个 Grok Build。
 - **可以随时核对**：`gbx version` 显示 gbx 版本和内置 Grok Build 的版本及源码提交，`gbx doctor` 显示当前实际运行的是哪个 Grok Build。
 
 ```text
@@ -187,7 +187,7 @@ Why it matters: the open-source Grok Build repository has stayed at **1.0.45** s
 What gbx does about it:
 
 - **Built from source.** The release pipeline compiles Grok Build from the pinned commit in public GitHub Actions and compiles it into the gbx binary (macOS / Linux). Same commit, same script ([`scripts/build-grok.sh`](scripts/build-grok.sh)), reproducible by anyone.
-- **Never swapped silently.** gbx turns off Grok Build's self-updater when it launches the bundled copy, so a closed-source upstream build cannot replace it. The agent changes only when you upgrade gbx.
+- **Never swapped silently.** gbx turns off Grok Build's self-updater when it launches the bundled copy, so a closed-source upstream build cannot replace it. The agent changes only when you upgrade gbx, and only if the pinned source commit changed; otherwise the Grok Build already unpacked stays in place.
 - **Checkable at any time.** `gbx version` prints the gbx version and the bundled Grok Build version with its source commit; `gbx doctor` shows which Grok Build is actually in use.
 
 ```text

@@ -64,9 +64,16 @@ func Describe() string {
 	return fmt.Sprintf("%s (open source, built from xai-org/grok-build@%s)", version, ShortRevision())
 }
 
-func digest() string {
+// key names the unpack directory. Release builds use the upstream source
+// commit, so a gbx upgrade that keeps the same Grok Build reuses the binary
+// already on disk instead of unpacking it again. Builds without a recorded
+// revision fall back to the archive digest.
+func key() string {
+	if Revision != "" {
+		return "rev-" + ShortRevision()
+	}
 	sum := sha256.Sum256(archive)
-	return hex.EncodeToString(sum[:8])
+	return "sha-" + hex.EncodeToString(sum[:8])
 }
 
 func executableName() string {
@@ -76,15 +83,15 @@ func executableName() string {
 	return "grok"
 }
 
-// Dir is where gbx unpacks the bundled binary: ~/.gbx/grok/<digest>/.
-// The directory is content-addressed, so an upgraded gbx unpacks next to,
-// never over, a binary an older gbx may still be running.
+// Dir is where gbx unpacks the bundled binary: ~/.gbx/grok/rev-<commit>/.
+// A gbx upgrade with a new Grok Build unpacks next to, never over, a binary
+// an older gbx may still be running.
 func Dir() (string, error) {
 	home, err := homeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".gbx", "grok", digest()), nil
+	return filepath.Join(home, ".gbx", "grok", key()), nil
 }
 
 // Path unpacks the bundled Grok Build on first use and returns its path.

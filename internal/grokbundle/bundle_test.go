@@ -31,9 +31,9 @@ func withArchive(t *testing.T, content string) string {
 	return home
 }
 
-func TestPathUnpacksOnceIntoAContentAddressedDirectory(t *testing.T) {
+func TestPathUnpacksOnceIntoARevisionDirectory(t *testing.T) {
 	home := withArchive(t, "grok binary")
-	stale := filepath.Join(home, ".gbx", "grok", "0000000000000000")
+	stale := filepath.Join(home, ".gbx", "grok", "rev-000000000000")
 	if err := os.MkdirAll(stale, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -70,5 +70,44 @@ func TestDescribeNamesTheOpenSourceRevision(t *testing.T) {
 	}
 	if _, err := Path(); err == nil {
 		t.Fatal("Path() succeeded without a bundle")
+	}
+}
+
+func TestUpgradeWithTheSameRevisionReusesTheUnpackedBinary(t *testing.T) {
+	withArchive(t, "grok from gbx v1")
+	first, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(filepath.Dir(first)) != "rev-2bdd1d6a6369" {
+		t.Fatalf("unpack dir = %q, want rev-2bdd1d6a6369", filepath.Dir(first))
+	}
+
+	// A newer gbx embeds a rebuilt archive of the same upstream commit: the
+	// bytes may differ, but the Grok Build already on disk stays in place.
+	home, _ := homeDir()
+	withArchive(t, "grok rebuilt for gbx v2")
+	homeDir = func() (string, error) { return home, nil }
+	second, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(second)
+	if second != first || string(got) != "grok from gbx v1" {
+		t.Fatalf("same revision was unpacked again: %q = %q", second, got)
+	}
+
+	// A new upstream commit unpacks beside it and prunes the old one.
+	Revision = "9999999999999999999999999999999999999999"
+	extract.path = ""
+	third, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(third); third == first || string(got) != "grok rebuilt for gbx v2" {
+		t.Fatalf("new revision = %q (%q)", third, got)
+	}
+	if _, err := os.Stat(filepath.Dir(first)); !os.IsNotExist(err) {
+		t.Fatalf("previous revision was kept: %v", err)
 	}
 }

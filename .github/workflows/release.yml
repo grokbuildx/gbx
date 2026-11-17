@@ -178,7 +178,17 @@ jobs:
             asset: grok-linux-arm64
     steps:
       - uses: actions/checkout@v5
+      # The finished binary is cached by upstream commit and build script, so
+      # a release that keeps the same Grok Build reuses the identical binary
+      # instead of rebuilding it. Caches warmed on main are readable by tags.
+      - name: Restore built Grok Build
+        id: built
+        uses: actions/cache@v6
+        with:
+          path: dist
+          key: grok-bin-v1-${{ matrix.target }}-${{ hashFiles('third_party/grok-build/REVISION', 'scripts/build-grok.sh') }}
       - name: Install build dependencies
+        if: steps.built.outputs.cache-hit != 'true'
         run: |
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             sudo apt-get update
@@ -187,6 +197,7 @@ jobs:
             brew install protobuf
           fi
       - name: Cache Cargo
+        if: steps.built.outputs.cache-hit != 'true'
         uses: actions/cache@v6
         with:
           path: |
@@ -197,6 +208,7 @@ jobs:
           restore-keys: |
             grok-build-${{ matrix.target }}-
       - name: Build Grok Build
+        if: steps.built.outputs.cache-hit != 'true'
         env:
           TARGET: ${{ matrix.target }}
           OUTPUT: dist/${{ matrix.asset }}
