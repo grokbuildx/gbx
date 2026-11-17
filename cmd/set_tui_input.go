@@ -218,7 +218,7 @@ func (m *AdvancedConfigModel) activateRow(kind configRowKind) {
 		m.modelTestFrame = 0
 		m.modelTestCanceled = false
 		setDebugf("model availability test started model_count=%d", len(m.live().modelPool))
-		testModelsAsync(m.availDone, ctx, testID, m.live().modelPool, m.live().probeEndpoint, m.live().probeAPIKey, probeWireType(*m.p), m.p.ModelProtocols, m.availabilitySmokeTestModel(), m.usesModelsDev() && m.live().keyVerified)
+		testModelsAsync(m.availDone, ctx, testID, m.live().modelPool, m.live().probeEndpoint, m.live().probeAPIKey, probeWireType(*m.p), m.p.ModelProtocols, m.p.ModelEndpoints, m.availabilitySmokeTestModel(), m.usesModelsDev() && m.live().keyVerified)
 	}
 }
 

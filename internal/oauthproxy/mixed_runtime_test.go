@@ -23,14 +23,17 @@ func TestBuildMixedRoutesBucketsByProtocol(t *testing.T) {
 	if len(routes.chat) != 1 || routes.chat[0].Name != "glm-5.2" {
 		t.Fatalf("chat routes = %+v", routes.chat)
 	}
-	if len(routes.models) != 2 || routes.models[0] != "grok-4.5" || routes.models[1] != "glm-5.2" {
-		t.Fatalf("models = %v, want [grok-4.5 glm-5.2]", routes.models)
+	if len(routes.messages) != 1 || routes.messages[0].Name != "qwen3.8-max" {
+		t.Fatalf("messages routes = %+v", routes.messages)
+	}
+	if strings.Join(routes.models, ",") != "qwen3.8-max,grok-4.5,glm-5.2" {
+		t.Fatalf("models = %v, want all three in spec order", routes.models)
 	}
 }
 
 func TestBuildMixedRoutesFallsBackToChat(t *testing.T) {
 	protocols := map[string]string{"qwen3.8-max": "anthropic"}
-	// glm-5.2 is not in the table: it must fall back to chat, not error, while qwen3.8-max is excluded.
+	// glm-5.2 is not in the table: it must fall back to chat, not error.
 	routes, err := buildMixedRoutes("qwen3.8-max,glm-5.2", protocols)
 	if err != nil {
 		t.Fatalf("buildMixedRoutes() error: %v", err)
@@ -38,19 +41,18 @@ func TestBuildMixedRoutesFallsBackToChat(t *testing.T) {
 	if len(routes.chat) != 1 || routes.chat[0].Name != "glm-5.2" {
 		t.Fatalf("chat routes = %+v, want glm-5.2 fallback", routes.chat)
 	}
-	if len(routes.models) != 1 || routes.models[0] != "glm-5.2" {
-		t.Fatalf("models = %v, want [glm-5.2]", routes.models)
+	if len(routes.messages) != 1 || strings.Join(routes.models, ",") != "qwen3.8-max,glm-5.2" {
+		t.Fatalf("routes = %+v", routes)
 	}
 }
 
-func TestBuildMixedRoutesAnthropicOnlyErrors(t *testing.T) {
-	protocols := map[string]string{"qwen3.8-max": "anthropic"}
-	_, err := buildMixedRoutes("qwen3.8-max", protocols)
-	if err == nil {
-		t.Fatal("buildMixedRoutes(anthropic-only) = nil error, want error")
+func TestBuildMixedRoutesAnthropicOnlyGateway(t *testing.T) {
+	routes, err := buildMixedRoutes("qwen3.8-max", map[string]string{"qwen3.8-max": "anthropic"})
+	if err != nil {
+		t.Fatalf("buildMixedRoutes(anthropic-only) error: %v", err)
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "anthropic") || !strings.Contains(strings.ToLower(err.Error()), "no longer supports") {
-		t.Fatalf("unexpected error: %v", err)
+	if len(routes.messages) != 1 || len(routes.chat)+len(routes.responses) != 0 {
+		t.Fatalf("routes = %+v", routes)
 	}
 }
 

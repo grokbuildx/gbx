@@ -133,6 +133,9 @@ type StartOptions struct {
 	// mixed-protocol models.dev gateway. When non-empty it takes precedence over
 	// the single Protocol value and starts the mixed-protocol router.
 	ModelProtocols map[string]string
+	// ModelEndpoints overrides Endpoint per lower-case model ID on the
+	// mixed-protocol gateway.
+	ModelEndpoints map[string]string
 }
 
 type runtimeModelRoute struct {
@@ -172,7 +175,7 @@ func startProvider(parent context.Context, options StartOptions) (*Runtime, erro
 		return StartOAuth(parent, options.OAuthProvider, options.ModelSpec, options.OAuthAccountCredential)
 	}
 	if len(options.ModelProtocols) > 0 {
-		return StartMixedProtocolAPIKeyRuntime(parent, options.Endpoint, options.APIKey, options.ModelSpec, options.ModelProtocols)
+		return StartMixedProtocolAPIKeyRuntime(parent, options.Endpoint, options.APIKey, options.ModelSpec, options.ModelProtocols, options.ModelEndpoints)
 	}
 	switch options.Protocol {
 	case ProtocolOpenAIChat:

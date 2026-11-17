@@ -35,7 +35,7 @@ func verifyProviderAPIKey(parent context.Context, model, endpoint, apiKey, proto
 	var err error
 	switch proto {
 	case "anthropic":
-		return fmt.Errorf("Anthropic Messages has been retired")
+		status, err = protocol.ProbeAnthropicMessagesStatusContext(parent, endpoint, apiKey, model, timeout)
 	case "openai_responses":
 		status, err = protocol.ProbeOpenAIResponsesStatusContext(parent, endpoint, apiKey, model, timeout)
 	default: // "openai" (Chat Completions)
@@ -78,7 +78,7 @@ func (m *AdvancedConfigModel) firstRoutableModel() (model, proto string, ok bool
 		}
 		switch probeProtocolForModel(m.p.ModelProtocols, trimmed) {
 		case "anthropic":
-			continue
+			return trimmed, "anthropic", true
 		case "openai_responses":
 			return trimmed, "openai_responses", true
 		case "openai":
@@ -156,7 +156,7 @@ func fetchModelsAsync(done chan<- modelFetchDoneMsg, endpoint, apiKey string, pr
 // statuses on the availability channel. A rejected probe is not necessarily
 // evidence that the model itself is unavailable; keyVerified lets a verified
 // models.dev source upgrade a 404 to a concrete "unavailable" verdict.
-func testModelsAsync(done chan<- modelAvailabilityDoneMsg, ctx context.Context, testID uint64, models []string, endpoint, apiKey, providerType string, protocols map[string]string, smokeTestModel string, keyVerified bool) {
+func testModelsAsync(done chan<- modelAvailabilityDoneMsg, ctx context.Context, testID uint64, models []string, endpoint, apiKey, providerType string, protocols, endpoints map[string]string, smokeTestModel string, keyVerified bool) {
 	models = append([]string(nil), models...)
 	go func() {
 		statuses := make(map[string]modelAvailability, len(models))
@@ -165,7 +165,7 @@ func testModelsAsync(done chan<- modelAvailabilityDoneMsg, ctx context.Context, 
 			return
 		}
 		if smokeTestModel != "" {
-			status := probeModelAvailability(ctx, smokeTestModel, endpoint, apiKey, providerType, protocols, keyVerified)
+			status := probeModelAvailability(ctx, smokeTestModel, endpoint, apiKey, providerType, protocols, endpoints, keyVerified)
 			if ctx.Err() == nil {
 				for _, model := range models {
 					statuses[model] = status
@@ -196,7 +196,7 @@ func testModelsAsync(done chan<- modelAvailabilityDoneMsg, ctx context.Context, 
 						if !ok {
 							return
 						}
-						status := probeModelAvailability(ctx, model, endpoint, apiKey, providerType, protocols, keyVerified)
+						status := probeModelAvailability(ctx, model, endpoint, apiKey, providerType, protocols, endpoints, keyVerified)
 						if ctx.Err() != nil {
 							return
 						}
@@ -220,10 +220,10 @@ func testModelsAsync(done chan<- modelAvailabilityDoneMsg, ctx context.Context, 
 // 4xx stay inconclusive: 400 can be a parameter mismatch and 429 a rate limit.
 // keyVerified only flips the 404 verdict for models.dev-style sources whose
 // endpoint and per-model protocol table come from catalog metadata.
-func probeModelAvailability(ctx context.Context, model, endpoint, apiKey, providerType string, protocols map[string]string, keyVerified bool) modelAvailability {
+func probeModelAvailability(ctx context.Context, model, endpoint, apiKey, providerType string, protocols, endpoints map[string]string, keyVerified bool) modelAvailability {
 	const attempts = 3
 	for attempt := range attempts {
-		status, err := probeSingleModelWithProtocolsStatusContext(ctx, model, endpoint, apiKey, providerType, protocols, modelProbeTimeout)
+		status, err := probeSingleModelWithProtocolsStatusContext(ctx, model, endpoint, apiKey, providerType, protocols, endpoints, modelProbeTimeout)
 		if err != nil || status == 0 {
 			return modelAvailabilityInconclusive
 		}

@@ -211,7 +211,7 @@ func runDoctor(ctx context.Context, probe bool, target providerTarget) error {
 				doctorHint("Run `gbx doctor --probe` or `gbx models --probe` to send a 1-token test to each (billed).")
 				return nil
 			}
-			availableSet := testModelsConcurrently(ctx, configuredModels, probeTarget.Endpoint, probeTarget.APIKey, probeWireType(probeTarget), probeTarget.ModelProtocols)
+			availableSet := testModelsConcurrently(ctx, configuredModels, probeTarget.Endpoint, probeTarget.APIKey, probeWireType(probeTarget), probeTarget.ModelProtocols, probeTarget.ModelEndpoints)
 			available, unavailable := classifyModels(configuredModels, availableSet)
 			doctorKV("Summary", modelVerificationSummary(available, unavailable))
 			if len(unavailable) > 0 {
@@ -516,7 +516,7 @@ func modelProbeTarget(configured, runtime provider.Provider) provider.Provider {
 // works. protocols carries the per-model wire table for mixed-protocol
 // models.dev gateways (nil for single-protocol providers).
 // Returns a set of model IDs that passed the test.
-func testModelsConcurrently(ctx context.Context, models []string, endpoint, apiKey, providerType string, protocols map[string]string) map[string]bool {
+func testModelsConcurrently(ctx context.Context, models []string, endpoint, apiKey, providerType string, protocols, endpoints map[string]string) map[string]bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -554,7 +554,7 @@ func testModelsConcurrently(ctx context.Context, models []string, endpoint, apiK
 			wg.Add(1)
 			go func(m string) {
 				defer wg.Done()
-				ok := testSingleModelWithProtocolsContext(ctx, m, endpoint, apiKey, providerType, protocols, modelProbeTimeout)
+				ok := testSingleModelWithProtocolsContext(ctx, m, endpoint, apiKey, providerType, protocols, endpoints, modelProbeTimeout)
 				if ok {
 					mu.Lock()
 					available[m] = true
@@ -576,12 +576,12 @@ func testModelsConcurrently(ctx context.Context, models []string, endpoint, apiK
 // and native-Anthropic models behind one endpoint, so the probe for each model
 // must follow that model's declared wire protocol — probing them all as Chat
 // Completions marks working models unavailable.
-func testSingleModelWithProtocolsContext(ctx context.Context, model, endpoint, apiKey, providerType string, protocols map[string]string, timeout time.Duration) bool {
-	status, err := probeSingleModelWithProtocolsStatusContext(ctx, model, endpoint, apiKey, providerType, protocols, timeout)
+func testSingleModelWithProtocolsContext(ctx context.Context, model, endpoint, apiKey, providerType string, protocols, endpoints map[string]string, timeout time.Duration) bool {
+	status, err := probeSingleModelWithProtocolsStatusContext(ctx, model, endpoint, apiKey, providerType, protocols, endpoints, timeout)
 	return err == nil && status >= 200 && status < 300
 }
 
-func probeSingleModelWithProtocolsStatusContext(ctx context.Context, model, endpoint, apiKey, providerType string, protocols map[string]string, timeout time.Duration) (int, error) {
+func probeSingleModelWithProtocolsStatusContext(ctx context.Context, model, endpoint, apiKey, providerType string, protocols, endpoints map[string]string, timeout time.Duration) (int, error) {
 	providerType = strings.ToLower(strings.TrimSpace(providerType))
 	wire := "openai"
 	switch {
@@ -593,8 +593,20 @@ func probeSingleModelWithProtocolsStatusContext(ctx context.Context, model, endp
 		wire = "openai_responses"
 	case provider.IsModelsDevType(providerType):
 		wire = probeProtocolForModel(protocols, model)
+		endpoint = probeEndpointForModel(endpoints, model, endpoint)
 	}
 	return probeSingleModelForProtocolStatusContext(ctx, model, endpoint, apiKey, wire, timeout)
+}
+
+// probeEndpointForModel returns the base URL a mixed-protocol models.dev
+// gateway uses for one model, mirroring the runtime's per-model endpoints.
+func probeEndpointForModel(endpoints map[string]string, model, fallback string) string {
+	for _, id := range []string{strings.TrimSpace(model), stripOneMSuffix(model)} {
+		if endpoint := strings.TrimSpace(endpoints[strings.ToLower(id)]); endpoint != "" {
+			return endpoint
+		}
+	}
+	return fallback
 }
 
 // probeProtocolForModel resolves the wire protocol a mixed-protocol models.dev
@@ -613,7 +625,7 @@ func probeSingleModelForProtocolStatusContext(ctx context.Context, model, endpoi
 	model = stripOneMSuffix(model)
 	switch wireProtocol {
 	case "anthropic":
-		return 0, fmt.Errorf("Anthropic Messages has been retired")
+		return protocol.ProbeAnthropicMessagesStatusContext(ctx, endpoint, apiKey, model, timeout)
 	case "openai_responses":
 		return protocol.ProbeOpenAIResponsesStatusContext(ctx, endpoint, apiKey, model, timeout)
 	default:

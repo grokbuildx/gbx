@@ -670,6 +670,7 @@ func TestOAuthChatGPTAvailabilityUsesSingleCheapProbe(t *testing.T) {
 		"test-key",
 		"openai_responses",
 		nil,
+		nil,
 		lowCostProbeModel,
 		false,
 	)

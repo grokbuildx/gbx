@@ -371,6 +371,21 @@ func (m *AdvancedConfigModel) handleModelsDevRefreshDone(msg modelsDevFetchDoneM
 			}
 		}
 	}
+	// Per-model base URLs follow the catalog the same way; a model that now
+	// uses the provider endpoint loses its stale override.
+	for id := range m.p.ModelEndpoints {
+		if mergedSet[id] {
+			delete(m.p.ModelEndpoints, id)
+		}
+	}
+	for id, endpoint := range draft.ModelEndpoints {
+		if mergedSet[id] {
+			if m.p.ModelEndpoints == nil {
+				m.p.ModelEndpoints = make(map[string]string, len(draft.ModelEndpoints))
+			}
+			m.p.ModelEndpoints[id] = endpoint
+		}
+	}
 	// Display metadata tracks the catalog: add fresh entries, drop entries for
 	// models that left the pool (including the Custom-pinned exception, whose
 	// catalog metadata — if any — is gone with the catalog entry).

@@ -70,7 +70,7 @@ func TestNativeModelSuffixResponses(t *testing.T) {
 		io.WriteString(w, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
 	}))
 	defer up.Close()
-	rt, err := StartMixedProtocolAPIKeyRuntime(context.Background(), up.URL, "fake", "claude-test[1m]", map[string]string{"claude-test": "openai"})
+	rt, err := StartMixedProtocolAPIKeyRuntime(context.Background(), up.URL, "fake", "claude-test[1m]", map[string]string{"claude-test": "openai"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -55,6 +55,7 @@ func Prepare(ctx context.Context, configured provider.Provider) (*Session, error
 		OAuthProvider:          resolved.OAuthProvider,
 		OAuthAccountCredential: resolved.OAuthAccountCredential,
 		ModelProtocols:         resolved.ModelProtocols,
+		ModelEndpoints:         resolved.ModelEndpoints,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start embedded provider runtime: %w", err)

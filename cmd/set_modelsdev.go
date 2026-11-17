@@ -62,15 +62,20 @@ func modelsDevProviders(ctx context.Context) ([]modelsdev.Provider, error) {
 
 // modelsDevProviderToDraft converts a models.dev provider into a gbx provider
 // draft plus its per-model display metadata. Only models whose AI SDK package
-// maps to a known gbx protocol are included; deprecated models are skipped. The
-// resulting provider uses the mixed-protocol "modelsdev" type and carries the
-// per-model protocol table the runtime needs to route each request.
+// maps to a known gbx protocol (Responses, Chat Completions or Anthropic
+// Messages) are included; deprecated models are skipped. The resulting provider
+// uses the mixed-protocol "modelsdev" type and carries the per-model protocol
+// and endpoint tables the runtime needs to route each request.
 func modelsDevProviderToDraft(p modelsdev.Provider) (provider.Provider, map[string]protocol.ModelInfo) {
+	endpoint := strings.TrimSpace(p.API)
+	if endpoint == "" && strings.TrimSpace(p.NPM) == modelsdev.AnthropicNPM {
+		endpoint = modelsdev.AnthropicDefaultAPI
+	}
 	draft := provider.Provider{
 		Name:              p.ID,
 		ModelsDevProvider: p.ID,
 		Type:              "modelsdev",
-		Endpoint:          p.API,
+		Endpoint:          endpoint,
 		ModelProtocols:    make(map[string]string),
 	}
 	metadata := make(map[string]protocol.ModelInfo)
@@ -97,6 +102,14 @@ func modelsDevProviderToDraft(p modelsdev.Provider) (provider.Provider, map[stri
 			modelID = id
 		}
 		draft.ModelProtocols[strings.ToLower(modelID)] = proto
+		// Mixed gateways serve some models (typically their Anthropic ones)
+		// from another base URL; record only those that differ.
+		if api := modelsdev.ResolvedAPI(p, model); api != "" && !strings.EqualFold(strings.TrimRight(api, "/"), strings.TrimRight(endpoint, "/")) {
+			if draft.ModelEndpoints == nil {
+				draft.ModelEndpoints = make(map[string]string)
+			}
+			draft.ModelEndpoints[strings.ToLower(modelID)] = api
+		}
 		pool = append(pool, modelID)
 		metadata[strings.ToLower(modelID)] = protocol.ModelInfo{
 			ID:              modelID,

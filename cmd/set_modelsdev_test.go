@@ -23,7 +23,7 @@ func TestModelsDevProviderToDraft(t *testing.T) {
 			"qwen3.8-max": {
 				ID:       "qwen3.8-max",
 				Name:     "Qwen3.8 Max",
-				Provider: &modelsdev.ModelProvider{NPM: "@ai-sdk/anthropic"},
+				Provider: &modelsdev.ModelProvider{NPM: "@ai-sdk/anthropic", API: "https://opencode.ai/zen/go/anthropic/v1"},
 				Limit:    modelsdev.ModelLimit{Context: 1000000, Output: 131072},
 			},
 			"grok-4.5": {
@@ -52,8 +52,15 @@ func TestModelsDevProviderToDraft(t *testing.T) {
 	if strings.Contains(draft.Model, "glm-5.2") {
 		t.Fatalf("deprecated model leaked into pool: %q", draft.Model)
 	}
-	if _, exists := draft.ModelProtocols["qwen3.8-max"]; exists || strings.Contains(draft.Model, "qwen3.8-max") {
-		t.Fatalf("retired model leaked into pool: %q", draft.Model)
+	// Anthropic models route over Messages from their own base URL.
+	if got := draft.ModelProtocols["qwen3.8-max"]; got != "anthropic" || !strings.Contains(draft.Model, "qwen3.8-max") {
+		t.Fatalf("qwen3.8-max protocol = %q in pool %q, want anthropic", got, draft.Model)
+	}
+	if got := draft.ModelEndpoints["qwen3.8-max"]; got != "https://opencode.ai/zen/go/anthropic/v1" {
+		t.Fatalf("qwen3.8-max endpoint = %q", got)
+	}
+	if len(draft.ModelEndpoints) != 1 {
+		t.Fatalf("models on the provider endpoint must not get overrides: %v", draft.ModelEndpoints)
 	}
 	if got := draft.ModelProtocols["grok-4.5"]; got != "openai_responses" {
 		t.Fatalf("grok-4.5 protocol = %q, want openai_responses", got)
@@ -69,5 +76,15 @@ func TestModelsDevProviderToDraft(t *testing.T) {
 	// Metadata carries context window for the 1M advisory.
 	if info, ok := metadata["grok-4.5"]; !ok || info.ContextWindow != 500000 {
 		t.Fatalf("grok-4.5 metadata = %+v", metadata["grok-4.5"])
+	}
+}
+
+func TestModelsDevAnthropicProviderDefaultsItsEndpoint(t *testing.T) {
+	draft, _ := modelsDevProviderToDraft(modelsdev.Provider{
+		ID: "anthropic", NPM: "@ai-sdk/anthropic",
+		Models: map[string]modelsdev.Model{"claude-x": {ID: "claude-x"}},
+	})
+	if draft.Endpoint != modelsdev.AnthropicDefaultAPI || draft.ModelProtocols["claude-x"] != "anthropic" || len(draft.ModelEndpoints) != 0 {
+		t.Fatalf("draft = %+v", draft)
 	}
 }

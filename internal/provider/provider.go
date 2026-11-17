@@ -140,9 +140,13 @@ type Provider struct {
 	FastMode bool `yaml:"fastMode,omitempty"`
 	// StatuslineDisabled is a retained legacy setting.
 	StatuslineDisabled bool `yaml:"statuslineDisabled,omitempty"`
-	// ModelProtocols maps model IDs to the upstream protocol on a mixed gateway.
-	// Legacy Messages entries are kept in configuration and excluded from routing.
+	// ModelProtocols maps model IDs to the upstream protocol on a mixed gateway:
+	// "openai_responses", "openai" (Chat Completions) or "anthropic" (Messages).
 	ModelProtocols map[string]string `yaml:"modelProtocols,omitempty"`
+	// ModelEndpoints maps lower-case model IDs to a base URL that differs from
+	// Endpoint. models.dev gateways often serve their Anthropic models from a
+	// separate Anthropic-compatible base.
+	ModelEndpoints map[string]string `yaml:"modelEndpoints,omitempty"`
 	// ModelLabels maps model IDs to the display names the upstream catalog
 	// reported (probe or a live session). It is presentation metadata only:
 	// requests always use the ID.
@@ -287,6 +291,8 @@ func ProtocolForAISdkNPM(npm string) (string, bool) {
 		return "openai_responses", true
 	case "@ai-sdk/openai-compatible":
 		return "openai", true
+	case "@ai-sdk/anthropic":
+		return "anthropic", true
 	default:
 		return "", false
 	}

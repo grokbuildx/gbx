@@ -112,11 +112,20 @@ func (m Model) Efforts() []string {
 	return efforts
 }
 
-// ModelProvider carries a model-level npm override. Absent means the model
-// inherits its provider's default npm.
+// ModelProvider carries a model-level npm and API base override. Absent means
+// the model inherits its provider's defaults. Mixed gateways use it to serve,
+// for example, Claude models from a separate Anthropic-compatible base URL.
 type ModelProvider struct {
 	NPM string `json:"npm"`
+	API string `json:"api"`
 }
+
+// AnthropicNPM is the AI SDK package for the Anthropic Messages protocol.
+const AnthropicNPM = "@ai-sdk/anthropic"
+
+// AnthropicDefaultAPI is @ai-sdk/anthropic's default base URL, used when the
+// catalog names no API for an Anthropic model.
+const AnthropicDefaultAPI = "https://api.anthropic.com/v1"
 
 // ModelLimit carries the advertised context/output token limits.
 type ModelLimit struct {
@@ -133,6 +142,24 @@ func ResolvedNPM(p Provider, m Model) string {
 		}
 	}
 	return strings.TrimSpace(p.NPM)
+}
+
+// ResolvedAPI returns the base URL a model's requests go to: the model-level
+// provider.api when present, otherwise the provider's api, otherwise the AI
+// SDK package default (only known for Anthropic).
+func ResolvedAPI(p Provider, m Model) string {
+	if m.Provider != nil {
+		if api := strings.TrimSpace(m.Provider.API); api != "" {
+			return api
+		}
+	}
+	if api := strings.TrimSpace(p.API); api != "" {
+		return api
+	}
+	if ResolvedNPM(p, m) == AnthropicNPM {
+		return AnthropicDefaultAPI
+	}
+	return ""
 }
 
 // Fetch downloads and decodes the models.dev catalog. The top level is a map of

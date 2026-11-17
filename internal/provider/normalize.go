@@ -150,6 +150,7 @@ func (p Provider) Clone() Provider {
 	cloned := p
 	cloned.Env = cloneStringMap(p.Env)
 	cloned.ModelProtocols = cloneStringMap(p.ModelProtocols)
+	cloned.ModelEndpoints = cloneStringMap(p.ModelEndpoints)
 	return cloned
 }
 

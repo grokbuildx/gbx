@@ -133,6 +133,7 @@ GBX 在 `127.0.0.1` 提供 Responses 和 Chat Completions。每个代理使用�
 | OpenAI Chat 网关 / Kimi / WorkBuddy | Chat Completions |
 | OpenAI Responses 网关 / GPT / Grok | Responses，GBX 使用对应后端的请求标识 |
 | Gemini | Google Antigravity |
+| models.dev 混合网关 | 按模型选择：Responses、Chat Completions 或 Anthropic Messages（`@ai-sdk/anthropic` 模型，按 models.dev 的单模型地址发送） |
 | Cursor | Connect 双向 Agent 流 |
 | Kiro / Qoder | Amazon Q / COSY |
 | AutoClaw | 受管 Chat Completions 代理 |
@@ -301,6 +302,7 @@ GBX serves Responses and Chat Completions on `127.0.0.1` with a random per-sessi
 | OpenAI Chat gateway / Kimi / WorkBuddy | Chat Completions |
 | OpenAI Responses gateway / GPT / Grok | Responses with backend-specific identity headers |
 | Gemini | Google Antigravity |
+| models.dev mixed gateway | Per model: Responses, Chat Completions, or Anthropic Messages (`@ai-sdk/anthropic` models, sent to the model's own models.dev base URL) |
 | Cursor | Connect bidirectional agent stream |
 | Kiro / Qoder | Amazon Q / COSY |
 | AutoClaw | Managed Chat Completions proxy |

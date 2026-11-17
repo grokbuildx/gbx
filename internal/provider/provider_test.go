@@ -104,7 +104,7 @@ func TestProtocolForAISdkNPM(t *testing.T) {
 		want   string
 		wantOK bool
 	}{
-		{"@ai-sdk/anthropic", "", false},
+		{"@ai-sdk/anthropic", "anthropic", true},
 		{"@ai-sdk/openai", "openai_responses", true},
 		{"@ai-sdk/openai-compatible", "openai", true},
 		{"@ai-sdk/google", "", false},

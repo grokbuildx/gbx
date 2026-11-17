@@ -110,7 +110,7 @@ func TestAutoClawModelAvailabilityUsesLiveLocalRuntime(t *testing.T) {
 	if !testSingleModelForProtocolContext(context.Background(), "available-model", server.URL+"/v1", "local-key", "openai_responses", time.Second) {
 		t.Fatal("working AutoClaw route reported unavailable")
 	}
-	if testSingleModelWithProtocolsContext(context.Background(), "quota-exhausted", server.URL+"/v1", "local-key", "openai_responses", nil, time.Second) {
+	if testSingleModelWithProtocolsContext(context.Background(), "quota-exhausted", server.URL+"/v1", "local-key", "openai_responses", nil, nil, time.Second) {
 		t.Fatal("quota-exhausted AutoClaw route reported available")
 	}
 	if calls != 2 {
@@ -228,7 +228,7 @@ func TestModelVerificationProbesOAuthRuntimeResponses(t *testing.T) {
 	models := []string{"claude-sonnet-test", "gpt-test"}
 
 	target := modelProbeTarget(configured, runtime)
-	available := testModelsConcurrently(context.Background(), models, target.Endpoint, target.APIKey, probeWireType(target), target.ModelProtocols)
+	available := testModelsConcurrently(context.Background(), models, target.Endpoint, target.APIKey, probeWireType(target), target.ModelProtocols, target.ModelEndpoints)
 	if len(available) != len(models) {
 		t.Fatalf("OAuth runtime verification available = %d/%d, want %d", len(available), len(models), len(models))
 	}

@@ -323,7 +323,7 @@ func (m *AdvancedConfigModel) startModelsDevVerification() {
 	m.live().detectFrame = 0
 	setDebugf("start models.dev key verify endpoint=%q api_key_len=%d model=%q proto=%q", m.p.Endpoint, len(key), model, proto)
 	m.live().verifyGeneration++
-	keyVerifyAsync(m.verifyDone, m.p.Endpoint, key, model, proto, m.live().verifyGeneration)
+	keyVerifyAsync(m.verifyDone, probeEndpointForModel(m.p.ModelEndpoints, model, m.p.Endpoint), key, model, proto, m.live().verifyGeneration)
 	m.markDirty()
 }
 

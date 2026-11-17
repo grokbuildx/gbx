@@ -72,7 +72,7 @@ func TestMixedRuntimeSurfacesModelCatalog(t *testing.T) {
 	defer upstream.Close()
 	runtime, err := StartMixedProtocolAPIKeyRuntime(context.Background(), upstream.URL, "upstream-key",
 		"chat-model,responses-model",
-		map[string]string{"responses-model": "openai_responses", "chat-model": "openai"})
+		map[string]string{"responses-model": "openai_responses", "chat-model": "openai"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,59 +80,6 @@ func TestMixedRuntimeSurfacesModelCatalog(t *testing.T) {
 	models := runtime.Models()
 	if len(models) != 2 || models[0] != "chat-model" || models[1] != "responses-model" {
 		t.Fatalf("runtime models = %v, want [chat-model responses-model]", models)
-	}
-}
-
-func TestMixedRuntimeExcludesAnthropicModels(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(writer, `{"object":"list","data":[]}`)
-	}))
-	defer upstream.Close()
-	runtime, err := StartMixedProtocolAPIKeyRuntime(context.Background(), upstream.URL, "upstream-key",
-		"chat-model,claude-model,responses-model",
-		map[string]string{
-			"chat-model":      "openai",
-			"claude-model":    "anthropic",
-			"responses-model": "openai_responses",
-		})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.Stop()
-	models := runtime.Models()
-	if len(models) != 2 || models[0] != "chat-model" || models[1] != "responses-model" {
-		t.Fatalf("runtime models = %v, want [chat-model responses-model]", models)
-	}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, runtime.Endpoint()+"/responses",
-		strings.NewReader(`{"model":"claude-model","input":[{"role":"user","content":"hi"}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Authorization", "Bearer "+runtime.APIKey())
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("unrouted anthropic model status = %d, want 400", resp.StatusCode)
-	}
-}
-
-func TestMixedRuntimeRejectsAnthropicOnlyGateway(t *testing.T) {
-	_, err := StartMixedProtocolAPIKeyRuntime(context.Background(), "http://127.0.0.1:1/v1", "upstream-key",
-		"claude-sonnet-4-6,claude-opus-4-6",
-		map[string]string{
-			"claude-sonnet-4-6": "anthropic",
-			"claude-opus-4-6":   "anthropic",
-		})
-	if err == nil {
-		t.Fatal("expected error when gateway models only offer anthropic protocol")
-	}
-	if !strings.Contains(strings.ToLower(err.Error()), "anthropic") || !strings.Contains(strings.ToLower(err.Error()), "no longer supports") {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

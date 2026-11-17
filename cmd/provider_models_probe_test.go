@@ -36,7 +36,7 @@ func TestClinePassAvailabilityProbeUsesDocumentedRequestShape(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	if got := probeModelAvailability(context.Background(), model, server.URL+"/api/v1", "test-key", "modelsdev", map[string]string{model: "openai"}, true); got != modelAvailabilityAvailable {
+	if got := probeModelAvailability(context.Background(), model, server.URL+"/api/v1", "test-key", "modelsdev", map[string]string{model: "openai"}, nil, true); got != modelAvailabilityAvailable {
 		t.Fatalf("ClinePass probe = %v, want available", got)
 	}
 }
@@ -59,7 +59,7 @@ func TestAvailabilityProbeDistinguishesUnavailableFromInconclusive(t *testing.T)
 				w.WriteHeader(tc.status)
 			}))
 			defer server.Close()
-			got := probeModelAvailability(context.Background(), "cline-pass/test", server.URL+"/v1", "key", "modelsdev", nil, tc.keyVerified)
+			got := probeModelAvailability(context.Background(), "cline-pass/test", server.URL+"/v1", "key", "modelsdev", nil, nil, tc.keyVerified)
 			if got != tc.want {
 				t.Fatalf("availability = %v, want %v", got, tc.want)
 			}
@@ -77,7 +77,7 @@ func TestAvailabilityProbeRetriesRateLimit(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
-	got := probeModelAvailability(context.Background(), "cline-pass/test", server.URL+"/v1", "key", "modelsdev", nil, true)
+	got := probeModelAvailability(context.Background(), "cline-pass/test", server.URL+"/v1", "key", "modelsdev", nil, nil, true)
 	if got != modelAvailabilityAvailable || requests.Load() != 2 {
 		t.Fatalf("availability = %v after %d requests, want available after 2", got, requests.Load())
 	}
@@ -151,7 +151,7 @@ func TestResponsesProbeSurfacesFailureStatus(t *testing.T) {
 	if status != http.StatusNotFound {
 		t.Fatalf("responses probe status = %d, want 404", status)
 	}
-	if got := probeModelAvailability(context.Background(), "gone-model", server.URL+"/v1", "key", "modelsdev", map[string]string{"gone-model": "openai_responses"}, true); got != modelAvailabilityUnavailable {
+	if got := probeModelAvailability(context.Background(), "gone-model", server.URL+"/v1", "key", "modelsdev", map[string]string{"gone-model": "openai_responses"}, nil, true); got != modelAvailabilityUnavailable {
 		t.Fatalf("responses 404 with verified key = %v, want unavailable", got)
 	}
 }
@@ -170,18 +170,21 @@ func TestModelsDevProbeRoutesPerModelProtocol(t *testing.T) {
 		"anthropic-model": "anthropic",
 	}
 	endpoint := stub.URL + "/v1"
-	for _, model := range []string{"chat-model", "resp-model"} {
-		if !testSingleModelWithProtocolsContext(context.Background(), model, endpoint, "key", "modelsdev", protocols, 5*time.Second) {
+	for _, model := range []string{"chat-model", "resp-model", "anthropic-model"} {
+		if !testSingleModelWithProtocolsContext(context.Background(), model, endpoint, "key", "modelsdev", protocols, nil, 5*time.Second) {
 			t.Fatalf("model %s probed unavailable despite matching its declared protocol", model)
 		}
 	}
 
+	// A model served from its own base URL is probed there.
+	if !testSingleModelWithProtocolsContext(context.Background(), "anthropic-model", stub.URL+"/nowhere/v1", "key", "modelsdev", protocols,
+		map[string]string{"anthropic-model": stub.URL + "/anthropic/v1"}, 5*time.Second) {
+		t.Fatal("anthropic-model was not probed at its own endpoint")
+	}
+
 	// The old single-protocol behavior really is wrong for these models: the
 	// same models probed as plain chat fail.
-	if testSingleModelWithProtocolsContext(context.Background(), "anthropic-model", endpoint, "key", "modelsdev", protocols, 5*time.Second) {
-		t.Fatal("retired Messages model was probed successfully")
-	}
-	for _, model := range []string{"resp-model"} {
+	for _, model := range []string{"resp-model", "anthropic-model"} {
 		if testSingleModelForProtocolContext(context.Background(), model, endpoint, "key", "openai", 5*time.Second) {
 			t.Fatalf("model %s unexpectedly available over the wrong protocol", model)
 		}
