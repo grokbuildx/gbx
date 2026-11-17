@@ -333,5 +333,14 @@ jobs:
         run: node scripts/build-npm-packages.js "$TAG_NAME"
       - name: Verify npm packaging
         run: node --test scripts/npm-packages.test.js
-      - name: Publish platform packages and launcher with Trusted Publishing
-        run: node scripts/publish-npm-packages.js dist/npm
+      # NPM_TOKEN is a granular access token with read/write on the
+      # @grokbuildx scope. id-token: write still lets npm attach provenance.
+      - name: Publish platform packages and launcher
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [[ -z "$NODE_AUTH_TOKEN" ]]; then
+            echo "NPM_TOKEN secret is required to publish to npm" >&2
+            exit 1
+          fi
+          node scripts/publish-npm-packages.js dist/npm

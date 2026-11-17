@@ -15,25 +15,27 @@ Each suffix is prefixed with `@grokbuildx/gbx-`. The launcher contains no native
 
 The placeholder has no shebang, so npm's Windows shim executes the placed binary directly. When postinstall did not run (`--ignore-scripts`, pnpm or bun without trusted scripts, `--omit=optional`), Unix shells run the placeholder with `sh`, which hands off to `node bin/wrapper.js`; `node bin/install.js` places the binary afterwards. Older bundled installations are still recognized by the wrapper.
 
-## First release setup
+## Publishing credentials
 
-npm Trusted Publishing is configured separately for each package. Before the first release using this layout, an owner of the `@grokbuildx` npm scope must create/bootstrap the six packages and configure their trusted publisher for:
+The release workflow publishes with the repository secret `NPM_TOKEN`, exposed to npm as `NODE_AUTH_TOKEN`. It must be a granular access token with:
 
-- GitHub owner/repository: `grokbuildx/gbx`
-- Workflow filename: `release.yml`
-- The same publishing environment, if one is configured for the existing launcher package.
+- Packages and scopes: Read and write on the `grokbuildx` organization scope (not selected packages, so new packages can be created).
+- Bypass two-factor authentication enabled.
+- No IP restriction (GitHub-hosted runners have no fixed address).
 
-The existing launcher's trusted publisher remains in place. Initial package creation must use the maintainer's normal npm publishing access; this repository does not store a bootstrap token.
+npm caps write-capable granular tokens at a limited lifetime, so rotate the token before it expires:
 
-This bootstrap was completed on 2026-10-15: each platform package has a `0.0.0` placeholder (package.json and README only) and a `release.yml` trusted publisher. Notes for repeating it, e.g. when a platform is added:
+```bash
+gh secret set NPM_TOKEN -R grokbuildx/gbx   # paste the new token when prompted
+```
 
-- `npm trust` requires the package to exist, and a new name can take about ten minutes before the registry serves it; a trust request sent earlier fails with `400`.
-- Use npm 11.15 or newer and pass `--allow-publish`. Older npm sends no permission flag and the registry answers a bare `400`:
+The npm job keeps `id-token: write`, so `npm publish --provenance` still records build provenance. Once all seven packages exist, npm Trusted Publishing can replace the token: configure each package with
 
-  ```bash
-  npx -y npm@latest trust github @grokbuildx/gbx-<platform> --file release.yml --repository grokbuildx/gbx --allow-publish -y
-  ```
-- Every publish and trust call needs its own browser 2FA confirmation, which expires after about five minutes.
+```bash
+npx -y npm@latest trust github @grokbuildx/<package> --file release.yml --repository grokbuildx/gbx --allow-publish -y
+```
+
+then drop `NODE_AUTH_TOKEN` from the workflow and delete the secret. `npm trust` needs npm 11.15 or newer, an existing package, and a browser 2FA confirmation per call.
 
 ## Release workflow
 
