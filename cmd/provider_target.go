@@ -29,14 +29,14 @@ func (t providerTarget) resolve(cfg *provider.Config) (string, error) {
 	}
 	if name == "" {
 		return "", errors.New(locale.T(
-			"未选择 Provider。用 ccl use <name> 选择，或加 --provider <name>",
-			"no provider selected. Choose one with ccl use <name>, or pass --provider <name>",
+			"未选择 Provider。用 gbx use <name> 选择，或加 --provider <name>",
+			"no provider selected. Choose one with gbx use <name>, or pass --provider <name>",
 		))
 	}
 	if provider.IsDefaultProvider(name) {
 		return "", errors.New(locale.T(
-			"default 使用 Grok Build 自身配置，没有可修改的 ccl 设置；请加 --provider <name>",
-			"default uses Grok Build's own configuration and has no ccl settings to change; pass --provider <name>",
+			"default 使用 Grok Build 自身配置，没有可修改的 gbx 设置；请加 --provider <name>",
+			"default uses Grok Build's own configuration and has no gbx settings to change; pass --provider <name>",
 		))
 	}
 	if _, ok := cfg.Providers[name]; !ok {

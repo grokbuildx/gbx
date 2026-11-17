@@ -17,7 +17,7 @@ import (
 )
 
 // isolateConfig points HOME at a temporary directory so a test can write a
-// config without touching the developer's ~/.ccl.
+// config without touching the developer's ~/.gbx.
 func isolateConfig(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
@@ -94,7 +94,7 @@ func TestConfigRejectsUnsupportedTypesAndClearsLegacyDefault(t *testing.T) {
 	if err != nil || len(cfg.Providers) != 0 {
 		t.Fatalf("rejected provider was saved: %v %+v", err, cfg)
 	}
-	// Explicitly selecting default in Settings clears LegacyClaudeDefault, just like `ccl use default`.
+	// Explicitly selecting default in Settings clears LegacyClaudeDefault, just like `gbx use default`.
 	if status, body := doJSON(t, "PUT", server.URL+"/api/config", "secret", `{"active":{"normal":"default"}}`); status != http.StatusOK {
 		t.Fatalf("PUT default = %d: %s", status, body)
 	}

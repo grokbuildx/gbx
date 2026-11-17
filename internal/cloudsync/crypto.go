@@ -13,7 +13,7 @@ import (
 	"io"
 )
 
-var envelopeMagic = []byte("CCLSYNC1")
+var envelopeMagic = []byte("GBXSYNC1")
 
 func newMasterKeyProfile() (remoteProfile, []byte, error) {
 	profileID, err := randomHexIdentifier(16)

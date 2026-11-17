@@ -61,7 +61,7 @@ const (
 // workbuddyDeployment is one public WorkBuddy deployment. Both deployments
 // speak the same plugin API and chat protocol, so every request builder below
 // is shared; a deployment carries only the origin its requests go to, the
-// public OAuth provider name (which is also the credential `type` ccl
+// public OAuth provider name (which is also the credential `type` gbx
 // persists), and the X-Domain identity derived from that origin.
 type workbuddyDeployment struct {
 	provider string

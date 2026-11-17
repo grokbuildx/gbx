@@ -16,17 +16,17 @@ import (
 // TestAutoClawLiveCompatibility is intentionally opt-in because it consumes
 // managed-plan quota. Pass a credential basename, never a token:
 //
-//	CCL_AUTOCLAW_LIVE_CREDENTIAL=autoclaw-....json go test ./internal/oauthproxy -run TestAutoClawLiveCompatibility -v
+//	GBX_AUTOCLAW_LIVE_CREDENTIAL=autoclaw-....json go test ./internal/oauthproxy -run TestAutoClawLiveCompatibility -v
 //
 // The regular unit tests cover the exact converted request shape without
 // network access. This check catches drift in AutoClaw's private managed API.
 func TestAutoClawLiveCompatibility(t *testing.T) {
-	credentialFile := strings.TrimSpace(os.Getenv("CCL_AUTOCLAW_LIVE_CREDENTIAL"))
+	credentialFile := strings.TrimSpace(os.Getenv("GBX_AUTOCLAW_LIVE_CREDENTIAL"))
 	if credentialFile == "" {
-		t.Skip("set CCL_AUTOCLAW_LIVE_CREDENTIAL to run the quota-consuming AutoClaw integration test")
+		t.Skip("set GBX_AUTOCLAW_LIVE_CREDENTIAL to run the quota-consuming AutoClaw integration test")
 	}
 	if filepath.Base(credentialFile) != credentialFile {
-		t.Fatal("CCL_AUTOCLAW_LIVE_CREDENTIAL must be a credential basename, not a path")
+		t.Fatal("GBX_AUTOCLAW_LIVE_CREDENTIAL must be a credential basename, not a path")
 	}
 
 	contract, _ := autoClawEffectiveContract()

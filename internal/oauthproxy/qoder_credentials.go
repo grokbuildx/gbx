@@ -158,7 +158,7 @@ func (pool *qoderCredentialPool) refresh(ctx context.Context, credential *qoderC
 	request.Header.Set("Authorization", "Bearer "+credential.accessToken)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "ccl")
+	request.Header.Set("User-Agent", "gbx")
 	response, err := doCredentialRequest(pool.client, request)
 	if err != nil {
 		return nil, fmt.Errorf("refresh Qoder credential %s: %w", credential.fileName, err)

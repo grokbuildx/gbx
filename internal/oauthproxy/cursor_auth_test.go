@@ -204,12 +204,12 @@ func TestDecodeCursorUsableModelsToleratesShapes(t *testing.T) {
 	}
 }
 
-func TestCursorMCPToolUsesCclProviderIdentifier(t *testing.T) {
+func TestCursorMCPToolUsesGbxProviderIdentifier(t *testing.T) {
 	encoded := encodeCursorMcpToolDef(cursorMCPTool{
 		Name: "Read", Description: "read a file",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 	})
-	if !strings.Contains(string(encoded), cursorMCPProviderIdentifier) || cursorMCPProviderIdentifier != "ccl" {
+	if !strings.Contains(string(encoded), cursorMCPProviderIdentifier) || cursorMCPProviderIdentifier != "gbx" {
 		t.Fatalf("provider identifier = %q", cursorMCPProviderIdentifier)
 	}
 	if strings.Contains(string(encoded), "proxy") {

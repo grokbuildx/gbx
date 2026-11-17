@@ -28,11 +28,11 @@ func recoverStaleProxy() {
 	defer cancel()
 	restored, err := m.RecoverStale(ctx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, locale.T("ccl: 无法恢复已退出代理的客户端配置：%v；请运行 ccl codex stop\n", "ccl: could not restore client settings for an exited proxy: %v; run ccl codex stop\n"), err)
+		fmt.Fprintf(os.Stderr, locale.T("gbx: 无法恢复已退出代理的客户端配置：%v；请运行 gbx codex stop\n", "gbx: could not restore client settings for an exited proxy: %v; run gbx codex stop\n"), err)
 		return
 	}
 	if restored {
-		fmt.Fprintln(os.Stderr, locale.T("ccl: 代理已意外退出，原有客户端配置已恢复", "ccl: the proxy had exited; previous client settings restored"))
+		fmt.Fprintln(os.Stderr, locale.T("gbx: 代理已意外退出，原有客户端配置已恢复", "gbx: the proxy had exited; previous client settings restored"))
 	}
 }
 
@@ -46,7 +46,7 @@ func proxyProvider(name string) (provider.Provider, error) {
 	}
 	p, ok := cfg.Providers[name]
 	if !ok {
-		return provider.Provider{}, fmt.Errorf("provider %q not found; use ccl ls or ccl set", name)
+		return provider.Provider{}, fmt.Errorf("provider %q not found; use gbx ls or gbx set", name)
 	}
 	p.Name = name
 	return p, nil
@@ -129,11 +129,11 @@ func runProxyStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), locale.T("Codex 模型接入已开启 · %s · %s\n停止：ccl codex stop\n", "Codex model integration running · %s · %s\nStop with: ccl codex stop\n"), s.Provider, s.BaseURL)
+	fmt.Fprintf(cmd.OutOrStdout(), locale.T("Codex 模型接入已开启 · %s · %s\n停止：gbx codex stop\n", "Codex model integration running · %s · %s\nStop with: gbx codex stop\n"), s.Provider, s.BaseURL)
 	if s.Codex != nil {
 		fmt.Fprintln(cmd.OutOrStdout(), codexCatalogConnectionMessage(s.CatalogCapabilities()))
 		if s.CodexMode == "independent" {
-			fmt.Fprintln(cmd.OutOrStdout(), locale.T("独立提供商模式：不依赖 OpenAI 登录。恢复共享目录：ccl codex start --shared", "Independent provider mode: OpenAI login is not required. Restore the shared catalog: ccl codex start --shared"))
+			fmt.Fprintln(cmd.OutOrStdout(), locale.T("独立提供商模式：不依赖 OpenAI 登录。恢复共享目录：gbx codex start --shared", "Independent provider mode: OpenAI login is not required. Restore the shared catalog: gbx codex start --shared"))
 		}
 	}
 	return nil
@@ -151,8 +151,8 @@ func runProxyDefault(cmd *cobra.Command) error {
 	}
 	if s == nil {
 		fmt.Fprintln(cmd.OutOrStdout(), locale.T(
-			"default 无需 CCL 模型接入；Codex 使用原有配置",
-			"default needs no CCL integration; Codex uses its original configuration",
+			"default 无需 GBX 模型接入；Codex 使用原有配置",
+			"default needs no GBX integration; Codex uses its original configuration",
 		))
 		return nil
 	}
@@ -170,20 +170,20 @@ func runProxyDefault(cmd *cobra.Command) error {
 
 func newCodexCommand() *cobra.Command {
 	command := &cobra.Command{Use: "codex [provider]", Short: "Connect provider models to Codex", Args: cobra.MaximumNArgs(1), RunE: runProxyStart,
-		Long: `Connect a CCL provider's models to Codex.
+		Long: `Connect a GBX provider's models to Codex.
 
-  ccl codex -p provider1        Start with a named provider
-  ccl codex start provider1     Equivalent explicit command
-  ccl codex start --independent Use CCL without OpenAI account authentication
-  ccl codex start --shared      Restore native OpenAI + CCL shared picker
-  ccl codex start --refresh     Rediscover account models without interrupting output
-  ccl codex start -p one --with-provider two   Attach multiple providers
-  ccl codex start --independent --catalog remote  Opt into URL discovery
-  ccl codex start --catalog local             Restore local JSON discovery
-  ccl codex                    Start with the active provider
-  ccl codex start default      Disconnect CCL and restore Codex's original route
-  ccl codex status             Show the running provider and local endpoint
-  ccl codex stop               Stop and restore previous Codex settings
+  gbx codex -p provider1        Start with a named provider
+  gbx codex start provider1     Equivalent explicit command
+  gbx codex start --independent Use GBX without OpenAI account authentication
+  gbx codex start --shared      Restore native OpenAI + GBX shared picker
+  gbx codex start --refresh     Rediscover account models without interrupting output
+  gbx codex start -p one --with-provider two   Attach multiple providers
+  gbx codex start --independent --catalog remote  Opt into URL discovery
+  gbx codex start --catalog local             Restore local JSON discovery
+  gbx codex                    Start with the active provider
+  gbx codex start default      Disconnect GBX and restore Codex's original route
+  gbx codex status             Show the running provider and local endpoint
+  gbx codex stop               Stop and restore previous Codex settings
 
 Open Codex once to create its profile (CODEX_HOME is supported). The proxy adds
 the explicitly bound providers' models to Codex's picker. Native OpenAI models keep their
@@ -191,8 +191,8 @@ own route and credentials. Restart Codex after starting, switching or stopping
 the proxy to reload a local catalog. Runtime/configuration changes preserve active
 requests on the same gateway. URL discovery is optional for independent mode;
 Desktop decides when to refresh its picker. macOS shows a menu bar icon.
-Independent mode exposes only CCL models through a custom provider. Chats resume
-with their saved model provider: restore --independent for ccl_proxy chats, or
+Independent mode exposes only GBX models through a custom provider. Chats resume
+with their saved model provider: restore --independent for gbx_proxy chats, or
 fork a chat to continue its history on a different provider. Use --shared to
 return to native models. Starts and menu switches inherit the running mode;
 after stopping the proxy, a start without either mode flag defaults to shared.
@@ -207,7 +207,7 @@ Upgrading an older shared proxy also restores its legacy Claude settings once.`}
 	command.PersistentFlags().Bool("refresh", false, "Refresh account models and replace runtimes without interrupting in-flight requests")
 	command.MarkFlagsMutuallyExclusive("independent", "shared")
 	start := &cobra.Command{Use: "start [provider]", Args: cobra.MaximumNArgs(1), Short: "Start or switch Codex model integration", RunE: runProxyStart}
-	stop := &cobra.Command{Use: "stop", Args: cobra.NoArgs, Short: "Disconnect CCL models and restore Codex settings", RunE: func(cmd *cobra.Command, _ []string) error {
+	stop := &cobra.Command{Use: "stop", Args: cobra.NoArgs, Short: "Disconnect GBX models and restore Codex settings", RunE: func(cmd *cobra.Command, _ []string) error {
 		m, err := proxymanager.Default()
 		if err != nil {
 			return err
@@ -234,7 +234,7 @@ Upgrading an older shared proxy also restores its legacy Claude settings once.`}
 			return nil
 		}
 		if !m.Running(cmd.Context(), s) {
-			fmt.Fprintln(cmd.OutOrStdout(), locale.T("Codex 模型接入未响应；运行 ccl codex stop 恢复配置", "Codex model integration is not responding; run ccl codex stop to restore settings"))
+			fmt.Fprintln(cmd.OutOrStdout(), locale.T("Codex 模型接入未响应；运行 gbx codex stop 恢复配置", "Codex model integration is not responding; run gbx codex stop to restore settings"))
 			return nil
 		}
 		endpoint := s.BaseURL
@@ -256,7 +256,7 @@ Upgrading an older shared proxy also restores its legacy Claude settings once.`}
 		name, _ := cmd.Flags().GetString("provider")
 		id, _ := cmd.Flags().GetString("instance")
 		if id == "" {
-			return fmt.Errorf("internal proxy serve requires an instance; use ccl codex start")
+			return fmt.Errorf("internal proxy serve requires an instance; use gbx codex start")
 		}
 		p, err := proxyProvider(name)
 		if err != nil {

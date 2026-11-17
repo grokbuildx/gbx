@@ -61,7 +61,7 @@ func TestBasePathMountsPageAndAPI(t *testing.T) {
 
 	// The page carries the prefix as its base; its validator is the rendered page's.
 	response, page := fetch(t, "GET", base+"/chat/", nil, "")
-	if response.StatusCode != http.StatusOK || !strings.Contains(page, `<base href="/chat/" data-ccl-base>`) || strings.Contains(page, `<base href="/" data-ccl-base>`) {
+	if response.StatusCode != http.StatusOK || !strings.Contains(page, `<base href="/chat/" data-gbx-base>`) || strings.Contains(page, `<base href="/" data-gbx-base>`) {
 		t.Fatalf("page = %d %s", response.StatusCode, page)
 	}
 	etag := response.Header.Get("ETag")
@@ -73,7 +73,7 @@ func TestBasePathMountsPageAndAPI(t *testing.T) {
 	}
 	root := testServer(t, Config{Token: "secret"}).URL
 	rootResponse, rootPage := fetch(t, "GET", root+"/", nil, "")
-	if !strings.Contains(rootPage, `<base href="/" data-ccl-base>`) || rootResponse.Header.Get("ETag") == etag {
+	if !strings.Contains(rootPage, `<base href="/" data-gbx-base>`) || rootResponse.Header.Get("ETag") == etag {
 		t.Fatalf("root page base or ETag not distinct: %q", rootResponse.Header.Get("ETag"))
 	}
 

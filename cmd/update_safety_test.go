@@ -41,7 +41,7 @@ func TestUpdatePreservesPreviousExecutable(t *testing.T) {
 	if err := validateReleaseBinary(downloaded); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(dir, "ccl")
+	target := filepath.Join(dir, "gbx")
 	if err := os.WriteFile(target, []byte("old executable"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func serveBytes(t *testing.T, body []byte) string {
 }
 
 // TestUpdateDownloadsAndUnpacksTheGzipArchive pins the release format: GitHub
-// releases ship <asset>.gz, and self-update unpacks it into a runnable ccl.
+// releases ship <asset>.gz, and self-update unpacks it into a runnable gbx.
 func TestUpdateDownloadsAndUnpacksTheGzipArchive(t *testing.T) {
 	dir := t.TempDir()
 	built := filepath.Join(dir, "built")
@@ -138,7 +138,7 @@ func TestUpdateDownloadsAndUnpacksTheGzipArchive(t *testing.T) {
 }
 
 // TestUpdateRejectsUnusableArchives covers a gzip archive whose content is not
-// ccl, a truncated archive, and one that expands past the size cap.
+// gbx, a truncated archive, and one that expands past the size cap.
 func TestUpdateRejectsUnusableArchives(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "download")
 
@@ -205,24 +205,24 @@ func TestUpdateVerifiesTheReleaseChecksum(t *testing.T) {
 }
 
 func TestChecksumForParsesSHA256SUMS(t *testing.T) {
-	sums := strings.Repeat("a", 64) + "  ccl-darwin-arm64.gz\n" + strings.Repeat("b", 64) + " *ccl-linux-amd64.gz\n"
-	if got, err := checksumFor(sums, "ccl-darwin-arm64.gz"); err != nil || got != strings.Repeat("a", 64) {
+	sums := strings.Repeat("a", 64) + "  gbx-darwin-arm64.gz\n" + strings.Repeat("b", 64) + " *gbx-linux-amd64.gz\n"
+	if got, err := checksumFor(sums, "gbx-darwin-arm64.gz"); err != nil || got != strings.Repeat("a", 64) {
 		t.Fatalf("darwin = %q, %v", got, err)
 	}
-	if got, err := checksumFor(sums, "ccl-linux-amd64.gz"); err != nil || got != strings.Repeat("b", 64) {
+	if got, err := checksumFor(sums, "gbx-linux-amd64.gz"); err != nil || got != strings.Repeat("b", 64) {
 		t.Fatalf("binary-mode entry = %q, %v", got, err)
 	}
-	if _, err := checksumFor(sums, "ccl-win32-x64.exe.gz"); err == nil {
+	if _, err := checksumFor(sums, "gbx-win32-x64.exe.gz"); err == nil {
 		t.Fatal("a missing entry was accepted")
 	}
 }
 
 func TestInstallMethodForPath(t *testing.T) {
 	for path, want := range map[string]string{
-		"/opt/homebrew/lib/node_modules/@claudecodelaunch/ccl/bin/ccl-darwin-arm64": "npm",
-		"/Users/u/go/bin/ccl": "go",
-		"/usr/local/bin/ccl":  "self",
-		"/custom/gobin/ccl":   "go",
+		"/opt/homebrew/lib/node_modules/@grokbuildx/gbx/bin/gbx-darwin-arm64": "npm",
+		"/Users/u/go/bin/gbx": "go",
+		"/usr/local/bin/gbx":  "self",
+		"/custom/gobin/gbx":   "go",
 	} {
 		if got := installMethodForPath(path, []string{"/Users/u/go/bin", "/custom/gobin"}); got != want {
 			t.Fatalf("installMethodForPath(%q) = %q, want %q", path, got, want)

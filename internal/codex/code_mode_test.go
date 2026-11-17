@@ -10,17 +10,17 @@ func TestCodexClientToolModeFollowsNativeCatalog(t *testing.T) {
 		shellType string
 	}{
 		{"older client", Catalog{Models: []Model{{"slug": "native"}}}, false, "default"},
-		{"stale CCL entry is not a template", Catalog{Models: []Model{{"slug": "ccl/old/model", "tool_mode": "code_mode_only", "shell_type": "unified_exec"}}}, false, "default"},
+		{"stale GBX entry is not a template", Catalog{Models: []Model{{"slug": "gbx/old/model", "tool_mode": "code_mode_only", "shell_type": "unified_exec"}}}, false, "default"},
 		{"native code mode", Catalog{Models: []Model{{"slug": "native", "tool_mode": "code_mode_only", "shell_type": "unified_exec", "node_repl_auto_review_required": true}}}, true, "unified_exec"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			converted := newModel("ccl/test/converted", "converted", nil, nil)
-			passthrough := newModel("ccl/test/native", "native", nil, nil)
-			codexOAuth := newModel("ccl/gpt/gpt-5.4", "gpt-5.4", nil, nil)
+			converted := newModel("gbx/test/converted", "converted", nil, nil)
+			passthrough := newModel("gbx/test/native", "native", nil, nil)
+			codexOAuth := newModel("gbx/gpt/gpt-5.4", "gpt-5.4", nil, nil)
 			g := &Gateway{models: []Model{converted, passthrough, codexOAuth}, routes: map[string]Route{
-				"ccl/test/converted": {},
-				"ccl/test/native":    {NativeResponses: true},
-				"ccl/gpt/gpt-5.4":    {NativeResponses: true, CodexNativeTools: true},
+				"gbx/test/converted": {},
+				"gbx/test/native":    {NativeResponses: true},
+				"gbx/gpt/gpt-5.4":    {NativeResponses: true, CodexNativeTools: true},
 			}}
 			g.inheritClientToolMode(test.native)
 			if (converted["tool_mode"] == "code_mode_only") != test.want || passthrough["tool_mode"] != nil || (codexOAuth["tool_mode"] == "code_mode_only") != test.want {

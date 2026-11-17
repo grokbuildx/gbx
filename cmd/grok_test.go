@@ -37,8 +37,8 @@ func useFakeGrok(t *testing.T) string {
 	}
 	trace := filepath.Join(bin, "trace.jsonl")
 	t.Setenv("PATH", bin)
-	t.Setenv("CCL_TEST_FAKE_GROK", "1")
-	t.Setenv("CCL_FAKE_TRACE", trace)
+	t.Setenv("GBX_TEST_FAKE_GROK", "1")
+	t.Setenv("GBX_FAKE_TRACE", trace)
 	return trace
 }
 
@@ -78,7 +78,7 @@ func TestRunGrokAgentLaunchesLoopbackRuntimeAndForwardsArgs(t *testing.T) {
 	if !strings.HasPrefix(got.GrokBase, "http://127.0.0.1:") || !strings.HasSuffix(got.GrokBase, "/v1") {
 		t.Fatalf("GROK_MODELS_BASE_URL = %q", got.GrokBase)
 	}
-	if !strings.HasPrefix(got.XAIKey, "ccl-") || got.XAIKey == "upstream-secret" || got.XAIKey == "ambient-xai-key" {
+	if !strings.HasPrefix(got.XAIKey, "gbx-") || got.XAIKey == "upstream-secret" || got.XAIKey == "ambient-xai-key" {
 		t.Fatalf("XAI_API_KEY = %q, want isolated per-session key", got.XAIKey)
 	}
 	if got.GrokAuth == "" || got.AuthContents != "{}\n" {
@@ -196,7 +196,7 @@ func fakeGrokProcess() int {
 	if err != nil {
 		return 1
 	}
-	if err := os.WriteFile(os.Getenv("CCL_FAKE_TRACE"), raw, 0o600); err != nil {
+	if err := os.WriteFile(os.Getenv("GBX_FAKE_TRACE"), raw, 0o600); err != nil {
 		return 1
 	}
 	return 0
@@ -242,7 +242,7 @@ func TestLegacyDefaultAccountRequiresExplicitSwitch(t *testing.T) {
 	trace := useFakeGrok(t)
 	t.Setenv("GROK_MODELS_BASE_URL", "https://native.invalid/v1")
 	t.Setenv("GROK_AUTH_PATH", "")
-	if err := runGrok(nil, ""); err == nil || !strings.Contains(err.Error(), "ccl use default") {
+	if err := runGrok(nil, ""); err == nil || !strings.Contains(err.Error(), "gbx use default") {
 		t.Fatalf("retired default account: %v", err)
 	}
 	if _, err := os.Stat(trace); !os.IsNotExist(err) {
@@ -255,7 +255,7 @@ func TestLegacyDefaultAccountRequiresExplicitSwitch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := readFakeTraces(t, trace)[0]; got.GrokBase != "https://native.invalid/v1" || got.GrokAuth != "" {
-		t.Fatal("native default received a CCL session")
+		t.Fatal("native default received a GBX session")
 	}
 }
 

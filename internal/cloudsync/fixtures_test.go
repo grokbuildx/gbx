@@ -5,7 +5,7 @@ import (
 )
 
 // LoginICloudLocalKey logs in to the default iCloud remote, as
-// `ccl cloud login icloud` does.
+// `gbx cloud login icloud` does.
 func LoginICloudLocalKey() (LoginResult, error) {
 	return LoginICloudNamed("icloud")
 }

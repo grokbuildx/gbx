@@ -8,12 +8,12 @@ func TestReleaseAssetName(t *testing.T) {
 		t.Skipf("unsupported platform for self-update: %v", err)
 	}
 	valid := map[string]bool{
-		"ccl-darwin-amd64":    true,
-		"ccl-darwin-arm64":    true,
-		"ccl-linux-amd64":     true,
-		"ccl-linux-arm64":     true,
-		"ccl-win32-x64.exe":   true,
-		"ccl-win32-arm64.exe": true,
+		"gbx-darwin-amd64":    true,
+		"gbx-darwin-arm64":    true,
+		"gbx-linux-amd64":     true,
+		"gbx-linux-arm64":     true,
+		"gbx-win32-x64.exe":   true,
+		"gbx-win32-arm64.exe": true,
 	}
 	if !valid[name] {
 		t.Errorf("releaseAssetName() = %q, want one of the release asset names", name)
@@ -21,10 +21,10 @@ func TestReleaseAssetName(t *testing.T) {
 }
 
 func TestReleaseDownloadURL(t *testing.T) {
-	if got := releaseDownloadURL("v1.5.6", "ccl-darwin-arm64"); got != "https://github.com/grokbuildx/gbx/releases/download/v1.5.6/ccl-darwin-arm64" {
+	if got := releaseDownloadURL("v1.5.6", "gbx-darwin-arm64"); got != "https://github.com/grokbuildx/gbx/releases/download/v1.5.6/gbx-darwin-arm64" {
 		t.Errorf("versioned URL = %q", got)
 	}
-	if got := releaseDownloadURL("unknown", "ccl-linux-amd64"); got != "https://github.com/grokbuildx/gbx/releases/latest/download/ccl-linux-amd64" {
+	if got := releaseDownloadURL("unknown", "gbx-linux-amd64"); got != "https://github.com/grokbuildx/gbx/releases/latest/download/gbx-linux-amd64" {
 		t.Errorf("latest URL = %q", got)
 	}
 }

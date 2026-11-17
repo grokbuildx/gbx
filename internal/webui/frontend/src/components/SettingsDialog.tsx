@@ -13,7 +13,7 @@ import { CloudSync } from "./CloudSync";
 import type { MemorySource } from "./MemoryEditor";
 
 // Settings: a large centered dialog with a section list, like claude.ai's.
-// Every write to ~/.ccl/config.yaml goes through the server's config.Update;
+// Every write to ~/.gbx/config.yaml goes through the server's config.Update;
 // a provider is created or edited in a dialog of its own.
 
 const PROVIDER_TYPES = ["openai", "openai_responses", "modelsdev"];

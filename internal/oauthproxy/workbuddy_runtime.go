@@ -77,7 +77,7 @@ func (s *workbuddyCredentialStore) load() (*workbuddyCredential, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("no WorkBuddy credential %s; run `ccl oauth %s` again", s.credentialFile, s.deployment.provider)
+			return nil, fmt.Errorf("no WorkBuddy credential %s; run `gbx oauth %s` again", s.credentialFile, s.deployment.provider)
 		}
 		return nil, fmt.Errorf("read WorkBuddy credential %s: %w", s.credentialFile, err)
 	}
@@ -118,7 +118,7 @@ func (s *workbuddyCredentialStore) authorize(ctx context.Context, forceRefresh b
 		return credential, nil
 	}
 	if strings.TrimSpace(token.RefreshToken) == "" {
-		return nil, fmt.Errorf("WorkBuddy credential %s has expired and has no refresh token; run `ccl oauth %s` again", credential.fileName, s.deployment.provider)
+		return nil, fmt.Errorf("WorkBuddy credential %s has expired and has no refresh token; run `gbx oauth %s` again", credential.fileName, s.deployment.provider)
 	}
 	refreshURL := strings.TrimRight(s.deployment.baseURL, "/") + "/v2/plugin/auth/token/refresh"
 	headers := s.deployment.authenticatedHeaders(token, credential.account())
@@ -894,7 +894,7 @@ func startWorkBuddyOAuth(parent context.Context, providerName, modelSpec, creden
 	proxyRuntime.models = append([]string(nil), models...)
 	proxyRuntime.modelNames = names
 	proxyRuntime.modelDetails = details
-	LogInfof("runtime start oauth provider=%s backend=%s protocol=openai_chat local_endpoint=%q credential_file=%s models=%d auth_owner=ccl catalog_owner=ccl data_plane=ccl",
+	LogInfof("runtime start oauth provider=%s backend=%s protocol=openai_chat local_endpoint=%q credential_file=%s models=%d auth_owner=gbx catalog_owner=gbx data_plane=gbx",
 		deployment.provider, deployment.provider, SafeLogEndpoint(proxyRuntime.endpoint), filepath.Base(credentialFile), len(models))
 	return proxyRuntime, nil
 }

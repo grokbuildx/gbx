@@ -75,7 +75,7 @@ func validateRegistry(localDir string, registry cloudRegistry) error {
 	}
 	if registry.Version != registryVersion || !validIdentifier(registry.ActiveProfileID, 32) ||
 		!validIdentifier(registry.Device.ID, 32) || registry.Aliases == nil {
-		return fmt.Errorf("invalid cloud registry; restore %s or run `ccl doctor`", registryPath(localDir))
+		return fmt.Errorf("invalid cloud registry; restore %s or run `gbx doctor`", registryPath(localDir))
 	}
 	seenIDs := make(map[string]bool, len(registry.Aliases))
 	if err := validateLocalCloudDirectory(

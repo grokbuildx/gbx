@@ -134,7 +134,7 @@ func TestModelProbeTargetUsesConfiguredUpstreamForKeyProviders(t *testing.T) {
 		Name:     "cline",
 		Type:     "modelsdev",
 		Endpoint: "http://127.0.0.1:39999/v1",
-		APIKey:   "ccl-local-key",
+		APIKey:   "gbx-local-key",
 	}
 	target := modelProbeTarget(configured, runtime)
 	if target.Endpoint != configured.Endpoint || target.APIKey != configured.APIKey {
@@ -200,7 +200,7 @@ func TestModelVerificationProbesOAuthRuntimeResponses(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/responses":
 			atomic.AddInt32(&responsesProbes, 1)
-			if r.Header.Get("Authorization") != "Bearer ccl-local-key" {
+			if r.Header.Get("Authorization") != "Bearer gbx-local-key" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -223,7 +223,7 @@ func TestModelVerificationProbesOAuthRuntimeResponses(t *testing.T) {
 	// APIKey rewritten, so it still carries OAuthProvider.
 	runtime := provider.Provider{
 		Name: "work", Type: "openai_responses", Endpoint: loopback.URL + "/v1",
-		APIKey: "ccl-local-key", OAuthProvider: "grok", OAuthAccountCredential: "grok-user.json",
+		APIKey: "gbx-local-key", OAuthProvider: "grok", OAuthAccountCredential: "grok-user.json",
 	}
 	models := []string{"claude-sonnet-test", "gpt-test"}
 

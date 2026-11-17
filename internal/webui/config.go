@@ -24,7 +24,7 @@ import (
 // returns. The key itself never leaves the machine.
 const apiMaskSuffix = 4
 
-// ConfigView is the JSON shape of ccl's own configuration.
+// ConfigView is the JSON shape of gbx's own configuration.
 type ConfigView struct {
 	Active    ActiveView              `json:"active"`
 	Lang      string                  `json:"lang"`
@@ -988,7 +988,7 @@ func validatorForConfig(cfg *provider.Config, name string) error {
 	}
 	p, ok := cfg.Providers[name]
 	if !ok {
-		return fmt.Errorf("provider %q not found; use ccl ls or ccl set", name)
+		return fmt.Errorf("provider %q not found; use gbx ls or gbx set", name)
 	}
 	p.Name = name
 	return provider.ValidateRuntime(p)

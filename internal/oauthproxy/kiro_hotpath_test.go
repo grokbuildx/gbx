@@ -165,7 +165,7 @@ func newKiroUpstreamTestService(t *testing.T, handler http.HandlerFunc) (*kiroSe
 
 	upstream := httptest.NewServer(handler)
 	service := &kiroService{
-		apiKey:           "ccl-test-key",
+		apiKey:           "gbx-test-key",
 		models:           kiroRuntimeModels("claude-sonnet-4.6"),
 		pool:             newKiroCredentialPool(authDir, ""),
 		client:           upstream.Client(),

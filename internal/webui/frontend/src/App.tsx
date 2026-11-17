@@ -52,7 +52,7 @@ function writeStorage(key: string, value: string) {
 // The theme follows the system until the user picks one with the switch.
 function useTheme(): [Theme, () => void] {
   const media = useMemo(() => window.matchMedia("(prefers-color-scheme: dark)"), []);
-  const [choice, setChoice] = useState(() => readStorage("ccl-web-theme"));
+  const [choice, setChoice] = useState(() => readStorage("gbx-web-theme"));
   const [system, setSystem] = useState<Theme>(media.matches ? "dark" : "light");
   useEffect(() => {
     const onChange = (event: MediaQueryListEvent) => setSystem(event.matches ? "dark" : "light");
@@ -67,7 +67,7 @@ function useTheme(): [Theme, () => void] {
   const toggle = () => {
     const next = theme === "dark" ? "light" : "dark";
     setChoice(next);
-    writeStorage("ccl-web-theme", next);
+    writeStorage("gbx-web-theme", next);
   };
   return [theme, toggle];
 }
@@ -145,12 +145,12 @@ export function App() {
   const [settingsOpen, setSettingsOpenState] = useState<false | "general" | "providers" | "login" | "connectors" | "instructions" | "cloud">(false);
   const setSettingsOpen = (open: boolean | "general" | "providers" | "login" | "connectors" | "instructions" | "cloud") => setSettingsOpenState(open === true ? "general" : open);
   const [mobileSidebar, setMobileSidebar] = useState(false);
-  const [collapsed, setCollapsed] = useState(() => readStorage("ccl-web-sidebar") === "collapsed");
+  const [collapsed, setCollapsed] = useState(() => readStorage("gbx-web-sidebar") === "collapsed");
   // The side panel's tab; null hides it. Wide when a file or diff is open.
   // On a phone the panel covers the thread, so it starts closed there.
   const [panel, setPanel] = useState<PanelTab | null>(() => {
     if (narrowScreen()) return null;
-    const saved = readStorage("ccl-web-panel");
+    const saved = readStorage("gbx-web-panel");
     return saved === "closed" ? null : saved === "files" || saved === "git" || saved === "agents" ? saved : "overview";
   });
   const [panelWide, setPanelWide] = useState(false);
@@ -185,7 +185,7 @@ export function App() {
   const [canAddWorkspace, setCanAddWorkspace] = useState(false);
   // The folder picker: closed, "open" or "create" (a new project folder).
   const [folderPicker, setFolderPicker] = useState<false | "open" | "create">(false);
-  const [chosenWorkspace, setChosenWorkspace] = useState(() => readStorage("ccl-web-workspace"));
+  const [chosenWorkspace, setChosenWorkspace] = useState(() => readStorage("gbx-web-workspace"));
   // What the main column shows: the conversation, the projects page, or the
   // active project's page.
   const [page, setPage] = useState<"chat" | "projects" | "project">("chat");
@@ -221,24 +221,24 @@ export function App() {
   // The tab bar: open conversations (the current one is currentId), the
   // new-conversation draft, and terminals. Only the active conversation streams
   // its events; the others show the running state of the session list.
-  const [openIds, setOpenIds] = useState<string[]>(() => readList<string>("ccl-web-tabs").filter((id) => typeof id === "string"));
-  const [termTabs, setTermTabs] = useState<TermTab[]>(() => readList<TermTab>("ccl-web-terminals").filter((tab) => tab && typeof tab.key === "string"));
+  const [openIds, setOpenIds] = useState<string[]>(() => readList<string>("gbx-web-tabs").filter((id) => typeof id === "string"));
+  const [termTabs, setTermTabs] = useState<TermTab[]>(() => readList<TermTab>("gbx-web-terminals").filter((tab) => tab && typeof tab.key === "string"));
   // The terminal tab in front; null shows the conversation.
   const [activeTerm, setActiveTerm] = useState<string | null>(null);
   // Sub-agent tabs, by conversation: they sit in a group after its tab.
   const [agentTabs, setAgentTabs] = useState<Record<string, AgentTab[]>>(() => {
     try {
-      const value = JSON.parse(readStorage("ccl-web-agent-tabs") || "{}");
+      const value = JSON.parse(readStorage("gbx-web-agent-tabs") || "{}");
       return value && typeof value === "object" && !Array.isArray(value) ? value : {};
     } catch {
       return {};
     }
   });
-  useEffect(() => writeStorage("ccl-web-agent-tabs", JSON.stringify(agentTabs)), [agentTabs]);
+  useEffect(() => writeStorage("gbx-web-agent-tabs", JSON.stringify(agentTabs)), [agentTabs]);
   // The draft tab was closed while terminals stay open.
   const [draftOpen, setDraftOpen] = useState(true);
-  useEffect(() => writeStorage("ccl-web-tabs", JSON.stringify(openIds)), [openIds]);
-  useEffect(() => writeStorage("ccl-web-terminals", JSON.stringify(termTabs)), [termTabs]);
+  useEffect(() => writeStorage("gbx-web-tabs", JSON.stringify(openIds)), [openIds]);
+  useEffect(() => writeStorage("gbx-web-terminals", JSON.stringify(termTabs)), [termTabs]);
 
   const lang = resolveLang(config?.lang);
   const i18n = useMemo(() => ({ lang, t: translator(lang) }), [lang]);
@@ -309,7 +309,7 @@ export function App() {
     }
   }, [api]);
 
-  // Boot: a loopback ccl serve asks for no token at all.
+  // Boot: a loopback gbx serve asks for no token at all.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -328,7 +328,7 @@ export function App() {
         setSessions(list);
         // Open the latest conversation of the workspace chosen last time.
         // A conversation of a folder no longer served is not opened.
-        const chosen = workspaces.find((workspace) => workspace.id === readStorage("ccl-web-workspace")) || workspaces[0];
+        const chosen = workspaces.find((workspace) => workspace.id === readStorage("gbx-web-workspace")) || workspaces[0];
         const first = list.find((session) => session.workspace === chosen?.path);
         setCurrentId((current) => current || first?.id || null);
         // The workspace effect loads git status once the page is ready.
@@ -457,7 +457,7 @@ export function App() {
   const chooseWorkspace = (id: string) => {
     if (page === "project" && id !== activeWorkspace?.id && !canLeave()) return;
     setChosenWorkspace(id);
-    writeStorage("ccl-web-workspace", id);
+    writeStorage("gbx-web-workspace", id);
     // A conversation of another workspace is not where the user is now.
     if (currentSession && workspaceList.find((workspace) => workspace.id === id)?.path !== currentSession.workspace) setCurrentId(null);
   };
@@ -474,7 +474,7 @@ export function App() {
     await loadWorkspaces();
     setCurrentId(null);
     setChosenWorkspace(added.id);
-    writeStorage("ccl-web-workspace", added.id);
+    writeStorage("gbx-web-workspace", added.id);
     setFolderPicker(false);
     setMobileSidebar(false);
     // From the projects page a folder opens as a project; elsewhere it starts
@@ -517,7 +517,7 @@ export function App() {
     const owner = session && workspaceList.find((workspace) => workspace.path === session.workspace);
     if (owner) {
       setChosenWorkspace(owner.id);
-      writeStorage("ccl-web-workspace", owner.id);
+      writeStorage("gbx-web-workspace", owner.id);
     }
   };
 
@@ -607,7 +607,7 @@ export function App() {
   // Tell the user when a turn ends while the page is in the background.
   const wasRunning = useRef(false);
   useEffect(() => {
-    const title = current?.title || "ccl";
+    const title = current?.title || "gbx";
     document.title = conversation.running ? `● ${title}` : title;
     if (wasRunning.current && !conversation.running && document.hidden && typeof Notification !== "undefined" && Notification.permission === "granted") {
       const last = [...items].reverse().find((item) => item.kind === "turn-end");
@@ -757,7 +757,7 @@ export function App() {
     }
     const next = !collapsed;
     setCollapsed(next);
-    writeStorage("ccl-web-sidebar", next ? "collapsed" : "");
+    writeStorage("gbx-web-sidebar", next ? "collapsed" : "");
   };
 
   const openPanel = (tab: PanelTab) => {
@@ -765,7 +765,7 @@ export function App() {
     setPanel(next);
     setPanelWide(false);
     // A phone's choice does not change what the desktop reopens.
-    if (!narrowScreen()) writeStorage("ccl-web-panel", next || "closed");
+    if (!narrowScreen()) writeStorage("gbx-web-panel", next || "closed");
   };
   const togglePanel = () => openPanel(panel || "overview");
 

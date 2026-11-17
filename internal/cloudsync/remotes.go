@@ -12,7 +12,7 @@ import (
 // ListRemotes returns the locally configured cloud remotes in stable order.
 // It does not contact any provider.
 func ListRemotes() ([]RemoteInfo, error) {
-	localDir, err := cclDirectory()
+	localDir, err := gbxDirectory()
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func ListRemotes() ([]RemoteInfo, error) {
 }
 
 func HasActiveProfile() (bool, error) {
-	localDir, err := cclDirectory()
+	localDir, err := gbxDirectory()
 	if err != nil {
 		return false, err
 	}
@@ -65,7 +65,7 @@ func HasActiveProfile() (bool, error) {
 }
 
 func SetPrimaryRemote(alias string) error {
-	localDir, err := cclDirectory()
+	localDir, err := gbxDirectory()
 	if err != nil {
 		return err
 	}
@@ -82,7 +82,7 @@ func SetPrimaryRemote(alias string) error {
 }
 
 func RenameRemote(alias, newAlias string) error {
-	localDir, err := cclDirectory()
+	localDir, err := gbxDirectory()
 	if err != nil {
 		return err
 	}
@@ -124,7 +124,7 @@ func RenameRemote(alias, newAlias string) error {
 }
 
 func SetRemoteMirror(alias string, enabled bool) error {
-	localDir, err := cclDirectory()
+	localDir, err := gbxDirectory()
 	if err != nil {
 		return err
 	}
@@ -283,7 +283,7 @@ func prepareLogin(alias string) (string, string, cloudRegistry, bool, error) {
 	if err != nil {
 		return "", "", cloudRegistry{}, false, err
 	}
-	localDir, err := cclDirectory()
+	localDir, err := gbxDirectory()
 	if err != nil {
 		return "", "", cloudRegistry{}, false, err
 	}
@@ -364,7 +364,7 @@ func openRemoteProfile(remoteDir string) (remoteProfile, []byte, bool, error) {
 			return remoteProfile{}, nil, false, err
 		}
 		if !unused {
-			return remoteProfile{}, nil, false, fmt.Errorf("the cloud sync profile stores no key; delete ccl's cloud data (ccl cloud logout --delete-remote) and log in again")
+			return remoteProfile{}, nil, false, fmt.Errorf("the cloud sync profile stores no key; delete gbx's cloud data (gbx cloud logout --delete-remote) and log in again")
 		}
 	case !os.IsNotExist(err):
 		return remoteProfile{}, nil, false, err
@@ -504,7 +504,7 @@ func shortIdentifier(value string) string {
 }
 
 func LogoutRemote(ctx context.Context, alias string, options LogoutOptions) (LogoutResult, error) {
-	localDir, err := cclDirectory()
+	localDir, err := gbxDirectory()
 	if err != nil {
 		return LogoutResult{}, err
 	}
@@ -659,7 +659,7 @@ func deleteICloudRemoteData(path, profileID string) error {
 }
 
 func PrimaryRemoteAlias() (string, error) {
-	localDir, err := cclDirectory()
+	localDir, err := gbxDirectory()
 	if err != nil {
 		return "", err
 	}
@@ -672,7 +672,7 @@ func PrimaryRemoteAlias() (string, error) {
 }
 
 func remoteAliasesForPush(all bool, alias string) ([]string, error) {
-	localDir, err := cclDirectory()
+	localDir, err := gbxDirectory()
 	if err != nil {
 		return nil, err
 	}

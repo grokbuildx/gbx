@@ -23,7 +23,7 @@ func operationMetadataPath(localDir, operationID string) string {
 }
 
 func operationSnapshotPath(localDir, operationID string) string {
-	return filepath.Join(operationDirectory(localDir, operationID), "snapshot.ccl")
+	return filepath.Join(operationDirectory(localDir, operationID), "snapshot.gbx")
 }
 
 func targetRemoteIDs(localDir string, aliases []string) ([]string, error) {
@@ -76,7 +76,7 @@ func resumePushOperation(
 			continue
 		}
 		if match != nil {
-			return pushOperation{}, false, fmt.Errorf("multiple matching cloud push operations require `ccl doctor`")
+			return pushOperation{}, false, fmt.Errorf("multiple matching cloud push operations require `gbx doctor`")
 		}
 		copy := operation
 		match = &copy

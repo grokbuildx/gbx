@@ -256,7 +256,7 @@ func (remote *googleDriveRemote) deleteAllApplicationData(ctx context.Context) e
 		return err
 	}
 	for _, file := range files {
-		if file.Name != googleBundleName && !strings.HasPrefix(file.Name, "ccl-pair-") {
+		if file.Name != googleBundleName && !strings.HasPrefix(file.Name, "gbx-pair-") {
 			continue
 		}
 		request, err := http.NewRequestWithContext(

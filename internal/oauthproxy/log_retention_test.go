@@ -23,22 +23,22 @@ func TestPruneLogDirKeepsRecentOwnLogs(t *testing.T) {
 		}
 		return path
 	}
-	old := write("ccl-debug-claude_old.log", 40*24*time.Hour)
+	old := write("gbx-debug-claude_old.log", 40*24*time.Hour)
 	foreign := write("notes.log", 40*24*time.Hour)
-	other := write("ccl-debug-claude_old.txt", 40*24*time.Hour)
+	other := write("gbx-debug-claude_old.txt", 40*24*time.Hour)
 	var recent []string
 	for i := range 4 {
-		recent = append(recent, write(fmt.Sprintf("ccl-debug-claude_%d.log", i), time.Duration(i+1)*time.Hour))
+		recent = append(recent, write(fmt.Sprintf("gbx-debug-claude_%d.log", i), time.Duration(i+1)*time.Hour))
 	}
 
-	pruneLogDir(dir, "ccl-debug", 30*24*time.Hour, 3, now)
+	pruneLogDir(dir, "gbx-debug", 30*24*time.Hour, 3, now)
 
 	gone := func(path string) bool { _, err := os.Stat(path); return os.IsNotExist(err) }
 	if !gone(old) {
 		t.Error("a log past the age limit survived")
 	}
 	if gone(foreign) || gone(other) {
-		t.Error("a file that is not a ccl session log was removed")
+		t.Error("a file that is not a gbx session log was removed")
 	}
 	// Newest three kept; the fourth (oldest of the recent) dropped by count.
 	for i, path := range recent {

@@ -37,7 +37,7 @@ func TestStreamsRequireTerminalEvent(t *testing.T) {
 }
 
 func TestResponsesDoesNotReplayOtherAdapterSignatures(t *testing.T) {
-	for _, sig := range []string{"kiro", "gemini", "qoder", "ccl-openai-chat-signature-unavailable", "ccl-anthropic-signature-unavailable", "ccl-gemini-part-v1:abc", "legacy+/="} {
+	for _, sig := range []string{"kiro", "gemini", "qoder", "gbx-openai-chat-signature-unavailable", "gbx-anthropic-signature-unavailable", "gbx-gemini-part-v1:abc", "legacy+/="} {
 		turn := conversationTurn{
 			Role: "assistant",
 			Parts: []conversationPart{

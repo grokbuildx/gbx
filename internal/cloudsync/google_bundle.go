@@ -208,10 +208,10 @@ func validBundlePath(name string) bool {
 	if name == profileFileName || name == verifierFileName || name == indexFileName {
 		return true
 	}
-	if path.Dir(name) != snapshotsDirectory || path.Ext(name) != ".ccl" {
+	if path.Dir(name) != snapshotsDirectory || path.Ext(name) != ".gbx" {
 		return false
 	}
-	id := strings.TrimSuffix(path.Base(name), ".ccl")
+	id := strings.TrimSuffix(path.Base(name), ".gbx")
 	if len(id) != 64 {
 		return false
 	}

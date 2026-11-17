@@ -12,7 +12,7 @@ import (
 
 func seedCredentials(t *testing.T, files ...string) string {
 	t.Helper()
-	dir := filepath.Join(os.Getenv("HOME"), ".ccl", "auth")
+	dir := filepath.Join(os.Getenv("HOME"), ".gbx", "auth")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -1,9 +1,9 @@
-// Package webui serves ccl conversations over HTTP and Server-Sent Events.
+// Package webui serves gbx conversations over HTTP and Server-Sent Events.
 //
-// A conversation is a series of ccl-launched Grok Build ACP processes that
+// A conversation is a series of gbx-launched Grok Build ACP processes that
 // share one ACP session id and are resumed with LoadSession. Everything about
 // the conversation (its provider, model, effort, history) lives under
-// ~/.ccl/serve/sessions; the user's ~/.ccl/config.yaml is only read unless the
+// ~/.gbx/serve/sessions; the user's ~/.gbx/config.yaml is only read unless the
 // settings UI updates it through config.Update.
 package webui
 
@@ -42,7 +42,7 @@ type Meta struct {
 	Model    string `json:"model"`
 	Effort   string `json:"effort"`
 	// PermissionMode is the permission mode of the next turn; empty uses
-	// the server default (bypassPermissions when ccl's bypass mode is on).
+	// the server default (bypassPermissions when gbx's bypass mode is on).
 	PermissionMode string `json:"permissionMode,omitempty"`
 	// AgentSessionID is the ACP session id Grok Build created for this
 	// conversation. Subsequent turns load it instead of starting a new session.
@@ -136,13 +136,13 @@ func NewStore(root string) (*Store, error) {
 	return &Store{root: root, open: make(map[string]*Session)}, nil
 }
 
-// DefaultRoot is where ccl serve keeps conversations.
+// DefaultRoot is where gbx serve keeps conversations.
 func DefaultRoot() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".ccl", "serve", "sessions"), nil
+	return filepath.Join(home, ".gbx", "serve", "sessions"), nil
 }
 
 // Root is the directory holding every conversation.

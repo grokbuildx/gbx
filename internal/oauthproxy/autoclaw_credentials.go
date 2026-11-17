@@ -39,8 +39,8 @@ var (
 )
 
 // ImportAutoClawCredential copies the completed AutoClaw desktop login into
-// ~/.ccl/auth. This is the non-browser compatibility path used by
-// `ccl oauth autoclaw --from-desktop`; `ccl oauth autoclaw` performs a fresh browser login.
+// ~/.gbx/auth. This is the non-browser compatibility path used by
+// `gbx oauth autoclaw --from-desktop`; `gbx oauth autoclaw` performs a fresh browser login.
 func ImportAutoClawCredential(ctx context.Context, authDir string) (LoginResult, error) {
 	state, sourcePath, err := loadAutoClawDesktopAuth(ctx)
 	if err != nil {
@@ -77,7 +77,7 @@ func newAutoClawOAuthAuthorizer(credentialFile string) (*autoClawOAuthAuthorizer
 	}
 	fileName := filepath.Base(strings.TrimSpace(credentialFile))
 	if fileName == "" || fileName == "." {
-		return nil, errors.New("AutoClaw provider is not bound to a credential file; run `ccl oauth autoclaw`")
+		return nil, errors.New("AutoClaw provider is not bound to a credential file; run `gbx oauth autoclaw`")
 	}
 	authorizer := &autoClawOAuthAuthorizer{
 		path:      filepath.Join(authDir, fileName),
@@ -160,7 +160,7 @@ func (a *autoClawOAuthAuthorizer) authorize(ctx context.Context, forceRefresh bo
 		return "", fmt.Errorf("AutoClaw credential %s is disabled", credential.fileName)
 	}
 	if strings.TrimSpace(credential.accessToken) == "" {
-		return "", fmt.Errorf("AutoClaw credential %s has no access token; run `ccl oauth autoclaw`", credential.fileName)
+		return "", fmt.Errorf("AutoClaw credential %s has no access token; run `gbx oauth autoclaw`", credential.fileName)
 	}
 	forceRefresh = forceRefresh && oauthTokenStillRejected(ctx, credential.accessToken)
 	if forceRefresh || autoClawTokenNeedsRefresh(credential) {
@@ -176,7 +176,7 @@ func (a *autoClawOAuthAuthorizer) load() (*autoClawCredential, error) {
 	raw, err := os.ReadFile(a.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("no AutoClaw credential %s; run `ccl oauth autoclaw` first", a.fileName())
+			return nil, fmt.Errorf("no AutoClaw credential %s; run `gbx oauth autoclaw` first", a.fileName())
 		}
 		return nil, fmt.Errorf("read AutoClaw credential %s: %w", a.fileName(), err)
 	}
@@ -208,10 +208,10 @@ func (a *autoClawOAuthAuthorizer) load() (*autoClawCredential, error) {
 	// 401 does not fail with a less actionable missing-field error.
 	legacyStatic := credential.refreshToken == "" && credential.deviceID == ""
 	if !credential.disabled && credential.accessToken == "" {
-		return nil, fmt.Errorf("AutoClaw credential %s has no access token; run `ccl oauth autoclaw` again", credential.fileName)
+		return nil, fmt.Errorf("AutoClaw credential %s has no access token; run `gbx oauth autoclaw` again", credential.fileName)
 	}
 	if !credential.disabled && !legacyStatic && (credential.refreshToken == "" || credential.deviceID == "") {
-		return nil, fmt.Errorf("AutoClaw credential %s is incomplete; run `ccl oauth autoclaw` again", credential.fileName)
+		return nil, fmt.Errorf("AutoClaw credential %s is incomplete; run `gbx oauth autoclaw` again", credential.fileName)
 	}
 	return credential, nil
 }
@@ -278,7 +278,7 @@ func (a *autoClawOAuthAuthorizer) refresh(ctx context.Context, observed *autoCla
 	}
 	defer release()
 
-	// Another CCL process may have refreshed and atomically replaced the file
+	// Another GBX process may have refreshed and atomically replaced the file
 	// while this caller was waiting for the cross-process lock. Always reload
 	// under the lock and reuse that result instead of replaying a rotating refresh
 	// token. A short last_refresh window also coalesces simultaneous 401s within
@@ -301,7 +301,7 @@ func (a *autoClawOAuthAuthorizer) refresh(ctx context.Context, observed *autoCla
 		return credential, nil
 	}
 	if strings.TrimSpace(credential.refreshToken) == "" {
-		return nil, fmt.Errorf("AutoClaw credential %s has no refresh token; run `ccl oauth autoclaw` again", credential.fileName)
+		return nil, fmt.Errorf("AutoClaw credential %s has no refresh token; run `gbx oauth autoclaw` again", credential.fileName)
 	}
 	timestamp := time.Now().Unix()
 	a.version = autoClawEffectiveVersion(credential.version)
@@ -377,7 +377,7 @@ func autoClawRecentlyRefreshed(credential *autoClawCredential, window time.Durat
 	return age >= 0 && age <= window
 }
 
-// acquireAutoClawRefreshLock serializes refresh-token rotation across CCL
+// acquireAutoClawRefreshLock serializes refresh-token rotation across GBX
 // processes. O_EXCL is portable and atomic on the local filesystems where the
 // credential lives. The owner marker prevents an old process from removing a
 // replacement lock after stale-lock recovery.

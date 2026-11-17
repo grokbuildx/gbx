@@ -56,7 +56,7 @@ func (m *Manager) RunMenuBar(ctx context.Context, id string) error {
 }
 
 func (m *Manager) startMenuBar(id string) func() {
-	if os.Getenv("CCL_PROXY_NO_MENUBAR") == "1" {
+	if os.Getenv("GBX_PROXY_NO_MENUBAR") == "1" {
 		return func() {}
 	}
 	executable, err := os.Executable()
@@ -66,7 +66,7 @@ func (m *Manager) startMenuBar(id string) func() {
 	command := exec.Command(executable, "codex", "menubar", "--instance", id)
 	command.Stdout, command.Stderr = os.Stderr, os.Stderr
 	if err := command.Start(); err != nil {
-		fmt.Fprintln(os.Stderr, "ccl: menu bar unavailable:", err)
+		fmt.Fprintln(os.Stderr, "gbx: menu bar unavailable:", err)
 		return func() {}
 	}
 	done := make(chan error, 1)
@@ -83,10 +83,10 @@ func (m *Manager) startMenuBar(id string) func() {
 }
 
 func ShowMenuError(message string) {
-	if os.Getenv("CCL_PROXY_NO_MENUBAR") == "1" {
+	if os.Getenv("GBX_PROXY_NO_MENUBAR") == "1" {
 		return
 	}
-	script := `function run(argv) { const app = Application.currentApplication(); app.includeStandardAdditions = true; app.displayAlert('CCL Codex', {message: argv[0], as: 'critical'}); }`
+	script := `function run(argv) { const app = Application.currentApplication(); app.includeStandardAdditions = true; app.displayAlert('GBX Codex', {message: argv[0], as: 'critical'}); }`
 	command := exec.Command("/usr/bin/osascript", "-l", "JavaScript", "-", message)
 	command.Stdin = strings.NewReader(script)
 	_ = command.Run()

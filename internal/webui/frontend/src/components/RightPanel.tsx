@@ -21,7 +21,7 @@ interface Props {
 }
 
 // The side panel mirrors claude.ai/code's environment / context / changes
-// cards with what a ccl session has: where it runs, what it spent, and the
+// cards with what a gbx session has: where it runs, what it spent, and the
 // connectors Claude Code loaded.
 export function RightPanel({ session, providers, workspace, capabilities, git, onOpenChange, api, refreshKey, running }: Props) {
   const { t } = useI18n();

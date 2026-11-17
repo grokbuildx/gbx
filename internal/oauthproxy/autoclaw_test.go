@@ -174,7 +174,7 @@ func TestAutoClawRefreshCoalescesAcrossAuthorizers(t *testing.T) {
 func TestAutoClawManagedChatRuntimeUsesDesktopContract(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestAutoClawManagedChatRuntimeUsesDesktopContract(t *testing.T) {
 func TestAutoClawManagedChatDoesNotReplayAmbiguousServerErrors(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatal(err)
 	}

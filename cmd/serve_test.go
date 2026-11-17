@@ -35,10 +35,10 @@ func TestServeCommandFlagsAndValidation(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	// --host was retired: ccl serve always binds 127.0.0.1 (or a local Unix socket).
+	// --host was retired: gbx serve always binds 127.0.0.1 (or a local Unix socket).
 	cmd := newServeCommand()
 	if cmd.Flags().Lookup("host") != nil {
-		t.Fatal("ccl serve still registers --host")
+		t.Fatal("gbx serve still registers --host")
 	}
 
 	for _, args := range [][]string{
@@ -65,12 +65,12 @@ func TestServeCommandSocketLifecycle(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	shortDir, err := os.MkdirTemp("", "ccl-serve")
+	shortDir, err := os.MkdirTemp("", "gbx-serve")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(shortDir) })
-	sock := filepath.Join(shortDir, "ccl.sock")
+	sock := filepath.Join(shortDir, "gbx.sock")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -90,7 +90,7 @@ func TestServeCommandSocketLifecycle(t *testing.T) {
 	for !strings.Contains(stdout.String(), "\n") {
 		if time.Now().After(deadline) {
 			cancel()
-			t.Fatal("ccl serve --socket did not print ready JSON")
+			t.Fatal("gbx serve --socket did not print ready JSON")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -113,6 +113,6 @@ func TestServeCommandSocketLifecycle(t *testing.T) {
 			t.Fatalf("serve exit = %v", runErr)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("ccl serve did not exit on context cancel")
+		t.Fatal("gbx serve did not exit on context cancel")
 	}
 }

@@ -31,7 +31,7 @@ const (
 	kiroSocialProfileARN  = "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK"
 	kiroDeviceGrantType   = "urn:ietf:params:oauth:grant-type:device_code"
 	kiroRefreshGrantType  = "refresh_token"
-	kiroOAuthClientName   = "ccl"
+	kiroOAuthClientName   = "gbx"
 	kiroOAuthRequestLimit = 30 * time.Second
 	kiroSocialLoginLimit  = 10 * time.Minute
 )
@@ -426,11 +426,11 @@ func randomKiroOAuthValue(size int) (string, error) {
 func writeKiroOAuthCallbackPage(writer http.ResponseWriter, success bool) {
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if success {
-		_, _ = io.WriteString(writer, "<!doctype html><meta charset=\"utf-8\"><title>Kiro login complete</title><h2>Kiro login complete</h2><p>You can close this tab and return to CCL.</p>")
+		_, _ = io.WriteString(writer, "<!doctype html><meta charset=\"utf-8\"><title>Kiro login complete</title><h2>Kiro login complete</h2><p>You can close this tab and return to GBX.</p>")
 		return
 	}
 	writer.WriteHeader(http.StatusBadRequest)
-	_, _ = io.WriteString(writer, "<!doctype html><meta charset=\"utf-8\"><title>Kiro login failed</title><h2>Kiro login failed</h2><p>Return to CCL for details.</p>")
+	_, _ = io.WriteString(writer, "<!doctype html><meta charset=\"utf-8\"><title>Kiro login failed</title><h2>Kiro login failed</h2><p>Return to GBX for details.</p>")
 }
 
 func exchangeKiroSocialCode(ctx context.Context, client *http.Client, code, verifier, redirectURI string) (kiroSocialTokenResponse, error) {

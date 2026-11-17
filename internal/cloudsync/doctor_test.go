@@ -24,12 +24,12 @@ func newCloudDoctorFixture(t *testing.T) cloudDoctorFixture {
 	home := t.TempDir()
 	drive := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", drive)
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", drive)
 	writeSyncFixture(t, home)
 	if _, err := LoginICloudNamed("personal"); err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	local := filepath.Join(home, ".ccl")
+	local := filepath.Join(home, ".gbx")
 	registry, err := loadRegistry(local)
 	if err != nil {
 		t.Fatalf("load registry: %v", err)
@@ -281,20 +281,20 @@ func TestDefaultICloudDirectoryResolvesTheExpectedPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", "relative/path")
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", "relative/path")
 	if _, err := defaultICloudDirectory(); err == nil ||
 		!strings.Contains(err.Error(), "must be an absolute path") {
 		t.Fatalf("relative override error = %v", err)
 	}
 
 	drive := t.TempDir()
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", drive)
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", drive)
 	resolved, err := defaultICloudDirectory()
 	if err != nil || resolved != filepath.Join(drive, remoteDirectory) {
 		t.Fatalf("override path = %q, %v", resolved, err)
 	}
 
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", "")
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", "")
 	if _, err := defaultICloudDirectory(); err == nil ||
 		!strings.Contains(err.Error(), "iCloud Drive is unavailable") {
 		t.Fatalf("missing iCloud error = %v", err)

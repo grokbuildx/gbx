@@ -21,15 +21,15 @@ func newProviderListCommand(use string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   use,
 		Short: "List registered providers",
-		Long: `List providers from ~/.ccl/config.yaml. The USED BY column shows which
+		Long: `List providers from ~/.gbx/config.yaml. The USED BY column shows which
 entry is selected for Grok Build or Codex. The default row uses Grok Build's own login.
 
 -a/--all switches the table to a detailed view with full model pools.
 
 Examples:
-  ccl ls
-  ccl ls -a
-  ccl provider ls
+  gbx ls
+  gbx ls -a
+  gbx provider ls
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
@@ -37,7 +37,7 @@ Examples:
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 
-			return printProviders(cmd.OutOrStdout(), cfg, showAll, "No providers added yet. Use 'ccl set' to add one.", "Registered providers:")
+			return printProviders(cmd.OutOrStdout(), cfg, showAll, "No providers added yet. Use 'gbx set' to add one.", "Registered providers:")
 		},
 	}
 	cmd.Flags().BoolVarP(&showAll, "all", "a", false, "Detailed view with full model pools")

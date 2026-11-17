@@ -78,7 +78,7 @@ func TestLoginWorkBuddyPollsAndPersistsBoundCredential(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestLoginWorkBuddyPollsAndPersistsBoundCredential(t *testing.T) {
 	}
 }
 
-func TestWorkBuddyRuntimeUsesCCLChatAdapterAndRefreshesOnce(t *testing.T) {
+func TestWorkBuddyRuntimeUsesGBXChatAdapterAndRefreshesOnce(t *testing.T) {
 	var chatAttempts atomic.Int32
 	var refreshes atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -166,7 +166,7 @@ func TestWorkBuddyRuntimeUsesCCLChatAdapterAndRefreshesOnce(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestWorkBuddyDiscoverModelsDoesNotRefreshRestrictedAccount(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func testWorkBuddyRuntimeProviderError(t *testing.T, upstreamStatus int) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -509,7 +509,7 @@ func TestWorkBuddyChinaDeploymentIsSeparateAccountStore(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -897,7 +897,7 @@ func TestWorkBuddyRuntimeSanitizesOutboundUpstreamRequest(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -174,7 +174,7 @@ func TestCodexBridgeRelaysRateLimitBeforeResponseStarts(t *testing.T) {
 		w.Header().Set("Retry-After", "2")
 		writeJSON(w, 429, map[string]any{"type": "error", "error": map[string]any{"type": "rate_limit_error", "message": "model temporarily resource limited (retry after 2s)"}})
 	}, "openai", Options{})
-	response := postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "input": "fixture", "stream": true})
+	response := postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "input": "fixture", "stream": true})
 	raw, _ := io.ReadAll(response.Body)
 	if response.StatusCode != 429 || response.Header.Get("Retry-After") != "2" || !strings.Contains(string(raw), "rate_limit_error") || strings.Contains(string(raw), "response.created") {
 		t.Fatalf("retryable HTTP rejection became a disconnected Responses stream: %d %s", response.StatusCode, raw)
@@ -212,7 +212,7 @@ func TestCodexBridgeCompactionTriggerReturnsReplayableSummary(t *testing.T) {
 			writeChatText(w, r, "continued")
 		}
 	}, "openai", Options{})
-	first := responseObject(t, postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "input": []any{
+	first := responseObject(t, postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "input": []any{
 		map[string]any{"type": "message", "role": "user", "content": "keep-this-goal"},
 		map[string]any{"type": "compaction_trigger"},
 	}}))
@@ -224,7 +224,7 @@ func TestCodexBridgeCompactionTriggerReturnsReplayableSummary(t *testing.T) {
 	if item["type"] != "compaction" || item["encrypted_content"] == "" {
 		t.Fatalf("compaction item = %+v", item)
 	}
-	second := responseObject(t, postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "input": []any{
+	second := responseObject(t, postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "input": []any{
 		item,
 		map[string]any{"type": "message", "role": "user", "content": "continue"},
 	}}))
@@ -253,7 +253,7 @@ func TestCodexCompactionSummarizesToolHistoryWithoutLiveCalls(t *testing.T) {
 		}
 		writeChatText(w, r, "summarized tools")
 	}, "openai", Options{})
-	result := responseObject(t, postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "input": []any{
+	result := responseObject(t, postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "input": []any{
 		map[string]any{"role": "user", "content": "inspect and patch"},
 		map[string]any{"type": "tool_search_call", "call_id": "call_search", "execution": "client", "arguments": map[string]any{"query": "shipping_eta"}},
 		map[string]any{"type": "tool_search_output", "call_id": "call_search", "execution": "client", "tools": []any{largeToolCatalog()[1]}},
@@ -273,7 +273,7 @@ func TestCodexBridgeToolsContinueWithoutNativeCredentialLeak(t *testing.T) {
 	var seenToolResult atomic.Bool
 	g := fixtureGateway(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer fake-provider-key" || r.Header.Get("Cookie") != "" || r.Header.Get("Chatgpt-Account-Id") != "" || r.Header.Get("X-Api-Key") != "" {
-			t.Error("native credentials crossed the CCL route")
+			t.Error("native credentials crossed the GBX route")
 		}
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -291,13 +291,13 @@ func TestCodexBridgeToolsContinueWithoutNativeCredentialLeak(t *testing.T) {
 		writeChatText(w, r, "continued")
 	}, "openai", Options{Desktop: true})
 	tools := []any{map[string]any{"type": "function", "name": "read_file", "parameters": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}}}}
-	first := responseObject(t, postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "input": "read the fixture", "tools": tools}))
+	first := responseObject(t, postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "input": "read the fixture", "tools": tools}))
 	output := first["output"].([]any)
 	call := output[0].(map[string]any)
 	if call["type"] != "function_call" || call["name"] != "read_file" || call["call_id"] != "call_1" {
 		t.Fatalf("invalid tool response: %v", call)
 	}
-	second := responseObject(t, postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "previous_response_id": first["id"], "input": []any{map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "tool-result-fixture"}}, "tools": tools}))
+	second := responseObject(t, postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "previous_response_id": first["id"], "input": []any{map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "tool-result-fixture"}}, "tools": tools}))
 	if !seenToolResult.Load() || second["status"] != "completed" {
 		t.Fatal("tool continuation lost history")
 	}
@@ -317,7 +317,7 @@ func TestCodexBridgeFlushesBeforeProviderCompletes(t *testing.T) {
 		}
 		finishChatFixture(w)
 	}, "openai", Options{Desktop: true})
-	response := postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "input": "fixture", "stream": true, "tools": largeToolCatalog()})
+	response := postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "input": "fixture", "stream": true, "tools": largeToolCatalog()})
 	delta := make(chan string, 1)
 	go func() {
 		scanner := bufio.NewScanner(response.Body)
@@ -339,7 +339,7 @@ func TestCodexBridgeFlushesBeforeProviderCompletes(t *testing.T) {
 	}
 }
 
-func TestCodexNativeRoutesAndUnknownCCLAlias(t *testing.T) {
+func TestCodexNativeRoutesAndUnknownGBXAlias(t *testing.T) {
 	var nativeRequests, customRequests atomic.Int32
 	native := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nativeRequests.Add(1)
@@ -354,7 +354,7 @@ func TestCodexNativeRoutesAndUnknownCCLAlias(t *testing.T) {
 		writeChatText(w, r, "custom")
 	}, "openai", Options{Desktop: true, OpenAIURL: native.URL, ChatGPTURL: native.URL})
 	responseObject(t, postResponses(t, g, map[string]any{"model": "native-model", "input": "fixture"}))
-	response := postResponses(t, g, map[string]any{"model": "ccl/missing/model", "input": "fixture"})
+	response := postResponses(t, g, map[string]any{"model": "gbx/missing/model", "input": "fixture"})
 	if response.StatusCode != http.StatusNotFound || nativeRequests.Load() != 1 || customRequests.Load() != 0 {
 		t.Fatal("routing allow-list was not enforced")
 	}
@@ -381,7 +381,7 @@ func TestCodexCompressedRequestsAndInterruptedStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer encoder.Close()
-	compressed := encoder.EncodeAll([]byte(`{"model":"ccl/chosen/model-a","input":"fixture","stream":true}`), nil)
+	compressed := encoder.EncodeAll([]byte(`{"model":"gbx/chosen/model-a","input":"fixture","stream":true}`), nil)
 	request, _ := http.NewRequest(http.MethodPost, g.BaseURL()+"/responses", bytes.NewReader(compressed))
 	request.Header.Set("Content-Encoding", "zstd")
 	response, err := http.DefaultClient.Do(request)
@@ -407,11 +407,11 @@ func TestCodexNativeResponsesKeepStreamingAndCompaction(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_fixture\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n")
 	}, "openai_responses", Options{Desktop: true})
-	result := responseObject(t, postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "input": "fixture"}))
+	result := responseObject(t, postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "input": "fixture"}))
 	if result["id"] != "resp_fixture" {
 		t.Fatal("native response altered")
 	}
-	raw := strings.NewReader(`{"model":"ccl/chosen/model-a","input":"fixture"}`)
+	raw := strings.NewReader(`{"model":"gbx/chosen/model-a","input":"fixture"}`)
 	request, _ := http.NewRequest(http.MethodPost, g.BaseURL()+"/responses/compact", raw)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -471,7 +471,7 @@ func TestGatewayPromotesDefaultModelFirst(t *testing.T) {
 	if len(models) < 2 {
 		t.Fatalf("models = %+v, want at least 2 entries", models)
 	}
-	if got, _ := models[0]["slug"].(string); got != "ccl/chosen/model-b" {
-		t.Fatalf("first catalog slug = %q, want ccl/chosen/model-b (models=%+v)", got, models)
+	if got, _ := models[0]["slug"].(string); got != "gbx/chosen/model-b" {
+		t.Fatalf("first catalog slug = %q, want gbx/chosen/model-b (models=%+v)", got, models)
 	}
 }

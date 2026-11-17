@@ -15,16 +15,16 @@ var bypassCmd = newBypassCommand()
 func newBypassCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "bypass [on|off]",
-		Short: "Toggle Grok Build permission bypass for ccl launches",
-		Long: `Toggle permission bypass for every Grok Build session launched by ccl.
-When enabled, ccl passes --always-approve.
+		Short: "Toggle Grok Build permission bypass for gbx launches",
+		Long: `Toggle permission bypass for every Grok Build session launched by gbx.
+When enabled, gbx passes --always-approve.
 
 Show status:
-  ccl bypass
+  gbx bypass
 
 Enable or disable:
-  ccl bypass on
-  ccl bypass off
+  gbx bypass on
+  gbx bypass off
 
 Warning: bypass mode allows Grok Build to execute supported operations without
 interactive permission prompts. Only enable it in environments you trust.
@@ -39,7 +39,7 @@ interactive permission prompts. Only enable it in environments you trust.
 func runBypass(out io.Writer, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("load ccl config: %w", err)
+		return fmt.Errorf("load gbx config: %w", err)
 	}
 
 	if len(args) == 0 {
@@ -55,7 +55,7 @@ func runBypass(out io.Writer, args []string) error {
 		c.BypassMode = enabled
 		return nil
 	}); err != nil {
-		return fmt.Errorf("save ccl config: %w", err)
+		return fmt.Errorf("save gbx config: %w", err)
 	}
 
 	fmt.Fprintf(out, "Bypass = %s\n", onOff(enabled))

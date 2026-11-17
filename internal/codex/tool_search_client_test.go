@@ -26,9 +26,9 @@ func TestRealCodexDiscoversAndExecutesDeferredMCPTool(t *testing.T) {
 
 func realCodexDiscoversMCPTool(t *testing.T, approved bool) {
 	t.Helper()
-	executable := os.Getenv("CCL_TEST_CODEX")
+	executable := os.Getenv("GBX_TEST_CODEX")
 	if executable == "" {
-		t.Skip("set CCL_TEST_CODEX to the official Codex client")
+		t.Skip("set GBX_TEST_CODEX to the official Codex client")
 	}
 	executable, _ = filepath.Abs(executable)
 	node, err := exec.LookPath("node")
@@ -147,7 +147,7 @@ for await (const line of readline.createInterface({input:process.stdin})) {
 	if err := overlay.Apply(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"-m", "ccl/chosen/model-a", "-c", `web_search="disabled"`}
+	args := []string{"-m", "gbx/chosen/model-a", "-c", `web_search="disabled"`}
 	if approved {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}

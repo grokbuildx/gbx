@@ -66,7 +66,7 @@ func HasUnsupportedContextEnv(p Provider) bool {
 	return HasManagedContextEnv(p.Env) && ContextPresetFromEnv(p.Env) == ContextPresetDefault
 }
 
-// EffectiveType is the protocol type ccl dispatches p with. For an OAuth
+// EffectiveType is the protocol type gbx dispatches p with. For an OAuth
 // subscription it follows from the backend, never from what a file says.
 func EffectiveType(p Provider) string {
 	if runtimeType, ok := OAuthRuntimeType(p.OAuthProvider); ok {

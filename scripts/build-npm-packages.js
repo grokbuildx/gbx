@@ -6,7 +6,7 @@ const path = require('path');
 const zlib = require('zlib');
 const { platforms } = require('../bin/platforms');
 
-const launcherFiles = ['ccl.exe', 'install.js', 'wrapper.js', 'platforms.js'];
+const launcherFiles = ['gbx.exe', 'install.js', 'wrapper.js', 'platforms.js'];
 
 function releaseVersion(value) {
   const match = /^v?(\d+\.\d+\.\d+)(?:\.(\d+))?$/.exec(value || '');
@@ -29,7 +29,7 @@ function buildPackages(options) {
     fs.mkdirSync(path.join(directory, 'bin'), { recursive: true });
     fs.writeFileSync(path.join(directory, 'bin', platform.binary), binaryData[index], { mode: 0o755 });
     fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({
-      name: platform.packageName, version, description: 'CCL binary for ' + platform.os + '/' + platform.arch,
+      name: platform.packageName, version, description: 'GBX binary for ' + platform.os + '/' + platform.arch,
       os: [platform.os], cpu: [platform.arch], license: 'MIT', repository: sourcePackage.repository,
       files: ['bin/', 'LICENSE', 'THIRD_PARTY_NOTICES.md'], publishConfig: { access: 'public' },
     }, null, 2) + '\n');
@@ -38,10 +38,10 @@ function buildPackages(options) {
   });
   const main = path.join(output, 'main');
   fs.mkdirSync(path.join(main, 'bin'), { recursive: true });
-  // bin/ccl.exe is the placeholder that bin/install.js replaces with the
+  // bin/gbx.exe is the placeholder that bin/install.js replaces with the
   // native binary, so the installed command needs no Node.js on PATH.
   launcherFiles.forEach(file => fs.copyFileSync(path.join(root, 'bin', file), path.join(main, 'bin', file)));
-  ['ccl.exe', 'wrapper.js', 'install.js'].forEach(file => fs.chmodSync(path.join(main, 'bin', file), 0o755));
+  ['gbx.exe', 'wrapper.js', 'install.js'].forEach(file => fs.chmodSync(path.join(main, 'bin', file), 0o755));
   ['README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'].forEach(file => fs.copyFileSync(path.join(root, file), path.join(main, file)));
   fs.writeFileSync(path.join(main, 'package.json'), JSON.stringify({
     ...sourcePackage, version, description: 'Multi-provider launcher for Grok Build and Codex', optionalDependencies,

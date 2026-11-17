@@ -141,7 +141,7 @@ type runtimeModelRoute struct {
 }
 
 // StartProvider starts a loopback OpenAI Responses adapter. Every protocol
-// family is served by a CCL-owned data plane (Codex Responses or OpenAI Chat).
+// family is served by a GBX-owned data plane (Codex Responses or OpenAI Chat).
 func StartProvider(parent context.Context, options StartOptions) (*Runtime, error) {
 	_, ownsLog, logErr := EnsureSessionLog("runtime")
 	if logErr != nil {
@@ -191,7 +191,7 @@ func StartOAuth(parent context.Context, providerName, modelSpec, credentialFile 
 	}
 	credentialFile = strings.TrimSpace(credentialFile)
 	if credentialFile == "" {
-		return nil, fmt.Errorf("subscription provider %s is not bound to a credential file; authenticate the account again with `ccl oauth %s [alias]`", providerName, providerName)
+		return nil, fmt.Errorf("subscription provider %s is not bound to a credential file; authenticate the account again with `gbx oauth %s [alias]`", providerName, providerName)
 	}
 	if parent == nil {
 		parent = context.Background()
@@ -226,9 +226,9 @@ func StartOAuth(parent context.Context, providerName, modelSpec, credentialFile 
 	return nil, fmt.Errorf("unsupported subscription provider %q", providerName)
 }
 
-// StartOpenAIChatAPI starts CCL's self-owned Chat Completions adapter against
+// StartOpenAIChatAPI starts GBX's self-owned Chat Completions adapter against
 // an OpenAI-compatible API-key gateway. Request conversion, SSE conversion,
-// error mapping, and usage accounting are all owned by CCL and cannot change
+// error mapping, and usage accounting are all owned by GBX and cannot change
 // with an external runtime implementation upgrade.
 func StartOpenAIChatAPI(parent context.Context, endpoint, upstreamAPIKey, modelSpec string) (*Runtime, error) {
 	routes := runtimeModelRoutes(modelSpec)
@@ -244,9 +244,9 @@ func StartOpenAIChatAPI(parent context.Context, endpoint, upstreamAPIKey, modelS
 	return proxyRuntime, nil
 }
 
-// StartOpenAIResponsesAPI starts CCL's Codex Responses adapter against an API
+// StartOpenAIResponsesAPI starts GBX's Codex Responses adapter against an API
 // key gateway. Request conversion, Codex identity, SSE conversion, errors, and
-// usage accounting are all owned by CCL and independent of external runtime
+// usage accounting are all owned by GBX and independent of external runtime
 // upgrades.
 func StartOpenAIResponsesAPI(parent context.Context, endpoint, upstreamAPIKey, modelSpec string) (*Runtime, error) {
 	if parent == nil {
@@ -397,7 +397,7 @@ func sessionAPIKey() (string, error) {
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("generate local proxy key: %w", err)
 	}
-	return "ccl-" + hex.EncodeToString(raw), nil
+	return "gbx-" + hex.EncodeToString(raw), nil
 }
 
 // normalizeOpenAIBaseURL strips trailing generation paths (/responses,

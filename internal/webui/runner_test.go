@@ -102,11 +102,11 @@ func (a *fakeACPAgent) NewSession(ctx context.Context, params acp.NewSessionRequ
 	a.mu.Lock()
 	a.sessionMeta = params.Meta
 	a.mu.Unlock()
-	sid := os.Getenv("CCL_WEBUI_HELPER_SESSION_ID")
+	sid := os.Getenv("GBX_WEBUI_HELPER_SESSION_ID")
 	if sid == "" {
 		sid = "grok-1"
 	}
-	if cmds := os.Getenv("CCL_WEBUI_HELPER_COMMANDS"); cmds != "" {
+	if cmds := os.Getenv("GBX_WEBUI_HELPER_COMMANDS"); cmds != "" {
 		var list []acp.AvailableCommand
 		for _, name := range strings.Split(cmds, ",") {
 			list = append(list, acp.AvailableCommand{Name: name, Description: name})
@@ -132,7 +132,7 @@ func (a *fakeACPAgent) LoadSession(ctx context.Context, params acp.LoadSessionRe
 		SessionId: params.SessionId,
 		Update:    acp.UpdateAgentMessageText("REPLAYED_HISTORY_SHOULD_BE_SUPPRESSED"),
 	})
-	if os.Getenv("CCL_WEBUI_HELPER_CONFIG_OPTIONS") == "1" {
+	if os.Getenv("GBX_WEBUI_HELPER_CONFIG_OPTIONS") == "1" {
 		modelOpts := acp.SessionConfigSelectOptionsUngrouped{
 			{Value: "claude-opus-4-6", Name: "claude-opus-4-6"},
 			{Value: "gpt-5.4", Name: "gpt-5.4"},
@@ -175,7 +175,7 @@ func (a *fakeACPAgent) SetSessionConfigOption(_ context.Context, req acp.SetSess
 		a.mu.Lock()
 		a.configCalls = append(a.configCalls, string(req.ValueId.ConfigId)+"="+string(req.ValueId.Value))
 		a.mu.Unlock()
-		if os.Getenv("CCL_WEBUI_HELPER_CONFIG_OPTIONS") == "1" && req.ValueId.ConfigId == "model" && req.ValueId.Value == "gpt-5.4" {
+		if os.Getenv("GBX_WEBUI_HELPER_CONFIG_OPTIONS") == "1" && req.ValueId.ConfigId == "model" && req.ValueId.Value == "gpt-5.4" {
 			modelOpts := acp.SessionConfigSelectOptionsUngrouped{
 				{Value: "claude-opus-4-6", Name: "claude-opus-4-6"},
 				{Value: "gpt-5.4", Name: "gpt-5.4"},
@@ -205,7 +205,7 @@ func (a *fakeACPAgent) SetSessionMode(_ context.Context, req acp.SetSessionModeR
 }
 
 func (a *fakeACPAgent) HandleExtensionMethod(_ context.Context, method string, _ json.RawMessage) (any, error) {
-	if method == "_x.ai/mcp/list" && os.Getenv("CCL_WEBUI_HELPER_MCP") == "1" {
+	if method == "_x.ai/mcp/list" && os.Getenv("GBX_WEBUI_HELPER_MCP") == "1" {
 		return map[string]any{
 			"servers": []map[string]any{
 				{"name": "github", "session": map[string]any{"enabled": true, "status": "connected"}},
@@ -217,7 +217,7 @@ func (a *fakeACPAgent) HandleExtensionMethod(_ context.Context, method string, _
 }
 
 func (a *fakeACPAgent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.PromptResponse, error) {
-	if os.Getenv("CCL_WEBUI_HELPER_ACCEPT_EDITS") == "1" {
+	if os.Getenv("GBX_WEBUI_HELPER_ACCEPT_EDITS") == "1" {
 		editKind := acp.ToolKindEdit
 		editTitle := "search_replace"
 		editResp, err := a.conn.RequestPermission(ctx, acp.RequestPermissionRequest{
@@ -273,7 +273,7 @@ func (a *fakeACPAgent) Prompt(ctx context.Context, params acp.PromptRequest) (ac
 		return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 	}
 
-	if os.Getenv("CCL_WEBUI_HELPER_ASK_PLAN") == "1" {
+	if os.Getenv("GBX_WEBUI_HELPER_ASK_PLAN") == "1" {
 		askTitle := "ask_user_question"
 		askResp, err := a.conn.RequestPermission(ctx, acp.RequestPermissionRequest{
 			SessionId: params.SessionId,
@@ -328,7 +328,7 @@ func (a *fakeACPAgent) Prompt(ctx context.Context, params acp.PromptRequest) (ac
 		})
 		return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 	}
-	if os.Getenv("CCL_WEBUI_HELPER_PERMISSION") == "1" {
+	if os.Getenv("GBX_WEBUI_HELPER_PERMISSION") == "1" {
 		kind := acp.ToolKindExecute
 		title := "Run db migration"
 		resp, err := a.conn.RequestPermission(ctx, acp.RequestPermissionRequest{
@@ -360,7 +360,7 @@ func (a *fakeACPAgent) Prompt(ctx context.Context, params acp.PromptRequest) (ac
 		return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 	}
 
-	if os.Getenv("CCL_WEBUI_HELPER_SLEEP") != "" {
+	if os.Getenv("GBX_WEBUI_HELPER_SLEEP") != "" {
 		select {
 		case <-a.cancelled:
 			return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
@@ -370,7 +370,7 @@ func (a *fakeACPAgent) Prompt(ctx context.Context, params acp.PromptRequest) (ac
 		}
 	}
 
-	if os.Getenv("CCL_WEBUI_HELPER_SUBAGENTS") == "1" {
+	if os.Getenv("GBX_WEBUI_HELPER_SUBAGENTS") == "1" {
 		otherKind := acp.ToolKindOther
 		completed := acp.ToolCallStatusCompleted
 		desc := "Check weather"
@@ -446,7 +446,7 @@ func (a *fakeACPAgent) Prompt(ctx context.Context, params acp.PromptRequest) (ac
 		return acp.PromptResponse{StopReason: acp.StopReasonEndTurn}, nil
 	}
 
-	if costText := os.Getenv("CCL_WEBUI_HELPER_COST"); costText != "" {
+	if costText := os.Getenv("GBX_WEBUI_HELPER_COST"); costText != "" {
 		if cost, err := strconv.ParseFloat(costText, 64); err == nil {
 			_ = a.conn.SessionUpdate(ctx, acp.SessionNotification{
 				SessionId: params.SessionId,
@@ -461,13 +461,13 @@ func (a *fakeACPAgent) Prompt(ctx context.Context, params acp.PromptRequest) (ac
 		}
 	}
 
-	if text := os.Getenv("CCL_WEBUI_HELPER_TEXT"); text != "" {
+	if text := os.Getenv("GBX_WEBUI_HELPER_TEXT"); text != "" {
 		_ = a.conn.SessionUpdate(ctx, acp.SessionNotification{
 			SessionId: params.SessionId,
 			Update:    acp.UpdateAgentMessageText(text),
 		})
 	}
-	if os.Getenv("CCL_WEBUI_HELPER_CONFIG_OPTIONS") == "1" {
+	if os.Getenv("GBX_WEBUI_HELPER_CONFIG_OPTIONS") == "1" {
 		a.mu.Lock()
 		calls := strings.Join(a.configCalls, ",")
 		a.mu.Unlock()
@@ -477,8 +477,8 @@ func (a *fakeACPAgent) Prompt(ctx context.Context, params acp.PromptRequest) (ac
 		})
 	}
 
-	inTok, _ := strconv.Atoi(os.Getenv("CCL_WEBUI_HELPER_USAGE_IN"))
-	outTok, _ := strconv.Atoi(os.Getenv("CCL_WEBUI_HELPER_USAGE_OUT"))
+	inTok, _ := strconv.Atoi(os.Getenv("GBX_WEBUI_HELPER_USAGE_IN"))
+	outTok, _ := strconv.Atoi(os.Getenv("GBX_WEBUI_HELPER_USAGE_OUT"))
 	var usage *acp.Usage
 	if inTok > 0 || outTok > 0 {
 		usage = &acp.Usage{
@@ -496,10 +496,10 @@ func (a *fakeACPAgent) Prompt(ctx context.Context, params acp.PromptRequest) (ac
 // TestHelperProcess is not a test: the runner tests re-execute this binary so
 // they get a real ACP child process without depending on an external grok CLI.
 func TestHelperProcess(t *testing.T) {
-	if os.Getenv("CCL_WEBUI_HELPER") != "1" {
+	if os.Getenv("GBX_WEBUI_HELPER") != "1" {
 		t.Skip("helper process")
 	}
-	if os.Getenv("CCL_WEBUI_HELPER_CRASH") == "1" {
+	if os.Getenv("GBX_WEBUI_HELPER_CRASH") == "1" {
 		_, _ = os.Stderr.WriteString("fatal helper crash\n")
 		os.Exit(1)
 	}
@@ -508,7 +508,7 @@ func TestHelperProcess(t *testing.T) {
 	conn := acp.NewAgentSideConnection(agent, os.Stdout, os.Stdin)
 	agent.conn = conn
 	<-conn.Done()
-	if os.Getenv("CCL_WEBUI_HELPER_LINGER") == "1" {
+	if os.Getenv("GBX_WEBUI_HELPER_LINGER") == "1" {
 		time.Sleep(500 * time.Millisecond)
 	}
 	os.Exit(0)
@@ -517,10 +517,10 @@ func TestHelperProcess(t *testing.T) {
 func helperPrepare(t *testing.T, text string, sleep bool) LaunchFunc {
 	t.Helper()
 	return helperPrepareEnv(t, map[string]string{
-		"CCL_WEBUI_HELPER_TEXT":      text,
-		"CCL_WEBUI_HELPER_USAGE_IN":  "2",
-		"CCL_WEBUI_HELPER_USAGE_OUT": "3",
-		"CCL_WEBUI_HELPER_COST":      "0.01",
+		"GBX_WEBUI_HELPER_TEXT":      text,
+		"GBX_WEBUI_HELPER_USAGE_IN":  "2",
+		"GBX_WEBUI_HELPER_USAGE_OUT": "3",
+		"GBX_WEBUI_HELPER_COST":      "0.01",
 	}, sleep)
 }
 
@@ -532,12 +532,12 @@ func helperPrepareEnv(t *testing.T, extra map[string]string, sleep bool) LaunchF
 	}
 	return func(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), error) {
 		cmd := exec.Command(executable, "-test.run=TestHelperProcess")
-		env := append(os.Environ(), "CCL_WEBUI_HELPER=1")
+		env := append(os.Environ(), "GBX_WEBUI_HELPER=1")
 		for k, v := range extra {
 			env = append(env, k+"="+v)
 		}
 		if sleep {
-			env = append(env, "CCL_WEBUI_HELPER_SLEEP=1")
+			env = append(env, "GBX_WEBUI_HELPER_SLEEP=1")
 		}
 		cmd.Env = env
 		return cmd, func() {}, nil
@@ -646,9 +646,9 @@ func TestRunnerTurnCostIsDifferenceOfRunningTotal(t *testing.T) {
 	timeline := NewTimeline()
 	for _, cost := range []string{"0.015", "0.04"} {
 		prepare := helperPrepareEnv(t, map[string]string{
-			"CCL_WEBUI_HELPER_USAGE_IN":  "5",
-			"CCL_WEBUI_HELPER_USAGE_OUT": "1",
-			"CCL_WEBUI_HELPER_COST":      cost,
+			"GBX_WEBUI_HELPER_USAGE_IN":  "5",
+			"GBX_WEBUI_HELPER_USAGE_OUT": "1",
+			"GBX_WEBUI_HELPER_COST":      cost,
 		}, false)
 		handle, err := timeline.Start(newTestRunner(t, prepare), session, LaunchSpec{Prompt: "p"})
 		if err != nil {
@@ -768,7 +768,7 @@ func TestRunnerClosesTurnWithoutResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	crashPrepare := helperPrepareEnv(t, map[string]string{"CCL_WEBUI_HELPER_CRASH": "1"}, false)
+	crashPrepare := helperPrepareEnv(t, map[string]string{"GBX_WEBUI_HELPER_CRASH": "1"}, false)
 	handle, err := NewTimeline().Start(newTestRunner(t, crashPrepare), session, LaunchSpec{Prompt: "p"})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -903,18 +903,18 @@ func TestDefaultLauncherDefaultProviderUsesGrok(t *testing.T) {
 		t.Fatalf("unexpected env = %s", env)
 	}
 
-	// Session worktrees with a synthesized .grok/sandbox.toml profile must select GROK_SANDBOX=ccl_worktree.
+	// Session worktrees with a synthesized .grok/sandbox.toml profile must select GROK_SANDBOX=gbx_worktree.
 	wt := t.TempDir()
 	_ = os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: /tmp/repo/.git/worktrees/w1\n"), 0o600)
 	_ = os.MkdirAll(filepath.Join(wt, ".grok"), 0o755)
-	_ = os.WriteFile(filepath.Join(wt, ".grok", "sandbox.toml"), []byte("[profiles.ccl_worktree]\nextends = \"workspace\"\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(wt, ".grok", "sandbox.toml"), []byte("[profiles.gbx_worktree]\nextends = \"workspace\"\n"), 0o600)
 	wtCmd, wtClean, err := DefaultLauncher(context.Background(), LaunchSpec{Provider: "default", Workspace: wt, Prompt: "p"})
 	if err != nil {
 		t.Fatalf("DefaultLauncher(worktree): %v", err)
 	}
 	defer wtClean()
-	if !strings.Contains(strings.Join(wtCmd.Env, "\n"), "GROK_SANDBOX=ccl_worktree") {
-		t.Fatalf("expected GROK_SANDBOX=ccl_worktree in %v", wtCmd.Env)
+	if !strings.Contains(strings.Join(wtCmd.Env, "\n"), "GROK_SANDBOX=gbx_worktree") {
+		t.Fatalf("expected GROK_SANDBOX=gbx_worktree in %v", wtCmd.Env)
 	}
 
 	// LegacyClaudeDefault must refuse launching silently on default until cleared.
@@ -949,7 +949,7 @@ func TestPermissionRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var seenArgs []string
-	basePrepare := helperPrepareEnv(t, map[string]string{"CCL_WEBUI_HELPER_PERMISSION": "1"}, false)
+	basePrepare := helperPrepareEnv(t, map[string]string{"GBX_WEBUI_HELPER_PERMISSION": "1"}, false)
 	runner := newTestRunner(t, func(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), error) {
 		seenArgs = buildArgs(spec)
 		return basePrepare(ctx, spec)
@@ -1066,9 +1066,9 @@ func TestAcceptEditsAutoApprovesEditOnlyAndMCPInit(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := newTestRunner(t, helperPrepareEnv(t, map[string]string{
-		"CCL_WEBUI_HELPER_ACCEPT_EDITS": "1",
-		"CCL_WEBUI_HELPER_MCP":          "1",
-		"CCL_WEBUI_HELPER_COMMANDS":     "review,commit",
+		"GBX_WEBUI_HELPER_ACCEPT_EDITS": "1",
+		"GBX_WEBUI_HELPER_MCP":          "1",
+		"GBX_WEBUI_HELPER_COMMANDS":     "review,commit",
 	}, false))
 	timeline := NewTimeline()
 	handle, err := timeline.Start(runner, session, LaunchSpec{
@@ -1138,7 +1138,7 @@ func TestAskUserQuestionAndExitPlanModeRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := newTestRunner(t, helperPrepareEnv(t, map[string]string{
-		"CCL_WEBUI_HELPER_ASK_PLAN": "1",
+		"GBX_WEBUI_HELPER_ASK_PLAN": "1",
 	}, false))
 	timeline := NewTimeline()
 	handle, err := timeline.Start(runner, session, LaunchSpec{
@@ -1220,7 +1220,7 @@ func TestRunnerLoadSessionSyncsModelAndClampsReasoningEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := newTestRunner(t, helperPrepareEnv(t, map[string]string{
-		"CCL_WEBUI_HELPER_CONFIG_OPTIONS": "1",
+		"GBX_WEBUI_HELPER_CONFIG_OPTIONS": "1",
 	}, false))
 	timeline := NewTimeline()
 	handle, err := timeline.Start(runner, session, LaunchSpec{
@@ -1258,7 +1258,7 @@ func TestRunnerLoadSessionResetsEmptyModelAndEffortToRouteDefaults(t *testing.T)
 		t.Fatal(err)
 	}
 	basePrepare := helperPrepareEnv(t, map[string]string{
-		"CCL_WEBUI_HELPER_CONFIG_OPTIONS": "1",
+		"GBX_WEBUI_HELPER_CONFIG_OPTIONS": "1",
 	}, false)
 	runner := newTestRunner(t, func(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), error) {
 		if spec.routeDefaults != nil {
@@ -1347,7 +1347,7 @@ func TestRunnerStreamsGrokSubagentLifecycleAndExtensionUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := newTestRunner(t, helperPrepareEnv(t, map[string]string{
-		"CCL_WEBUI_HELPER_SUBAGENTS": "1",
+		"GBX_WEBUI_HELPER_SUBAGENTS": "1",
 	}, false))
 	timeline := NewTimeline()
 	handle, err := timeline.Start(runner, session, LaunchSpec{

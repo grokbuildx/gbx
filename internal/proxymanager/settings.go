@@ -66,7 +66,7 @@ func withSettings(ctx context.Context, path string, edit func(map[string]json.Ra
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	release, err := fsutil.AcquireFileLock(ctx, path+".ccl-lock")
+	release, err := fsutil.AcquireFileLock(ctx, path+".gbx-lock")
 	if err != nil {
 		return err
 	}

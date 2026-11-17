@@ -21,12 +21,12 @@ import (
 	"github.com/grokbuildx/gbx/internal/proxymanager"
 )
 
-// CCL_TEST_BINARY selects the native binary built by CI. With no binary this
+// GBX_TEST_BINARY selects the native binary built by CI. With no binary this
 // integration test skips; it never builds or starts a real Claude executable.
 func TestProxyProcessLifecycle(t *testing.T) {
-	source := os.Getenv("CCL_TEST_BINARY")
+	source := os.Getenv("GBX_TEST_BINARY")
 	if source == "" {
-		t.Skip("set CCL_TEST_BINARY to a built native ccl binary")
+		t.Skip("set GBX_TEST_BINARY to a built native gbx binary")
 	}
 	source, err := filepath.Abs(source)
 	if err != nil {
@@ -48,9 +48,9 @@ func TestProxyProcessLifecycle(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
-	t.Setenv("CCL_PROXY_NO_MENUBAR", "1")
+	t.Setenv("GBX_PROXY_NO_MENUBAR", "1")
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, "Claude settings \u914d\u7f6e"))
-	t.Setenv("CCL_LANG", "en")
+	t.Setenv("GBX_LANG", "en")
 	settingsPath := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "settings.json")
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func TestProxyProcessLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeObject(t, settingsPath, map[string]any{"model": "original-model", "env": map[string]string{"ANTHROPIC_BASE_URL": "https://original.invalid", "KEEP": "original"}})
-	manager := &proxymanager.Manager{Dir: filepath.Join(home, ".ccl", "proxy")}
+	manager := &proxymanager.Manager{Dir: filepath.Join(home, ".gbx", "proxy")}
 	codexHome := os.Getenv("CODEX_HOME")
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ func TestProxyProcessLifecycle(t *testing.T) {
 		t.Helper()
 		out, err := run(args...)
 		if err != nil {
-			t.Fatalf("ccl %v: %v\n%s", args, err, out)
+			t.Fatalf("gbx %v: %v\n%s", args, err, out)
 		}
 		return out
 	}
@@ -182,7 +182,7 @@ func TestProxyProcessLifecycle(t *testing.T) {
 	inference := func(want string) {
 		t.Helper()
 		s := state()
-		status, body := request(s.BaseURL, "ccl/"+s.Provider+"/model-a", "fake-native-key")
+		status, body := request(s.BaseURL, "gbx/"+s.Provider+"/model-a", "fake-native-key")
 		if status != 200 || !bytes.Contains(body, []byte(`"text":"`+want+`"`)) {
 			t.Fatalf("inference status=%d body=%s", status, body)
 		}
@@ -311,7 +311,7 @@ func TestProxyProcessLifecycle(t *testing.T) {
 	if out := cli("codex", "status"); !strings.Contains(out, "not responding") {
 		t.Fatalf("crash not detected: %s", out)
 	}
-	// Any other ccl command undoes the dead proxy's overlay on its way in.
+	// Any other gbx command undoes the dead proxy's overlay on its way in.
 	if out := cli("ls"); !strings.Contains(out, "previous client settings restored") {
 		t.Fatalf("stale overlay not recovered: %s", out)
 	}

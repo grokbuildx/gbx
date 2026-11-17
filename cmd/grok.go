@@ -151,8 +151,8 @@ func runGrokAgentWithOptions(cfg *provider.Config, name string, explicitProvider
 	native := provider.IsDefaultProvider(name)
 	if native && strings.TrimSpace(cfg.LegacyClaudeDefault) != "" {
 		return fmt.Errorf("%s", locale.T(
-			"旧的默认 Claude 账号已退役。请运行 ccl use default 切换到 Grok Build 自身登录，或选择其他 Provider",
-			"the default Claude account has been retired. Run ccl use default to select Grok Build's own login, or choose another provider",
+			"旧的默认 Claude 账号已退役。请运行 gbx use default 切换到 Grok Build 自身登录，或选择其他 Provider",
+			"the default Claude account has been retired. Run gbx use default to select Grok Build's own login, or choose another provider",
 		))
 	}
 	localOnly := isLocalGrokInvocation(args)
@@ -184,7 +184,7 @@ func runGrokAgentWithOptions(cfg *provider.Config, name string, explicitProvider
 	oauthproxy.ConfigureLogLevel(configuredLogLevel(cfg.LogLevel))
 	defer func() {
 		if logPath := oauthproxy.LogFilePath(); logPath != "" {
-			fmt.Fprintf(os.Stderr, "\n[ccl log] run finished · file: %s\n", logPath)
+			fmt.Fprintf(os.Stderr, "\n[gbx log] run finished · file: %s\n", logPath)
 			oauthproxy.CloseLog()
 		}
 	}()

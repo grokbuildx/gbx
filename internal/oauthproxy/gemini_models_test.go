@@ -111,7 +111,7 @@ func TestGeminiDiscoveryBoundAccountCacheAndFailure(t *testing.T) {
 	if fallback || catalog == nil || len(catalog.Models) != 4 {
 		t.Fatalf("catalog=%+v fallback=%v", catalog, fallback)
 	}
-	files, _ := filepath.Glob(filepath.Join(home, ".ccl", "cache", "gemini", "*.json"))
+	files, _ := filepath.Glob(filepath.Join(home, ".gbx", "cache", "gemini", "*.json"))
 	if len(files) != 1 {
 		t.Fatal("account catalog not saved")
 	}

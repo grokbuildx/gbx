@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// fakeCloudCCL stands in for `ccl cloud …`: it prints its arguments, fails
+// fakeCloudGBX stands in for `gbx cloud …`: it prints its arguments, fails
 // a pull without --force, and a google-drive login waits for a pasted line.
-const fakeCloudCCL = `echo "args: $*"
+const fakeCloudGBX = `echo "args: $*"
 case "$2" in
   pull)
     case "$*" in *--force*) echo "Pulled." ;; *) echo "Error: local changes are not synchronized; use --force" >&2; exit 1 ;; esac ;;
@@ -27,7 +27,7 @@ func cloudServer(t *testing.T) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	bin := writeScript(t, t.TempDir(), "ccl", fakeCloudCCL)
+	bin := writeScript(t, t.TempDir(), "gbx", fakeCloudGBX)
 	server, err := New(Config{Token: "secret", Workspace: t.TempDir(), StoreRoot: t.TempDir(), SelfBinary: bin})
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestCloudOverviewAndCommands(t *testing.T) {
 	if status != http.StatusOK || !strings.Contains(string(body), "args: cloud push --to work --force") {
 		t.Fatalf("push = %d %s", status, body)
 	}
-	// A refusal comes back as 409 with ccl's reason, so the page can offer --force.
+	// A refusal comes back as 409 with gbx's reason, so the page can offer --force.
 	status, body = doJSON(t, "POST", base+"/api/cloud/pull", "secret", `{}`)
 	if status != http.StatusConflict || !strings.Contains(string(body), `"error":"local changes are not synchronized; use --force"`) {
 		t.Fatalf("pull = %d %s", status, body)
@@ -77,8 +77,8 @@ func TestCloudOverviewAndCommands(t *testing.T) {
 
 func TestCloudLoginTakesAPastedAddress(t *testing.T) {
 	// A development build has no Google OAuth client; the page refuses then.
-	t.Setenv("CCL_GOOGLE_OAUTH_CLIENT_ID", "test-client")
-	t.Setenv("CCL_GOOGLE_OAUTH_CLIENT_SECRET", "test-secret")
+	t.Setenv("GBX_GOOGLE_OAUTH_CLIENT_ID", "test-client")
+	t.Setenv("GBX_GOOGLE_OAUTH_CLIENT_SECRET", "test-secret")
 	base := cloudServer(t)
 	if status, _ := doJSON(t, "POST", base+"/api/cloud/login", "secret", `{"platform":"dropbox"}`); status != http.StatusBadRequest {
 		t.Fatalf("unknown platform = %d", status)
@@ -122,7 +122,7 @@ func TestCloudLoginTakesAPastedAddress(t *testing.T) {
 func TestCloudLoginFailureSaysWhy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	bin := writeScript(t, t.TempDir(), "ccl", `echo "Logging in..."
+	bin := writeScript(t, t.TempDir(), "gbx", `echo "Logging in..."
 echo "Error: the iCloud Drive folder is missing" >&2
 exit 1
 `)

@@ -148,7 +148,7 @@ type StatusPayload struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// emitter receives translated ccl serve events.
+// emitter receives translated gbx serve events.
 type emitter func(kind string, payload any)
 
 type acpTrackedTool struct {
@@ -185,7 +185,7 @@ type acpSubagentState struct {
 	finished       bool
 }
 
-// acpTranslator turns Grok Build ACP SessionUpdate notifications into ccl serve events.
+// acpTranslator turns Grok Build ACP SessionUpdate notifications into gbx serve events.
 type acpTranslator struct {
 	tools          map[string]*acpTrackedTool
 	toolOrder      []string

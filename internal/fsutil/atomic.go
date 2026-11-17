@@ -1,4 +1,4 @@
-// Package fsutil holds small filesystem helpers shared across ccl.
+// Package fsutil holds small filesystem helpers shared across gbx.
 package fsutil
 
 import (

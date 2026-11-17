@@ -66,7 +66,7 @@ func (m *Manager) verifyOrCreateProfileKey(profileID string, create bool) error 
 		return nil
 	}
 	path := filepath.Join(m.remoteDir, verifierFileName)
-	expected := []byte("ccl-sync-profile:" + profileID)
+	expected := []byte("gbx-sync-profile:" + profileID)
 	encrypted, err := sealCompressed(m.key, expected)
 	if err != nil {
 		return err
@@ -76,13 +76,13 @@ func (m *Manager) verifyOrCreateProfileKey(profileID string, create bool) error 
 
 func (m *Manager) verifyProfileKey(profileID string) error {
 	path := filepath.Join(m.remoteDir, verifierFileName)
-	expected := []byte("ccl-sync-profile:" + profileID)
+	expected := []byte("gbx-sync-profile:" + profileID)
 	info, err := os.Lstat(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return err
 		}
-		// Profiles created before verifier.ccl can authenticate through their
+		// Profiles created before verifier.gbx can authenticate through their
 		// encrypted index without mutating the remote during Load.
 		if _, statErr := os.Lstat(filepath.Join(m.remoteDir, indexFileName)); statErr == nil {
 			if _, loadErr := m.loadRemoteIndex(); loadErr != nil {
@@ -151,14 +151,14 @@ func Load() (*Manager, error) {
 
 // LoadRemote loads a cloud remote. An empty alias selects the primary remote.
 func LoadRemote(alias string) (*Manager, error) {
-	localDir, err := cclDirectory()
+	localDir, err := gbxDirectory()
 	if err != nil {
 		return nil, err
 	}
 	registry, err := loadRegistry(localDir)
 	if err != nil {
 		if errors.Is(err, errRegistryNotConfigured) {
-			return nil, fmt.Errorf("not logged in; run `ccl cloud login icloud` or `ccl cloud login google-drive` first")
+			return nil, fmt.Errorf("not logged in; run `gbx cloud login icloud` or `gbx cloud login google-drive` first")
 		}
 		return nil, err
 	}
@@ -199,7 +199,7 @@ func LoadRemote(alias string) (*Manager, error) {
 	key, err := loadProfileKeyFile(localDir, registry.ActiveProfileID)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("local encryption key is missing; run `ccl cloud logout` and `ccl cloud login` again")
+			return nil, fmt.Errorf("local encryption key is missing; run `gbx cloud logout` and `gbx cloud login` again")
 		}
 		return nil, err
 	}

@@ -20,9 +20,9 @@ import (
 // Exercise remote compaction with the real client's streaming decoder and
 // persisted history. A JSON-only gateway test cannot verify the second turn.
 func TestRealCodexContinuesAfterRemoteCompaction(t *testing.T) {
-	executable := os.Getenv("CCL_TEST_CODEX")
+	executable := os.Getenv("GBX_TEST_CODEX")
 	if executable == "" {
-		t.Skip("set CCL_TEST_CODEX to the official Codex client")
+		t.Skip("set GBX_TEST_CODEX to the official Codex client")
 	}
 	executable, err := filepath.Abs(executable)
 	if err != nil {
@@ -103,7 +103,7 @@ func TestRealCodexContinuesAfterRemoteCompaction(t *testing.T) {
 		}
 		return output.String()
 	}
-	output := run("-m", "ccl/chosen/model-a", "-c", `web_search="disabled"`, "exec", "--json", "--skip-git-repo-check", "Remember keep-this-goal.")
+	output := run("-m", "gbx/chosen/model-a", "-c", `web_search="disabled"`, "exec", "--json", "--skip-git-repo-check", "Remember keep-this-goal.")
 	if !strings.Contains(output, "turn-1-done") {
 		t.Fatalf("first turn: %s", output)
 	}
@@ -121,7 +121,7 @@ func TestRealCodexContinuesAfterRemoteCompaction(t *testing.T) {
 		t.Fatalf("missing session ID: %s", output)
 	}
 	for turn := 2; turn <= 4; turn++ {
-		output = run("-m", "ccl/chosen/model-a", "-c", `web_search="disabled"`, "exec", "resume", "--json", "--skip-git-repo-check", session, "Continue keep-this-goal.")
+		output = run("-m", "gbx/chosen/model-a", "-c", `web_search="disabled"`, "exec", "resume", "--json", "--skip-git-repo-check", session, "Continue keep-this-goal.")
 		if !strings.Contains(output, fmt.Sprintf("turn-%d-done", turn)) {
 			t.Fatalf("turn %d after compaction: %s", turn, output)
 		}

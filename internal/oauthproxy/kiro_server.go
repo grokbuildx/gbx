@@ -67,7 +67,7 @@ func startKiroOAuth(parent context.Context, modelSpec, credentialFile string) (*
 		return nil, err
 	}
 	if len(credentials) == 0 {
-		return nil, fmt.Errorf("no %s credentials found; run `ccl oauth %s` first", ProviderKiro, ProviderKiro)
+		return nil, fmt.Errorf("no %s credentials found; run `gbx oauth %s` first", ProviderKiro, ProviderKiro)
 	}
 
 	apiKey, err := sessionAPIKey()

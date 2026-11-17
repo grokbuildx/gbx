@@ -1,8 +1,8 @@
 // Package locale provides cross-platform language detection and translation.
 //
 // Detection priority:
-//  1. CCL_LANG environment variable
-//  2. ~/.ccl/config.yaml lang field
+//  1. GBX_LANG environment variable
+//  2. ~/.gbx/config.yaml lang field
 //  3. OS-level language setting (via environment on Unix, Win32 API on Windows)
 package locale
 
@@ -37,8 +37,8 @@ func getInstance() *LanguageManager {
 }
 
 func (lm *LanguageManager) init() {
-	// 1. CCL_LANG env var (highest priority)
-	if v := os.Getenv("CCL_LANG"); v != "" {
+	// 1. GBX_LANG env var (highest priority)
+	if v := os.Getenv("GBX_LANG"); v != "" {
 		lm.lang = canonicalize(v)
 		return
 	}
@@ -56,7 +56,7 @@ func (lm *LanguageManager) init() {
 // readConfigLang reads the lang field from config.yaml.
 func readConfigLang() string {
 	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".ccl", "config.yaml")
+	path := filepath.Join(home, ".gbx", "config.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""

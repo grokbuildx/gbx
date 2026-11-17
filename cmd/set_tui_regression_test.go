@@ -34,7 +34,7 @@ func TestProtocolDetectionRejectsFallbackPages(t *testing.T) {
 }
 
 func TestAutoClawProviderIsNotUserSelectable(t *testing.T) {
-	// An AutoClaw provider is created by ccl oauth/import and connects straight
+	// An AutoClaw provider is created by gbx oauth/import and connects straight
 	// to its fixed remote endpoint, so the manual protocol selector must not
 	// offer to reinterpret it.
 	p := providerFrom("autoclaw", "https://autoglm-api.autoglm.ai/autoclaw-proxy/proxy/autoclaw", "autoclaw")
@@ -51,7 +51,7 @@ func TestAutoClawProviderIsNotUserSelectable(t *testing.T) {
 	}
 }
 
-// `ccl oauth autoclaw` persists the managed catalog into the provider, and a
+// `gbx oauth autoclaw` persists the managed catalog into the provider, and a
 // subscription has no probe that would fill the pool later, so the page has to
 // open on the persisted pool. Skipping it for OAuth left the list empty.
 func TestOAuthProviderOpensWithItsPersistedModelPool(t *testing.T) {

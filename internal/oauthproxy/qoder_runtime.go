@@ -100,7 +100,7 @@ func startQoderOAuth(parent context.Context, _ string, credentialFile string) (*
 	}
 	credentials = activeQoderCredentials(credentials)
 	if len(credentials) == 0 {
-		return nil, fmt.Errorf("no %s credentials found; run `ccl oauth %s` first", ProviderQoder, ProviderQoder)
+		return nil, fmt.Errorf("no %s credentials found; run `gbx oauth %s` first", ProviderQoder, ProviderQoder)
 	}
 	apiKey, err := sessionAPIKey()
 	if err != nil {
@@ -162,7 +162,7 @@ func startQoderOAuth(parent context.Context, _ string, credentialFile string) (*
 		// The account catalog's PriceFactor is the credit rate the picker shows.
 		modelDetails: modelDetails,
 		// A silent substitution is what let a credential that had simply expired
-		// shrink the saved catalog from 17 models to 5: `ccl set` adopted the
+		// shrink the saved catalog from 17 models to 5: `gbx set` adopted the
 		// compatibility list as if it were the account's. Recording it lets the
 		// caller keep what it had and say so.
 		catalogFallback: catalogFallback,
@@ -469,7 +469,7 @@ func (service *qoderService) doUpstreamRequest(ctx context.Context, converted *q
 	request.Header.Set("Accept", "text/event-stream")
 	request.Header.Set("Cache-Control", "no-cache")
 	request.Header.Set("Accept-Encoding", "identity")
-	request.Header.Set("User-Agent", "ccl")
+	request.Header.Set("User-Agent", "gbx")
 	request.Header.Set("X-Model-Key", converted.model.ID)
 	request.Header.Set("X-Model-Source", converted.model.Source)
 	LogDebugEvent("upstream_request", "component", "qoder", "request_id", requestLogID(ctx),
@@ -530,7 +530,7 @@ func (service *qoderService) discoverModelsWithCredential(ctx context.Context, c
 	}
 	request.Header = headers
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "ccl")
+	request.Header.Set("User-Agent", "gbx")
 	response, err := doCredentialRequest(service.client, request)
 	if err != nil {
 		return nil, 0, fmt.Errorf("discover Qoder models: %w", err)

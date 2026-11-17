@@ -8,7 +8,7 @@ import (
 	"github.com/grokbuildx/gbx/internal/provider"
 )
 
-// TestUseWithoutArgsAndNoProviders verifies bare `ccl use` fails with a
+// TestUseWithoutArgsAndNoProviders verifies bare `gbx use` fails with a
 // guidance error before any TUI starts when nothing is configured.
 func TestUseWithoutArgsAndNoProviders(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -17,15 +17,15 @@ func TestUseWithoutArgsAndNoProviders(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error, got nil (output: %q)", out)
 	}
-	// Both localized variants of the guidance message mention 'ccl set', so
+	// Both localized variants of the guidance message mention 'gbx set', so
 	// the assertion stays locale-independent.
-	if want := "'ccl set'"; !strings.Contains(err.Error(), want) {
+	if want := "'gbx set'"; !strings.Contains(err.Error(), want) {
 		t.Fatalf("error = %q, want it to contain %q", err.Error(), want)
 	}
 }
 
 // TestUseWithExplicitNameSwitchesActiveProvider keeps the non-interactive
-// `ccl use <name>` path working, including config persistence.
+// `gbx use <name>` path working, including config persistence.
 func TestUseWithExplicitNameSwitchesActiveProvider(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -65,7 +65,7 @@ func TestUseUnknownProviderStillErrors(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error, got nil (output: %q)", out)
 	}
-	for _, want := range []string{`"missing"`, "'ccl set'"} {
+	for _, want := range []string{`"missing"`, "'gbx set'"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %q, want it to contain %q", err.Error(), want)
 		}

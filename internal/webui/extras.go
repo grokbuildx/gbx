@@ -25,7 +25,7 @@ import (
 
 // ── subscription login ──────────────────────────────────────────────────────
 
-// OAuthProviders are the names `ccl oauth` accepts.
+// OAuthProviders are the names `gbx oauth` accepts.
 var OAuthProviders = []string{"gpt", "gemini", "grok", "qoder", "kimi", "kiro", "workbuddy", "workbuddycn", "autoclaw", "cursor"}
 
 var (
@@ -56,9 +56,9 @@ type loginRegistry struct {
 	logins map[string]*oauthLogin
 }
 
-// handleOAuth runs `ccl oauth <provider> --no-browser` and relays what it
+// handleOAuth runs `gbx oauth <provider> --no-browser` and relays what it
 // prints: the URL to open (and the code to enter, for device logins). The
-// login itself, its callback and the provider it creates are ccl oauth's.
+// login itself, its callback and the provider it creates are gbx oauth's.
 func (s *Server) handleOAuth(w http.ResponseWriter, r *http.Request) {
 	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/oauth/login"), "/")
 	switch {
@@ -136,7 +136,7 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": login.ID})
 }
 
-// runLogin starts `ccl <args>` and keeps what it prints, with the URLs in it,
+// runLogin starts `gbx <args>` and keeps what it prints, with the URLs in it,
 // for the page to poll. withStdin keeps its input open for a pasted line.
 func (s *Server) runLogin(provider string, args []string, withStdin bool) (*oauthLogin, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), loginTimeout)

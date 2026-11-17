@@ -11,7 +11,7 @@ import (
 )
 
 func TestProxyCommandDoesNotFallThroughToClaude(t *testing.T) {
-	if !isCclCommand("codex") {
+	if !isGbxCommand("codex") {
 		t.Fatal("codex would launch Claude Code")
 	}
 	cmd := newCodexCommand()
@@ -59,7 +59,7 @@ func TestProxyStartOnDefaultStartsNothing(t *testing.T) {
 		var out bytes.Buffer
 		cmd.SetOut(&out)
 		cmd.SetErr(&bytes.Buffer{})
-		if err := cmd.Execute(); err != nil || !strings.Contains(out.String(), "needs no CCL integration") {
+		if err := cmd.Execute(); err != nil || !strings.Contains(out.String(), "needs no GBX integration") {
 			t.Fatalf("args %q: out=%q err=%v", args, out.String(), err)
 		}
 	}

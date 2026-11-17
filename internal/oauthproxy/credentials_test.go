@@ -52,7 +52,7 @@ func TestKiroCredentialIdentityDoesNotUseSharedProfileARN(t *testing.T) {
 func TestListCredentialsIgnoresNestedDirectoriesAndInvalidJSON(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(filepath.Join(authDir, "nested"), 0o700); err != nil {
 		t.Fatal(err)
 	}

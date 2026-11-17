@@ -3,7 +3,7 @@
 ## Historical protocol adapter attribution
 
 The following MIT notice is retained for historical/reference-derived material
-used by the protocol adapters. CCL does not embed or depend on the referenced
+used by the protocol adapters. GBX does not embed or depend on the referenced
 SDK as a current runtime dependency.
 
 [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI),

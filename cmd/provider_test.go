@@ -10,7 +10,7 @@ import (
 )
 
 // seedProviders writes a config into an isolated HOME so the test never reads
-// or rewrites the developer's real ~/.ccl/config.yaml.
+// or rewrites the developer's real ~/.gbx/config.yaml.
 func seedProviders(t *testing.T, active string, names ...string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -50,7 +50,7 @@ func TestProviderRemoveWithYesSkipsTheConfirmation(t *testing.T) {
 
 func TestProviderRemoveWithoutYesDeclinesOnUnansweredPrompt(t *testing.T) {
 	// Under `go test` stdin is not a terminal, so the prompt reads EOF — the
-	// same thing a scripted `ccl rm` sees. That must cancel, never delete.
+	// same thing a scripted `gbx rm` sees. That must cancel, never delete.
 	seedProviders(t, "drop", "drop")
 
 	if err := runProviderRemove("drop", false, false); err != nil {
@@ -145,7 +145,7 @@ func TestProviderMoveRepairsACPSelection(t *testing.T) {
 
 func TestDestructiveCommandsExposeYesOnBothSpellings(t *testing.T) {
 	// Each constructor runs twice — once for the root shortcut, once under
-	// `ccl provider` — so the flag var has to be per command, not shared. Two
+	// `gbx provider` — so the flag var has to be per command, not shared. Two
 	// commands built from the same constructor must not see each other's flag.
 	for name, build := range map[string]func(string) *cobra.Command{
 		"rm": newProviderRemoveCommand,
@@ -196,10 +196,10 @@ func TestPreviewCommandRootAndSubcommand(t *testing.T) {
 
 	out, err := executeCommand(RootCmd(), "preview")
 	if err != nil {
-		t.Fatalf("ccl preview failed: %v", err)
+		t.Fatalf("gbx preview failed: %v", err)
 	}
 	if !strings.Contains(out, `"gpt-5.4"`) {
-		t.Fatalf("ccl preview = %q, want gpt-5.4", out)
+		t.Fatalf("gbx preview = %q, want gpt-5.4", out)
 	}
 
 	for _, args := range [][]string{
@@ -209,10 +209,10 @@ func TestPreviewCommandRootAndSubcommand(t *testing.T) {
 	} {
 		out, err := executeCommand(RootCmd(), args...)
 		if err != nil {
-			t.Fatalf("ccl %v failed: %v", args, err)
+			t.Fatalf("gbx %v failed: %v", args, err)
 		}
 		if !strings.Contains(out, `"claude-opus-4-6"`) || !strings.Contains(out, `"high"`) {
-			t.Fatalf("ccl %v = %q, want claude-opus-4-6 and high", args, out)
+			t.Fatalf("gbx %v = %q, want claude-opus-4-6 and high", args, out)
 		}
 	}
 
@@ -246,18 +246,18 @@ func TestProviderSetDefaultModelFlag(t *testing.T) {
 	}
 	t.Cleanup(resetSetFlags)
 
-	// 1. Active provider fallback: `ccl set -m model-a` updates alpha.
+	// 1. Active provider fallback: `gbx set -m model-a` updates alpha.
 	if _, err := executeCommand(RootCmd(), "set", "-m", " model-a "); err != nil {
-		t.Fatalf("ccl set -m: %v", err)
+		t.Fatalf("gbx set -m: %v", err)
 	}
 	resetSetFlags()
 	if got := loadProviders(t).Providers["alpha"].DefaultModel; got != "model-a" {
 		t.Fatalf("alpha DefaultModel = %q, want model-a", got)
 	}
 
-	// 2. Explicit provider via `ccl provider set beta --default-model model-b[1m]`.
+	// 2. Explicit provider via `gbx provider set beta --default-model model-b[1m]`.
 	if _, err := executeCommand(RootCmd(), "provider", "set", "beta", "--default-model", "model-b[1m]"); err != nil {
-		t.Fatalf("ccl provider set beta --default-model: %v", err)
+		t.Fatalf("gbx provider set beta --default-model: %v", err)
 	}
 	resetSetFlags()
 	if got := loadProviders(t).Providers["beta"].DefaultModel; got != "model-b[1m]" {
@@ -266,7 +266,7 @@ func TestProviderSetDefaultModelFlag(t *testing.T) {
 
 	// 3. Clearing via empty string (`-m ""`).
 	if _, err := executeCommand(RootCmd(), "set", "beta", "-m", ""); err != nil {
-		t.Fatalf("ccl set beta -m '': %v", err)
+		t.Fatalf("gbx set beta -m '': %v", err)
 	}
 	resetSetFlags()
 	if got := loadProviders(t).Providers["beta"].DefaultModel; got != "" {

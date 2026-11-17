@@ -24,14 +24,14 @@ import type {
 } from "./types";
 import { appURL } from "./base";
 
-// ccl serve generates a random access token per run unless --token or
-// CCL_SERVE_TOKEN is supplied, passing #<token> in the launch URL so it never
+// gbx serve generates a random access token per run unless --token or
+// GBX_SERVE_TOKEN is supplied, passing #<token> in the launch URL so it never
 // crosses the network in the initial page request.
-const TOKEN_KEY = "ccl-web-token";
+const TOKEN_KEY = "gbx-web-token";
 
-// The page sends its token in X-CCL-Token, never Authorization: a proxy in
-// front of ccl serve may need that header for its own Basic auth.
-export const TOKEN_HEADER = "X-CCL-Token";
+// The page sends its token in X-GBX-Token, never Authorization: a proxy in
+// front of gbx serve may need that header for its own Basic auth.
+export const TOKEN_HEADER = "X-GBX-Token";
 
 export function storedToken(): string {
   const rawHash = globalThis.location?.hash || "";

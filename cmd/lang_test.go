@@ -11,7 +11,7 @@ import (
 )
 
 func TestParseLangArgRejectsUnknownCodesInsteadOfDefaultingToEnglish(t *testing.T) {
-	// `ccl lang zn` (a typo for zh) used to save English and report success.
+	// `gbx lang zn` (a typo for zh) used to save English and report success.
 	for _, arg := range []string{"zn", "xyz", "de", "zh-XX", "1", "-"} {
 		if code, err := parseLangArg(arg); err == nil {
 			t.Fatalf("parseLangArg(%q) = %q, want an error", arg, code)
@@ -61,9 +61,9 @@ func TestParseLangChoiceTreatsNoAnswerAsKeepCurrent(t *testing.T) {
 
 func TestBareLangWithoutATerminalLeavesTheConfigAlone(t *testing.T) {
 	// Under `go test` stdin is not a terminal — the same situation as
-	// `ccl lang < /dev/null` or a CI step. Nothing may be written.
+	// `gbx lang < /dev/null` or a CI step. Nothing may be written.
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("CCL_LANG", "")
+	t.Setenv("GBX_LANG", "")
 	if err := config.Save(&provider.Config{Lang: "zh-CN", Providers: map[string]provider.Provider{}}); err != nil {
 		t.Fatalf("seed config: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestBareLangWithoutATerminalLeavesTheConfigAlone(t *testing.T) {
 	langCmd.SetOut(buf)
 	t.Cleanup(func() { langCmd.SetOut(nil) })
 	if err := langCmd.RunE(langCmd, nil); err != nil {
-		t.Fatalf("bare ccl lang: %v", err)
+		t.Fatalf("bare gbx lang: %v", err)
 	}
 
 	cfg, err := config.Load()
@@ -87,11 +87,11 @@ func TestBareLangWithoutATerminalLeavesTheConfigAlone(t *testing.T) {
 	}
 }
 
-func TestLangReportsThatCclLangEnvWins(t *testing.T) {
-	// locale resolves CCL_LANG ahead of config.yaml, so without this warning the
+func TestLangReportsThatGbxLangEnvWins(t *testing.T) {
+	// locale resolves GBX_LANG ahead of config.yaml, so without this warning the
 	// command claims to have switched while the next run reads the environment.
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("CCL_LANG", "en")
+	t.Setenv("GBX_LANG", "en")
 	if err := config.Save(&provider.Config{Providers: map[string]provider.Provider{}}); err != nil {
 		t.Fatalf("seed config: %v", err)
 	}
@@ -100,8 +100,8 @@ func TestLangReportsThatCclLangEnvWins(t *testing.T) {
 	if err := applyLang(buf, "zh-CN"); err != nil {
 		t.Fatalf("applyLang: %v", err)
 	}
-	if !strings.Contains(buf.String(), "CCL_LANG") {
-		t.Fatalf("no warning that CCL_LANG overrides the saved language:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "GBX_LANG") {
+		t.Fatalf("no warning that GBX_LANG overrides the saved language:\n%s", buf.String())
 	}
 
 	// The value is still saved, so the setting applies once the export is gone.
@@ -116,7 +116,7 @@ func TestLangReportsThatCclLangEnvWins(t *testing.T) {
 
 func TestApplyLangIsQuietWhenNothingChanges(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("CCL_LANG", "")
+	t.Setenv("GBX_LANG", "")
 	if err := config.Save(&provider.Config{Lang: "en-US", Providers: map[string]provider.Provider{}}); err != nil {
 		t.Fatalf("seed config: %v", err)
 	}

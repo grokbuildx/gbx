@@ -73,7 +73,7 @@ func TestCodexClientToolSearchRoundTrip(t *testing.T) {
 				}
 			}, "openai", Options{})
 			catalog := append(largeToolCatalog(), clientToolSearch())
-			response := postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "input": "Find shipping ETA", "tools": catalog, "stream": streaming})
+			response := postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "input": "Find shipping ETA", "tools": catalog, "stream": streaming})
 			raw, _ := io.ReadAll(response.Body)
 			if response.StatusCode != 200 {
 				t.Fatalf("HTTP %d: %s", response.StatusCode, raw)
@@ -103,12 +103,12 @@ func TestCodexClientToolSearchRoundTrip(t *testing.T) {
 				t.Fatal("proxy executed the search instead of returning it to Codex")
 			}
 			found := largeToolCatalog()[1]
-			second := responseObject(t, postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "previous_response_id": first["id"], "tools": []any{clientToolSearch()}, "input": []any{map[string]any{"type": "tool_search_output", "execution": "client", "call_id": "search_shipping", "tools": []any{found}}}}))
+			second := responseObject(t, postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "previous_response_id": first["id"], "tools": []any{clientToolSearch()}, "input": []any{map[string]any{"type": "tool_search_output", "execution": "client", "call_id": "search_shipping", "tools": []any{found}}}}))
 			call := second["output"].([]any)[0].(map[string]any)
 			if call["name"] != "lookup_shipping_eta" || call["namespace"] != "shipping" {
 				t.Fatalf("discovered call changed: %+v", call)
 			}
-			third := responseObject(t, postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "previous_response_id": second["id"], "tools": []any{clientToolSearch()}, "input": []any{map[string]any{"type": "function_call_output", "call_id": "call_shipping", "output": "shipping-result"}}}))
+			third := responseObject(t, postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "previous_response_id": second["id"], "tools": []any{clientToolSearch()}, "input": []any{map[string]any{"type": "function_call_output", "call_id": "call_shipping", "output": "shipping-result"}}}))
 			if calls.Load() != 3 || third["status"] != "completed" {
 				t.Fatal("tool continuation failed")
 			}

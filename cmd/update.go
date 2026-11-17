@@ -22,9 +22,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// cclRepoReleases is the base URL for ccl's GitHub release asset downloads. Asset
+// gbxRepoReleases is the base URL for gbx's GitHub release asset downloads. Asset
 // names are produced by .github/workflows/release.yml and consumed by bin/wrapper.js.
-const cclRepoReleases = "https://github.com/grokbuildx/gbx/releases/download"
+const gbxRepoReleases = "https://github.com/grokbuildx/gbx/releases/download"
 
 // releaseArchiveSuffix is appended to a binary's asset name on GitHub releases:
 // binaries ship gzip-compressed (about a third of their size). The npm package
@@ -47,10 +47,10 @@ var updateMethod string
 var updateCmd = func() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update",
-		Short: "Update ccl to the latest version",
-		Long: `Update ccl to the latest release.
+		Short: "Update gbx to the latest version",
+		Long: `Update gbx to the latest release.
 
-ccl detects how it was installed (npm, go install, or a downloaded binary)
+gbx detects how it was installed (npm, go install, or a downloaded binary)
 and offers that method first. --method self|npm|go skips the prompt, which
 is required when stdin is not a terminal. The self method downloads the
 release archive for this platform, checks it against the release's
@@ -94,7 +94,7 @@ func runUpdate(method string) error {
 		// Windows a running executable cannot be replaced, so there is nothing
 		// to offer yet.
 		if runtime.GOOS == "windows" && method == "" {
-			return fmt.Errorf("npm has not published %s yet (the registry lags the GitHub release) and Windows cannot replace a running binary; retry later or run ccl update --method go", latestVersion)
+			return fmt.Errorf("npm has not published %s yet (the registry lags the GitHub release) and Windows cannot replace a running binary; retry later or run gbx update --method go", latestVersion)
 		}
 		suggested = "self"
 	}
@@ -105,7 +105,7 @@ func runUpdate(method string) error {
 			if npmReady {
 				available = "self|npm|go"
 			}
-			return fmt.Errorf("no terminal to ask on; run ccl update --method %s (suggested) or %s", suggested, available)
+			return fmt.Errorf("no terminal to ask on; run gbx update --method %s (suggested) or %s", suggested, available)
 		}
 		if detected == "npm" && !npmReady {
 			fmt.Println(locale.T(
@@ -120,13 +120,13 @@ func runUpdate(method string) error {
 
 	switch method {
 	case "self":
-		fmt.Println("Downloading latest ccl binary...")
+		fmt.Println("Downloading latest gbx binary...")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 		if err := selfUpdate(ctx, latestVersion); err != nil {
 			return fmt.Errorf("self-update failed (try the go method instead): %w", err)
 		}
-		fmt.Println("\n🎉 Successfully updated ccl to the latest version!")
+		fmt.Println("\n🎉 Successfully updated gbx to the latest version!")
 	case "npm":
 		if !npmReady {
 			return fmt.Errorf("npm does not have %s yet (publishing lags the GitHub release); use --method self or go", latestVersion)
@@ -137,7 +137,7 @@ func runUpdate(method string) error {
 		if err := runUpdateCommand("go", "install", "github.com/grokbuildx/gbx@latest"); err != nil {
 			return fmt.Errorf("go update failed: %w", err)
 		}
-		fmt.Println("\n🎉 Successfully updated ccl to the latest version via Go!")
+		fmt.Println("\n🎉 Successfully updated gbx to the latest version via Go!")
 	case "manual":
 		fmt.Println("\nPlease visit the following link to check alternative installation methods:")
 		fmt.Println("🔗 https://github.com/grokbuildx/gbx#安装与编译")
@@ -210,7 +210,7 @@ func runUpdateCommand(name string, args ...string) error {
 	return command.Run()
 }
 
-// detectInstallMethod infers how this ccl was installed from where its binary
+// detectInstallMethod infers how this gbx was installed from where its binary
 // lives: inside an npm package, in a Go bin directory, or anywhere else
 // (a downloaded release binary).
 func detectInstallMethod() string {
@@ -226,11 +226,11 @@ func detectInstallMethod() string {
 
 func installMethodForPath(path string, goBins []string) string {
 	slashed := filepath.ToSlash(path)
-	if strings.Contains(slashed, "/node_modules/@claudecodelaunch/ccl/") {
+	if strings.Contains(slashed, "/node_modules/@grokbuildx/gbx/") {
 		return "npm"
 	}
 	for _, platform := range []string{"darwin-x64", "darwin-arm64", "linux-x64", "linux-arm64", "win32-x64", "win32-arm64"} {
-		if strings.Contains(slashed, "/node_modules/@claudecodelaunch/ccl-"+platform+"/") {
+		if strings.Contains(slashed, "/node_modules/@grokbuildx/gbx-"+platform+"/") {
 			return "npm"
 		}
 	}
@@ -260,7 +260,7 @@ func goBinDirs() []string {
 	return dirs
 }
 
-// latestVersions resolves the version ccl update installs and whether npm
+// latestVersions resolves the version gbx update installs and whether npm
 // carries it. The GitHub release is authoritative and appears first; npm is
 // both the fallback when the GitHub API is unreachable (it is blocked on some
 // networks) and the gate on the npm method.
@@ -314,7 +314,7 @@ func fetchLatestReleaseVersion() (string, error) {
 
 // fetchLatestNpmVersion names the newest version of the npm launcher package.
 func fetchLatestNpmVersion() (string, error) {
-	resp, err := updateHTTPClient.Get("https://registry.npmjs.org/@claudecodelaunch/ccl/latest")
+	resp, err := updateHTTPClient.Get("https://registry.npmjs.org/@grokbuildx/gbx/latest")
 	if err != nil {
 		return "", err
 	}
@@ -358,7 +358,7 @@ func releaseAssetName() (string, error) {
 	if runtime.GOOS == "windows" {
 		ext = ".exe"
 	}
-	return fmt.Sprintf("ccl-%s-%s%s", platform, arch, ext), nil
+	return fmt.Sprintf("gbx-%s-%s%s", platform, arch, ext), nil
 }
 
 // releaseChecksum fetches the release's SHA256SUMS and returns the digest
@@ -399,7 +399,7 @@ func checksumFor(sums, asset string) (string, error) {
 // known it pins the exact release; otherwise it follows GitHub's /latest redirect.
 func releaseDownloadURL(version, asset string) string {
 	if version != "" && version != "unknown" {
-		return fmt.Sprintf("%s/%s/%s", cclRepoReleases, canonicalReleaseTag(version), asset)
+		return fmt.Sprintf("%s/%s/%s", gbxRepoReleases, canonicalReleaseTag(version), asset)
 	}
 	return fmt.Sprintf("https://github.com/grokbuildx/gbx/releases/latest/download/%s", asset)
 }
@@ -521,7 +521,7 @@ func validateReleaseBinary(path string) error {
 		}
 	}
 	if !ours {
-		return fmt.Errorf("download is not a ccl executable")
+		return fmt.Errorf("download is not a gbx executable")
 	}
 	settings := make(map[string]string)
 	for _, entry := range info.Settings {
@@ -567,7 +567,7 @@ func humanSize(n int64) string {
 }
 
 // selfUpdate downloads the current platform's release binary and atomically
-// replaces the running ccl binary at os.Executable().
+// replaces the running gbx binary at os.Executable().
 func selfUpdate(ctx context.Context, version string) error {
 	target, err := os.Executable()
 	if err != nil {

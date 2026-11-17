@@ -440,7 +440,7 @@ func (a *responseAssembler) addOpaqueReasoning(data string) error {
 	if err := a.retain(len(data)); err != nil {
 		return err
 	}
-	index := a.appendBlock(assemblerBlock{Type: blockOpaque, ItemID: assemblerItemID(cclReasoningIDPrefix), Data: data})
+	index := a.appendBlock(assemblerBlock{Type: blockOpaque, ItemID: assemblerItemID(gbxReasoningIDPrefix), Data: data})
 	if err := a.emit("response.output_item.added", map[string]any{"output_index": index, "item": a.item(index, false)}); err != nil {
 		return err
 	}
@@ -570,7 +570,7 @@ func (a *responseAssembler) ensureBlock(blockType string) (int, error) {
 	}
 	block := assemblerBlock{Type: blockType, ItemID: assemblerItemID("msg_")}
 	if blockType == blockThinking {
-		block.ItemID = assemblerItemID(cclReasoningIDPrefix)
+		block.ItemID = assemblerItemID(gbxReasoningIDPrefix)
 	}
 	index := a.appendBlock(block)
 	a.activeIndex = index

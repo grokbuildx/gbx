@@ -40,7 +40,7 @@ interface Props {
   sync?: "synced" | "pending";
   onToggleTheme: () => void;
   onCollapse: () => void;
-  // A newer ccl release, when there is one.
+  // A newer gbx release, when there is one.
   update: string;
 }
 
@@ -82,7 +82,7 @@ export function Sidebar(props: Props) {
         <IconButton title={t("toggleSidebar")} onClick={props.onCollapse}>
           <SidebarIcon />
         </IconButton>
-        <span className="font-display text-[20px] font-medium tracking-tight text-ink">ccl</span>
+        <span className="font-display text-[20px] font-medium tracking-tight text-ink">gbx</span>
       </div>
 
       {props.workspaces.length > 0 && (
@@ -165,7 +165,7 @@ export function Sidebar(props: Props) {
           )}
         </button>
         <span className="min-w-0 flex-1 truncate text-[13px] text-ink-2" title={health?.workspace || ""}>
-          ccl {health?.version || "dev"}
+          gbx {health?.version || "dev"}
           <span className="text-ink-3"> · grok {(health?.grokVersion || "?").replace(/^grok\s+/i, "")}</span>
         </span>
         <span className="flex shrink-0 items-center gap-0.5">

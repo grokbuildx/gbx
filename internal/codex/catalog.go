@@ -72,7 +72,7 @@ func newModel(alias, id string, details map[string]protocol.ModelInfo, names map
 	}
 	levels, defaultLevel := reasoningLevels(info)
 	entry := Model{
-		"slug": alias, "display_name": name, "description": "Model " + id + " through CCL",
+		"slug": alias, "display_name": name, "description": "Model " + id + " through GBX",
 		"context_window": contextWindow, "max_context_window": contextWindow,
 		"shell_type": "default", "visibility": "list", "supported_in_api": true, "priority": 0,
 		"truncation_policy": map[string]any{"mode": "tokens", "limit": 10000},
@@ -128,7 +128,7 @@ func applyClientToolMode(native Catalog, models []Model, routes map[string]Route
 	var template Model
 	for _, model := range native.Models {
 		id, _ := model["slug"].(string)
-		if strings.HasPrefix(strings.ToLower(id), "ccl/") || model["tool_mode"] != "code_mode_only" {
+		if strings.HasPrefix(strings.ToLower(id), "gbx/") || model["tool_mode"] != "code_mode_only" {
 			continue
 		}
 		template = model
@@ -156,7 +156,7 @@ func applyClientToolMode(native Catalog, models []Model, routes map[string]Route
 	}
 }
 
-// applyProviderContext shares CCL's context/compaction setting with Codex.
+// applyProviderContext shares GBX's context/compaction setting with Codex.
 // Runtime catalogs often omit windows, and a backend's advertised maximum is
 // not the user's selected budget. Never derive the budget from that metadata.
 func applyProviderContext(model Model, id string, p provider.Provider) {
@@ -321,7 +321,7 @@ func MergeCatalog(native Catalog, custom []Model) (Catalog, error) {
 	nativeLabels := make(map[string]bool)
 	for _, model := range native.Models {
 		id, _ := model["slug"].(string)
-		if strings.HasPrefix(id, "ccl/") {
+		if strings.HasPrefix(id, "gbx/") {
 			continue
 		}
 		label, _ := model["display_name"].(string)
@@ -335,7 +335,7 @@ func MergeCatalog(native Catalog, custom []Model) (Catalog, error) {
 		}
 		label, _ := model["display_name"].(string)
 		if nativeLabels[strings.ToLower(label)] {
-			copy["display_name"] = label + " (CCL)"
+			copy["display_name"] = label + " (GBX)"
 		}
 		merged.Models = append(merged.Models, copy)
 	}
@@ -346,11 +346,11 @@ func MergeCatalog(native Catalog, custom []Model) (Catalog, error) {
 	}
 	for _, model := range native.Models {
 		id, _ := model["slug"].(string)
-		if strings.HasPrefix(id, "ccl/") {
+		if strings.HasPrefix(id, "gbx/") {
 			continue
-		} // A prior CCL overlay is not a native route.
+		} // A prior GBX overlay is not a native route.
 		if seen[id] {
-			return Catalog{}, fmt.Errorf("native and CCL model catalog collision")
+			return Catalog{}, fmt.Errorf("native and GBX model catalog collision")
 		}
 		seen[id] = true
 		merged.Models = append(merged.Models, model)

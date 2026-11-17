@@ -46,7 +46,7 @@ func boundProviders(primary provider.Provider, additional []string) ([]provider.
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		return nil, fmt.Errorf("read CCL providers failed")
+		return nil, fmt.Errorf("read GBX providers failed")
 	}
 	seen := map[string]bool{primary.Name: true}
 	for _, name := range additional {
@@ -144,7 +144,7 @@ func (r *catalogRefresh) update(ctx context.Context, m *Manager, gateway *codex.
 	if stamp != "" {
 		cfg, err := config.Load()
 		if err != nil {
-			return fmt.Errorf("read CCL configuration for catalog refresh failed")
+			return fmt.Errorf("read GBX configuration for catalog refresh failed")
 		}
 		found, exists := cfg.Providers[primary]
 		if !exists {

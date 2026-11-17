@@ -429,7 +429,7 @@ func TestRunAuthPreservesFastModeOnReauth(t *testing.T) {
 	}
 
 	// Re-auth never rewrites FastMode; only the Claude Code /fast toggle
-	// or ccl set Review & Apply does.
+	// or gbx set Review & Apply does.
 	if err := runAuth(context.Background(), &bytes.Buffer{}, []string{"gpt", "work"}, authOptions{}); err != nil {
 		t.Fatalf("runAuth() error: %v", err)
 	}
@@ -485,7 +485,7 @@ func TestPrepareProviderRuntimeRoutesManualResponsesThroughSharedAdapter(t *test
 	}
 }
 
-func TestPrepareProviderRuntimeRoutesManualChatThroughCCLAdapter(t *testing.T) {
+func TestPrepareProviderRuntimeRoutesManualChatThroughGBXAdapter(t *testing.T) {
 	upstream := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(upstream.Close)
 	original := provider.Provider{
@@ -506,7 +506,7 @@ func TestPrepareProviderRuntimeRoutesManualChatThroughCCLAdapter(t *testing.T) {
 		t.Fatalf("runtime endpoint = %q", runtimeProvider.Endpoint)
 	}
 	if runtimeProvider.Endpoint == original.Endpoint {
-		t.Fatal("manual Chat provider bypassed the CCL-owned adapter")
+		t.Fatal("manual Chat provider bypassed the GBX-owned adapter")
 	}
 	if runtimeProvider.APIKey == "" || runtimeProvider.APIKey == original.APIKey {
 		t.Fatalf("runtime API key was not isolated: %q", runtimeProvider.APIKey)
@@ -519,7 +519,7 @@ func TestPrepareProviderRuntimeRoutesManualChatThroughCCLAdapter(t *testing.T) {
 func TestOAuthProviderCanDiscoverModelsForSet(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatalf("create auth dir: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestOAuthProviderCanDiscoverModelsForSet(t *testing.T) {
 	defer cleanup()
 
 	m := NewAdvancedConfigModel(&p)
-	// No probe: the runtime ccl started for the page is the catalog.
+	// No probe: the runtime gbx started for the page is the catalog.
 	m.configureOAuthRuntime(runtimeProvider.Endpoint, runtimeProvider.APIKey, runtime.Models(), runtime.ModelCatalogIsFallback())
 	if len(runtime.Models()) == 0 {
 		t.Fatal("gpt runtime carries no model catalog")
@@ -632,7 +632,7 @@ func TestDerivedProviderNameKeepsShortIdentities(t *testing.T) {
 }
 
 // TestConfigureOAuthProviderAutoClawUsesManagedChat pins the persisted
-// provider shape for CCL's AutoClaw Anthropic-to-OpenAI adapter.
+// provider shape for GBX's AutoClaw Anthropic-to-OpenAI adapter.
 func TestConfigureOAuthProviderAutoClawUsesManagedChat(t *testing.T) {
 	p := configureOAuthProvider(provider.Provider{Name: "autoclaw-x"}, "autoclaw-x",
 		oauthproxy.ProviderAutoClaw, "autoclaw-x.json")

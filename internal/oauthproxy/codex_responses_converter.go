@@ -225,7 +225,7 @@ func codexTurnItems(turn conversationTurn) ([]any, error) {
 // The client persists a reasoning item's encrypted_content verbatim. Carry the
 // entire upstream reasoning item there so IDs, status, summary, null/absent
 // fields and future fields survive the round trip, including across restarts.
-const codexReasoningSignaturePrefix = "ccl-responses-reasoning-v1:"
+const codexReasoningSignaturePrefix = "gbx-responses-reasoning-v1:"
 
 func codexReasoningSignature(item map[string]any) (string, error) {
 	raw, err := json.Marshal(item)
@@ -240,7 +240,7 @@ func codexReasoningFromSignature(signature string) (any, error) {
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	var item map[string]json.RawMessage
 	if err != nil || json.Unmarshal(raw, &item) != nil || string(item["type"]) != `"reasoning"` {
-		return nil, fmt.Errorf("invalid CCL Responses reasoning payload")
+		return nil, fmt.Errorf("invalid GBX Responses reasoning payload")
 	}
 	return json.RawMessage(raw), nil
 }

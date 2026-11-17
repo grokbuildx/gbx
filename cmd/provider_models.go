@@ -28,9 +28,9 @@ answer. That is a real request per model and counts against your plan
 (Qoder credits, API usage).
 
 Examples:
-  ccl provider models
-  ccl provider models --all
-  ccl provider models --probe
+  gbx provider models
+  gbx provider models --all
+  gbx provider models --probe
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runModels(cmd.Context(), showAll, probe, *target)
@@ -90,7 +90,7 @@ func runModels(ctx context.Context, showAll, probe bool, target providerTarget) 
 		return nil
 	}
 
-	// Probe the same target ccl set uses: API-key providers are verified on
+	// Probe the same target gbx set uses: API-key providers are verified on
 	// their configured upstream (the loopback runtime has no Chat/Responses
 	// route), OAuth subscriptions on their loopback runtime.
 	probeTarget := modelProbeTarget(configured, p)
@@ -103,7 +103,7 @@ func runModels(ctx context.Context, showAll, probe bool, target providerTarget) 
 		for _, model := range modelList {
 			fmt.Printf("  · %s\n", modelReportLabel(model, metadata))
 		}
-		fmt.Printf("\nNot probed. `ccl provider models --probe` sends a 1-token request to each of the %d model(s) (billed).\n", len(modelList))
+		fmt.Printf("\nNot probed. `gbx provider models --probe` sends a 1-token request to each of the %d model(s) (billed).\n", len(modelList))
 		return nil
 	}
 	fmt.Printf("Probing %d model(s) with a 1-token request each...\n\n", len(modelList))

@@ -23,7 +23,7 @@ const (
 	kimiOAuthClientID  = "17e5f671-d194-4dfb-9706-5516cb48c098"
 	kimiMaxErrorBytes  = int64(1 << 20)
 	kimiPlatformHeader = "CLIProxyAPI"
-	kimiVersionHeader  = "ccl"
+	kimiVersionHeader  = "gbx"
 )
 
 var (
@@ -36,7 +36,7 @@ var (
 )
 
 // kimiOAuthAuthorizer resolves and refreshes a Kimi OAuth credential written by
-// CCL during `ccl oauth kimi`. It reads the persisted access_token,
+// GBX during `gbx oauth kimi`. It reads the persisted access_token,
 // refresh_token, and device_id fields and refreshes against Kimi's token endpoint.
 type kimiOAuthAuthorizer struct {
 	path   string
@@ -97,7 +97,7 @@ func (a *kimiOAuthAuthorizer) load() (*kimiOAuthCredential, error) {
 	raw, err := os.ReadFile(a.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no Kimi credentials found; run `ccl oauth kimi` first")
+			return nil, fmt.Errorf("no Kimi credentials found; run `gbx oauth kimi` first")
 		}
 		return nil, fmt.Errorf("read Kimi credential %s: %w", filepath.Base(a.path), err)
 	}
@@ -555,7 +555,7 @@ func fallbackKimiAssistantReasoning(msg gjson.Result, hasLatest bool, latest str
 	return "[reasoning unavailable]"
 }
 
-// startKimiOAuth starts the CCL-owned Kimi Chat Completions data plane. Kimi
+// startKimiOAuth starts the GBX-owned Kimi Chat Completions data plane. Kimi
 // speaks OpenAI Chat Completions with a handful of device-identity headers and a
 // model-ID normalization pass, so it reuses the shared chat service with those
 // two Kimi-specific hooks installed.

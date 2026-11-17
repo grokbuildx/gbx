@@ -13,14 +13,14 @@ func TestEncryptedICloudSyncLifecycle(t *testing.T) {
 	home := t.TempDir()
 	drive := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", drive)
-	cclDir := filepath.Join(home, ".ccl")
-	authDir := filepath.Join(cclDir, "auth")
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", drive)
+	gbxDir := filepath.Join(home, ".gbx")
+	authDir := filepath.Join(gbxDir, "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	firstConfig := []byte("active_provider: grok1\nsecret: local-api-key\n")
-	if err := os.WriteFile(filepath.Join(cclDir, "config.yaml"), firstConfig, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(gbxDir, "config.yaml"), firstConfig, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(authDir, "xai-a.json"),
@@ -59,7 +59,7 @@ func TestEncryptedICloudSyncLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshotCipher, err := os.ReadFile(filepath.Join(remoteDir, snapshotsDirectory, pushed.ID+".ccl"))
+	snapshotCipher, err := os.ReadFile(filepath.Join(remoteDir, snapshotsDirectory, pushed.ID+".gbx"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestEncryptedICloudSyncLifecycle(t *testing.T) {
 		t.Fatal("tagging unchanged contents should reuse the encrypted snapshot")
 	}
 	secondConfig := []byte("active_provider: grok1\nsecret: newer-local-key\n")
-	if err := os.WriteFile(filepath.Join(cclDir, "config.yaml"), secondConfig, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(gbxDir, "config.yaml"), secondConfig, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := manager.Tag("release-1"); err != nil {
@@ -113,7 +113,7 @@ func TestEncryptedICloudSyncLifecycle(t *testing.T) {
 
 	// A forced pull replaces local config/auth exactly and keeps an encrypted
 	// recoverable backup of the previous local data.
-	if err := os.WriteFile(filepath.Join(cclDir, "config.yaml"), []byte("local: divergent\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(gbxDir, "config.yaml"), []byte("local: divergent\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(authDir, "stale.json"), []byte(`{"type":"xai"}`), 0o600); err != nil {
@@ -126,7 +126,7 @@ func TestEncryptedICloudSyncLifecycle(t *testing.T) {
 	if !pulled.Downloaded || pulled.BackupPath == "" {
 		t.Fatalf("forced pull = %+v", pulled)
 	}
-	gotConfig, err := os.ReadFile(filepath.Join(cclDir, "config.yaml"))
+	gotConfig, err := os.ReadFile(filepath.Join(gbxDir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,12 +153,12 @@ func TestPullRejectsReplayedLatestIndex(t *testing.T) {
 	home := t.TempDir()
 	drive := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", drive)
-	cclDir := filepath.Join(home, ".ccl")
-	if err := os.MkdirAll(cclDir, 0o700); err != nil {
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", drive)
+	gbxDir := filepath.Join(home, ".gbx")
+	if err := os.MkdirAll(gbxDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	configPath := filepath.Join(cclDir, "config.yaml")
+	configPath := filepath.Join(gbxDir, "config.yaml")
 	if err := os.WriteFile(configPath, []byte("version: one\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -238,14 +238,14 @@ func TestSnapshotPathValidationRejectsTraversal(t *testing.T) {
 // a second device logs in with nothing but access to the same cloud account.
 func TestNewDeviceOpensTheProfileWithOnlyTheCloudAccount(t *testing.T) {
 	drive := t.TempDir()
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", drive)
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", drive)
 	firstHome, secondHome := t.TempDir(), t.TempDir()
 	t.Setenv("HOME", firstHome)
 	first, err := LoginICloudLocalKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstKey, err := os.ReadFile(profileKeyPath(filepath.Join(firstHome, ".ccl"), currentProfileID(t, firstHome)))
+	firstKey, err := os.ReadFile(profileKeyPath(filepath.Join(firstHome, ".gbx"), currentProfileID(t, firstHome)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,20 +258,20 @@ func TestNewDeviceOpensTheProfileWithOnlyTheCloudAccount(t *testing.T) {
 	if !second.Existing || second.DeviceID == first.DeviceID {
 		t.Fatalf("second device login = %+v (first %+v)", second, first)
 	}
-	secondKey, err := os.ReadFile(profileKeyPath(filepath.Join(secondHome, ".ccl"), currentProfileID(t, secondHome)))
+	secondKey, err := os.ReadFile(profileKeyPath(filepath.Join(secondHome, ".gbx"), currentProfileID(t, secondHome)))
 	if err != nil || !bytes.Equal(secondKey, firstKey) {
 		t.Fatalf("second device key differs: %v", err)
 	}
 
-	// The first pull on the new device may replace ccl's own defaults, but
+	// The first pull on the new device may replace gbx's own defaults, but
 	// not a provider configured there.
 	t.Setenv("HOME", firstHome)
-	if err := os.WriteFile(filepath.Join(firstHome, ".ccl", "config.yaml"), []byte("providers:\n  a: {}\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(firstHome, ".gbx", "config.yaml"), []byte("providers:\n  a: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pushFrom(t)
 	t.Setenv("HOME", secondHome)
-	secondConfig := filepath.Join(secondHome, ".ccl", "config.yaml")
+	secondConfig := filepath.Join(secondHome, ".gbx", "config.yaml")
 	if err := os.WriteFile(secondConfig, []byte("providers:\n  local: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +306,7 @@ func pushFrom(t *testing.T) {
 
 func currentProfileID(t *testing.T, home string) string {
 	t.Helper()
-	registry, err := loadRegistry(filepath.Join(home, ".ccl"))
+	registry, err := loadRegistry(filepath.Join(home, ".gbx"))
 	if err != nil {
 		t.Fatal(err)
 	}

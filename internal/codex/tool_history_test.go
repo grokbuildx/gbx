@@ -14,7 +14,7 @@ func TestCodexExecutorDocumentationDoesNotAuthorizeNestedTools(t *testing.T) {
 				writeChatTool(w, r, "invalid-call", name, map[string]any{"input": "private-tool-argument"})
 			}, "openai", Options{})
 			response := postResponses(t, g, map[string]any{
-				"model": "ccl/chosen/model-a", "stream": true,
+				"model": "gbx/chosen/model-a", "stream": true,
 				"instructions": "Use tools.view_image through functions.exec.",
 				"tools":        []any{map[string]any{"type": "custom", "name": "exec"}},
 				"input":        "inspect the image",
@@ -34,7 +34,7 @@ func TestCodexRetiredHistoryDoesNotAuthorizeProviderTool(t *testing.T) {
 		writeChatTool(w, r, "rejected-call", oldWire, map[string]any{"cmd": "private-argument-fixture"})
 	}, "openai", Options{})
 	response := postResponses(t, g, map[string]any{
-		"model": "ccl/chosen/model-a", "stream": true,
+		"model": "gbx/chosen/model-a", "stream": true,
 		"tools": []any{map[string]any{"type": "custom", "name": "exec"}},
 		"input": []any{
 			map[string]any{"type": "function_call", "name": "exec_command", "call_id": "retired-call", "arguments": `{}`},

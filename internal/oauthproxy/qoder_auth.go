@@ -96,7 +96,7 @@ func loginQoder(ctx context.Context, authDir string, opts LoginOptions) (LoginRe
 			return LoginResult{}, fmt.Errorf("poll Qoder authorization: %w", err)
 		}
 		request.Header.Set("Accept", "application/json")
-		request.Header.Set("User-Agent", "ccl")
+		request.Header.Set("User-Agent", "gbx")
 		response, err := doCredentialRequest(client, request)
 		if err != nil {
 			return LoginResult{}, fmt.Errorf("poll Qoder authorization: %w", err)
@@ -186,7 +186,7 @@ func fetchQoderUserInfo(ctx context.Context, client *http.Client, accessToken st
 	}
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "ccl")
+	request.Header.Set("User-Agent", "gbx")
 	response, err := doCredentialRequest(client, request)
 	if err != nil {
 		return qoderUserInfo{}

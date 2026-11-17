@@ -610,8 +610,8 @@ func (m *AdvancedConfigModel) wrapMainPanel(rows []*tui.Element) *tui.Element {
 	content.AddChild(panel)
 	content.AddChild(plainLine(""))
 	tip := spanLine(locale.T(
-		"💡 提示: 使用 `ccl lang` 更改终端显示语言",
-		"💡 Tip: Change the TUI display language with `ccl lang`",
+		"💡 提示: 使用 `gbx lang` 更改终端显示语言",
+		"💡 Tip: Change the TUI display language with `gbx lang`",
 	), stGray)
 	fitElementText(tip, m.panelWidth())
 	content.AddChild(tip)

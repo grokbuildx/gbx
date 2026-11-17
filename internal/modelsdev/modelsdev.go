@@ -1,6 +1,6 @@
 // Package modelsdev fetches and parses the models.dev public model database
 // (https://models.dev/api.json). It owns the catalog wire format and an optional offline metadata cache.
-// It resolves model capabilities and AI SDK providers without knowing CCL's
+// It resolves model capabilities and AI SDK providers without knowing GBX's
 // provider configuration, credentials or protocol dispatch.
 //
 // models.dev is the metadata source OpenCode itself uses to decide which AI SDK
@@ -191,7 +191,7 @@ func fetchBody(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("build models.dev request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "ccl")
+	req.Header.Set("User-Agent", "gbx")
 
 	resp, err := client.Do(req)
 	if err != nil {

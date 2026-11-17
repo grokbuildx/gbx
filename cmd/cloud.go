@@ -18,7 +18,7 @@ func newCloudLoginCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login [platform] [alias]",
 		Short: "Connect an encrypted cloud synchronization provider",
-		Long: `Connect ccl to a cloud sync provider, create or open an encrypted profile,
+		Long: `Connect gbx to a cloud sync provider, create or open an encrypted profile,
 and register a local remote alias.
 
 Platforms (default: google-drive):
@@ -41,29 +41,29 @@ Alias (optional second argument):
 
 Examples:
 
-  ccl cloud login icloud
-  ccl cloud login google-drive
-  ccl cloud login google-drive personal
-  ccl cloud login google-drive work
+  gbx cloud login icloud
+  gbx cloud login google-drive
+  gbx cloud login google-drive personal
+  gbx cloud login google-drive work
 
 Encryption key:
 
-  A random 256-bit key, kept at ~/.ccl/cloud/profiles/<profile-id>/key and in
+  A random 256-bit key, kept at ~/.gbx/cloud/profiles/<profile-id>/key and in
   the cloud profile itself, so access to the cloud account protects the data:
-  a new device only needs ccl cloud login with the same account. Anyone who
-  controls that account (or a ccl token for it) can read the synced
+  a new device only needs gbx cloud login with the same account. Anyone who
+  controls that account (or a gbx token for it) can read the synced
   provider credentials.
 
 Related:
 
-  ccl cloud status / push / pull
-  ccl cloud remote ls
-  ccl cloud logout [alias]
+  gbx cloud status / push / pull
+  gbx cloud remote ls
+  gbx cloud logout [alias]
 `,
-		Example: `  ccl cloud login                     # same as: ccl cloud login google-drive
-  ccl cloud login google-drive personal
-  ccl cloud login icloud
-  ccl cloud login google-drive --no-browser # approve in a browser on another machine`,
+		Example: `  gbx cloud login                     # same as: gbx cloud login google-drive
+  gbx cloud login google-drive personal
+  gbx cloud login icloud
+  gbx cloud login google-drive --no-browser # approve in a browser on another machine`,
 		Args: cobra.RangeArgs(0, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Login failures are runtime errors; print them without the usage.
@@ -152,7 +152,7 @@ func defaultCloudLoginAlias(providerName string) (string, error) {
 		return matches[0], nil
 	default:
 		return "", fmt.Errorf(
-			"more than one %s remote exists; specify an alias, for example `ccl cloud login %s %s`",
+			"more than one %s remote exists; specify an alias, for example `gbx cloud login %s %s`",
 			providerName, providerName, matches[0],
 		)
 	}
@@ -165,7 +165,7 @@ func newCloudPushCommand() *cobra.Command {
 	var bestEffort bool
 	cmd := &cobra.Command{
 		Use:   "push",
-		Short: "Push an encrypted ccl snapshot to cloud storage",
+		Short: "Push an encrypted gbx snapshot to cloud storage",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if all && strings.TrimSpace(target) != "" {
@@ -207,7 +207,7 @@ func newCloudPullCommand() *cobra.Command {
 	var source string
 	cmd := &cobra.Command{
 		Use:   "pull",
-		Short: "Pull and decrypt a ccl snapshot from cloud storage",
+		Short: "Pull and decrypt a gbx snapshot from cloud storage",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
@@ -363,11 +363,11 @@ func newCloudCommand() *cobra.Command {
 
 Common commands:
 
-  ccl cloud login
-  ccl cloud push
-  ccl cloud pull
-  ccl cloud status
-  ccl cloud remote ls
+  gbx cloud login
+  gbx cloud push
+  gbx cloud pull
+  gbx cloud status
+  gbx cloud remote ls
 `,
 		Args: cobra.NoArgs,
 	}
@@ -483,8 +483,8 @@ func newCloudRemoteSetCommand() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&mirror, "mirror", false, "Include this remote in `ccl cloud push --all`")
-	cmd.Flags().BoolVar(&noMirror, "no-mirror", false, "Exclude this remote from `ccl cloud push --all`")
+	cmd.Flags().BoolVar(&mirror, "mirror", false, "Include this remote in `gbx cloud push --all`")
+	cmd.Flags().BoolVar(&noMirror, "no-mirror", false, "Exclude this remote from `gbx cloud push --all`")
 	return cmd
 }
 
@@ -546,7 +546,7 @@ sync cursor. It does not delete encrypted cloud data or the profile key.`,
 					fmt.Fprintln(cmd.OutOrStdout(), "Google authorization was revoked.")
 				}
 				if result.RemoteDeleted {
-					fmt.Fprintln(cmd.OutOrStdout(), "Remote encrypted CCL data was permanently deleted.")
+					fmt.Fprintln(cmd.OutOrStdout(), "Remote encrypted GBX data was permanently deleted.")
 				}
 				if result.NewPrimary != "" {
 					fmt.Fprintf(cmd.OutOrStdout(), "New primary cloud remote: %s\n", result.NewPrimary)
@@ -557,7 +557,7 @@ sync cursor. It does not delete encrypted cloud data or the profile key.`,
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "Log out all local cloud remotes")
 	cmd.Flags().BoolVar(&revoke, "revoke", false, "Revoke the provider authorization before local logout")
-	cmd.Flags().BoolVar(&deleteRemote, "delete-remote", false, "Permanently delete encrypted CCL data from the selected remote")
+	cmd.Flags().BoolVar(&deleteRemote, "delete-remote", false, "Permanently delete encrypted GBX data from the selected remote")
 	cmd.Flags().BoolVar(&forceLocal, "force-local", false, "Remove the local connection even if authorization revocation fails")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Confirm permanent remote data deletion")
 	return cmd
@@ -571,7 +571,7 @@ func confirmCloudRemoteDeletion(in io.Reader, errOut io.Writer, alias string, ye
 	if !ok || !term.IsTerminal(file.Fd()) {
 		return fmt.Errorf("--delete-remote requires --yes in a non-interactive session")
 	}
-	fmt.Fprintf(errOut, "Type the cloud remote alias %q to permanently delete its encrypted CCL data: ", alias)
+	fmt.Fprintf(errOut, "Type the cloud remote alias %q to permanently delete its encrypted GBX data: ", alias)
 	reader := bufio.NewReader(file)
 	value, err := reader.ReadString('\n')
 	if err != nil {

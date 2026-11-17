@@ -29,7 +29,7 @@ func (mode CatalogMode) Effective() CatalogMode {
 	return mode
 }
 
-// CatalogCapabilities reports CCL's supported client contract for the selected
+// CatalogCapabilities reports GBX's supported client contract for the selected
 // source. A false live-reload value means there is no verified guarantee; it
 // does not assert that Codex has no background refresh mechanism.
 type CatalogCapabilities struct {

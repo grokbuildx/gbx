@@ -1,9 +1,9 @@
-# CCL Cloud Sync v2 设计
+# GBX Cloud Sync v2 设计
 
 > **历史设计文档。** 本文记录 v2 设计时的方案，命令写法已与现状不同：
-> 云同步命令统一在 `ccl cloud` 下（如 `ccl cloud login/push/pull/status`），
-> 远端管理是 `ccl cloud remote ls|use|rename|set`，没有 `ccl key purge`。
-> 以 `ccl cloud --help` 和 README 为准。
+> 云同步命令统一在 `gbx cloud` 下（如 `gbx cloud login/push/pull/status`），
+> 远端管理是 `gbx cloud remote ls|use|rename|set`，没有 `gbx key purge`。
+> 以 `gbx cloud --help` 和 README 为准。
 
 状态：Phase 1–4 已实现，Phase 5 密钥轮换待实现  
 范围：多网盘连接、远端别名、同步生命周期、设备配对  
@@ -13,7 +13,7 @@
 
 Cloud Sync v2 将三个此前耦合的概念拆开：
 
-- **Profile**：一套被同步的 CCL 配置及其主密钥。
+- **Profile**：一套被同步的 GBX 配置及其主密钥。
 - **Remote**：一个具体的网盘账号或同步目录，例如个人 Google Drive。
 - **Device**：持有 Profile 主密钥、能够加解密配置的本地设备。
 
@@ -25,7 +25,7 @@ Cloud Sync v2 将三个此前耦合的概念拆开：
 2. OAuth token、远端缓存和同步游标必须按 Remote 隔离。
 3. 默认操作只作用于 primary Remote；跨网盘操作必须显式使用 `--all` 或 `--to/--from`。
 4. `logout` 默认只移除本地连接，不删除远端密文，也不删除主密钥。
-5. 云端永远不保存明文主密钥、恢复密钥或 CCL 配置。
+5. 云端永远不保存明文主密钥、恢复密钥或 GBX 配置。
 6. 设备配对只是安全传递现有主密钥；设备全部丢失时，离线恢复密钥仍是最后恢复方式。
 
 非目标：
@@ -33,28 +33,28 @@ Cloud Sync v2 将三个此前耦合的概念拆开：
 - 不在 v2 第一阶段支持同时活动的多个独立 Profile。
 - 不合并两个 Remote 上分叉的配置；冲突必须由用户选择来源。
 - 不承诺跨云事务。多网盘推送只能做到预检后逐个提交，并明确报告部分成功。
-- 不把 Google Authenticator、系统账号密码或 OAuth token 当作 CCL 加密密钥。
+- 不把 Google Authenticator、系统账号密码或 OAuth token 当作 GBX 加密密钥。
 
 ## 2. 用户命令
 
 ### 2.1 登录与远端管理
 
 ```text
-ccl login google-drive personal
-ccl login google-drive work
-ccl login icloud icloud-main
+gbx login google-drive personal
+gbx login google-drive work
+gbx login icloud icloud-main
 
-ccl cloud ls
-ccl cloud use personal
-ccl cloud rename personal home
-ccl cloud set work --mirror
-ccl cloud set work --no-mirror
+gbx cloud ls
+gbx cloud use personal
+gbx cloud rename personal home
+gbx cloud set work --mirror
+gbx cloud set work --no-mirror
 ```
 
 兼容现有命令：
 
 ```text
-ccl login google-drive
+gbx login google-drive
 ```
 
 没有提供别名时：
@@ -71,7 +71,7 @@ ccl login google-drive
 - `all`、`primary`、`latest` 为保留字。
 - 别名只用于展示和选择；内部引用使用随机 `remote_id`，因此改名不会移动 token 或状态。
 
-`ccl cloud ls` 示例：
+`gbx cloud ls` 示例：
 
 ```text
 Cloud remotes
@@ -84,18 +84,18 @@ Cloud remotes
 ### 2.2 Push、Pull 与状态
 
 ```text
-ccl push                    # 推送到 primary
-ccl push --to work          # 推送到指定 Remote
-ccl push --all              # 推送到所有启用 mirror 的 Remote
-ccl push --all --best-effort
+gbx push                    # 推送到 primary
+gbx push --to work          # 推送到指定 Remote
+gbx push --all              # 推送到所有启用 mirror 的 Remote
+gbx push --all --best-effort
 
-ccl pull                    # 从 primary 拉取
-ccl pull --from work
-ccl pull --from work --tag release-2026-07
+gbx pull                    # 从 primary 拉取
+gbx pull --from work
+gbx pull --from work --tag release-2026-07
 
-ccl status                  # primary 的状态
-ccl status work
-ccl status --all
+gbx status                  # primary 的状态
+gbx status work
+gbx status --all
 ```
 
 约束：
@@ -109,10 +109,10 @@ ccl status --all
 ### 2.3 Logout
 
 ```text
-ccl logout personal
-ccl logout personal --revoke
-ccl logout personal --delete-remote
-ccl logout --all
+gbx logout personal
+gbx logout personal --revoke
+gbx logout personal --delete-remote
+gbx logout --all
 ```
 
 默认 `logout <alias>`：
@@ -137,7 +137,7 @@ ccl logout --all
 
 `--delete-remote`：
 
-- 永久删除该 Remote 中属于 CCL 的 bundle 与配对对象。
+- 永久删除该 Remote 中属于 GBX 的 bundle 与配对对象。
 - 必须提供精确别名；不允许与 `--all` 一起使用。
 - 交互终端要求确认；自动化必须同时提供 `--yes`。
 - 先完成远端删除，再移除本地 token。
@@ -145,7 +145,7 @@ ccl logout --all
 主密钥销毁不放进 `logout`，使用单独的高风险命令：
 
 ```text
-ccl key purge
+gbx key purge
 ```
 
 仅在没有已连接 Remote 时允许执行，并在删除前验证用户已经导出恢复密钥或显式使用 `--force`。
@@ -155,7 +155,7 @@ ccl key purge
 ### 3.1 文件布局
 
 ```text
-~/.ccl/
+~/.gbx/
 └── cloud/
     ├── registry.json
     ├── profiles/
@@ -171,18 +171,18 @@ ccl key purge
     ├── operations/
     │   └── <operation-id>/
     │       ├── operation.json
-    │       └── snapshot.ccl
+    │       └── snapshot.gbx
     └── pairing/
         └── <request-id>.json
 ```
 
 权限要求：
 
-- `~/.ccl/cloud` 及所有子目录：`0700`。
+- `~/.gbx/cloud` 及所有子目录：`0700`。
 - 所有配置、token、密钥、状态和临时密文：`0600`。
 - 安全相关读写拒绝符号链接。
 - 注册表、状态和操作日志必须使用同目录临时文件 + `fsync` + 原子 rename。
-- JSON 中保存相对路径，不接受 `..` 或越过 `~/.ccl/cloud` 的路径。
+- JSON 中保存相对路径，不接受 `..` 或越过 `~/.gbx/cloud` 的路径。
 
 ### 3.2 注册表
 
@@ -259,7 +259,7 @@ ccl key purge
 - `account_hint` 只用于展示，可为空。
 - Google Drive 的 `auth.json` 独立保存 refresh token。
 - iCloud 没有 OAuth token，`provider_config` 保存同步目录标识。
-- 每个 Remote 有独立 cache，两个 Google 账号绝不能共用一个 `ccl-sync.bundle` 缓存路径。
+- 每个 Remote 有独立 cache，两个 Google 账号绝不能共用一个 `gbx-sync.bundle` 缓存路径。
 
 `remotes/<remote-id>/state.json`：
 
@@ -328,14 +328,14 @@ type Service struct {
    - 本地已有活动 Profile：把它连接为新镜像，但不隐式覆盖非空远端。
    - 本地没有 Profile：生成主密钥、`profile_id` 和 verifier。
 4. 远端已有 Profile：
-   - 本地没有 Profile：要求通过 passphrase、`ccl key import` 或设备配对取得密钥。
+   - 本地没有 Profile：要求通过 passphrase、`gbx key import` 或设备配对取得密钥。
    - 本地 Profile ID 相同：验证 verifier 后连接。
    - 本地 Profile ID 不同：默认拒绝。
 5. token、Remote config 和 registry 最后原子落盘。中途失败不得破坏现有连接。
 
 ### 5.2 增加另一个 Remote
 
-远端为空时，连接到当前活动 Profile；首次上传仍由用户运行 `ccl push --to <alias>` 或确认登录后的上传提示。
+远端为空时，连接到当前活动 Profile；首次上传仍由用户运行 `gbx push --to <alias>` 或确认登录后的上传提示。
 
 远端存在数据时：
 
@@ -410,9 +410,9 @@ Operation journal：
 不自动合并两个 Remote。若 `personal` 与 `work` 的 `latest` 不同：
 
 ```text
-ccl status --all
-ccl pull --from work
-ccl push --to personal
+gbx status --all
+gbx pull --from work
+gbx push --to personal
 ```
 
 由用户明确选择权威来源，再把结果镜像到其他 Remote。
@@ -424,8 +424,8 @@ ccl push --to personal
 新设备：
 
 ```text
-ccl login google-drive personal
-ccl device request --via personal --name "New MacBook"
+gbx login google-drive personal
+gbx device request --via personal --name "New MacBook"
 
 Waiting for approval: 482-731
 ```
@@ -433,10 +433,10 @@ Waiting for approval: 482-731
 已有设备：
 
 ```text
-ccl device ls
-ccl device ls --all
-ccl device approve 482-731
-ccl device deny 482-731
+gbx device ls
+gbx device ls --all
+gbx device approve 482-731
+gbx device deny 482-731
 ```
 
 新设备轮询到响应后取得主密钥、验证远端 verifier，并完成登录。
@@ -488,13 +488,13 @@ ccl device deny 482-731
 
 ### 8.3 远端对象
 
-配对对象不能塞进会整体覆盖的 `ccl-sync.bundle`，否则设备轮询和普通 push 会互相覆盖。
+配对对象不能塞进会整体覆盖的 `gbx-sync.bundle`，否则设备轮询和普通 push 会互相覆盖。
 
 远端需要独立对象：
 
 ```text
-pairing/requests/<request-id>.ccl
-pairing/responses/<request-id>.ccl
+pairing/requests/<request-id>.gbx
+pairing/responses/<request-id>.gbx
 ```
 
 Google Drive 在 `appDataFolder` 中分别创建、查询和删除这些对象。iCloud 使用同步目录下对应子目录。对象名称中的 request ID 必须严格验证为固定长度十六进制，禁止任意路径。
@@ -510,7 +510,7 @@ Google Drive 在 `appDataFolder` 中分别创建、查询和删除这些对象�
 云提供商不能得到：
 
 - Profile 主密钥。
-- CCL 配置明文。
+- GBX 配置明文。
 - 恢复密钥。
 - 加密后的设备名称。
 
@@ -523,7 +523,7 @@ Google Drive 在 `appDataFolder` 中分别创建、查询和删除这些对象�
 3. 原子更新所有 Remote。
 4. 只把新 key 分发给保留设备。
 
-因此第一阶段只提供 `ccl device forget`（删除可信设备元数据），不把它称为 revoke。真正的 `ccl device revoke` 必须与 `ccl key rotate` 一起实现。
+因此第一阶段只提供 `gbx device forget`（删除可信设备元数据），不把它称为 revoke。真正的 `gbx device revoke` 必须与 `gbx key rotate` 一起实现。
 
 离线恢复密钥仍必须保留。若所有已授权设备丢失且没有恢复密钥，零知识设计下无法恢复数据。
 
@@ -531,8 +531,8 @@ Google Drive 在 `appDataFolder` 中分别创建、查询和删除这些对象�
 
 触发条件：
 
-- 不存在 `~/.ccl/cloud/registry.json`。
-- 存在现有 `~/.ccl/cloud.json`。
+- 不存在 `~/.gbx/cloud/registry.json`。
+- 存在现有 `~/.gbx/cloud.json`。
 
 迁移步骤：
 
@@ -556,7 +556,7 @@ Google Drive 在 `appDataFolder` 中分别创建、查询和删除这些对象�
 
 ## 10. 状态与 Doctor
 
-`ccl status --all` 对每个 Remote 独立计算：
+`gbx status --all` 对每个 Remote 独立计算：
 
 - `up to date`
 - `local ahead`
@@ -570,7 +570,7 @@ Google Drive 在 `appDataFolder` 中分别创建、查询和删除这些对象�
 
 一个 Remote 不可达不能阻止显示其他 Remote。
 
-`ccl doctor` 增加：
+`gbx doctor` 增加：
 
 - registry schema 与别名唯一性。
 - primary 是否存在并属于活动 Profile。
@@ -596,7 +596,7 @@ Doctor 默认只诊断。修复必须使用现有的确认机制，并且绝不�
 ### Phase 2：多 Remote CLI（已实现）
 
 - 实现带别名的 login。
-- 实现 `ccl cloud ls/use/rename/set`。
+- 实现 `gbx cloud ls/use/rename/set`。
 - 实现 `logout`。
 - 实现 `push --to/--all`、`pull --from`、`status --all`。
 - 加入 operation journal 与部分成功退出码。
@@ -616,7 +616,7 @@ Doctor 默认只诊断。修复必须使用现有的确认机制，并且绝不�
 
 ### Phase 5：密钥轮换
 
-- 实现 `ccl key rotate`。
+- 实现 `gbx key rotate`。
 - 在轮换完成前不提供具有误导性的 `device revoke`。
 
 ## 12. 验收标准

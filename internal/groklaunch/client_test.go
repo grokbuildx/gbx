@@ -17,10 +17,10 @@ import (
 	"github.com/grokbuildx/gbx/internal/provider"
 )
 
-func TestRealGrokUsesCCLResponses(t *testing.T) {
-	binary := os.Getenv("CCL_TEST_GROK")
+func TestRealGrokUsesGBXResponses(t *testing.T) {
+	binary := os.Getenv("GBX_TEST_GROK")
 	if binary == "" {
-		t.Skip("set CCL_TEST_GROK to the Grok Build binary")
+		t.Skip("set GBX_TEST_GROK to the Grok Build binary")
 	}
 	binary, err := filepath.Abs(binary)
 	if err != nil {
@@ -42,7 +42,7 @@ func TestRealGrokUsesCCLResponses(t *testing.T) {
 			Stream bool   `json:"stream"`
 		}
 		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer fake-upstream-key" ||
-			json.NewDecoder(r.Body).Decode(&request) != nil || request.Model != "ccl-fixture" {
+			json.NewDecoder(r.Body).Decode(&request) != nil || request.Model != "gbx-fixture" {
 			t.Error("Grok request did not reach the configured provider")
 			http.Error(w, "invalid fixture request", http.StatusBadRequest)
 			return
@@ -59,7 +59,7 @@ func TestRealGrokUsesCCLResponses(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	launch, err := Prepare(t.Context(), binary, provider.Provider{
-		Name: "fixture", Type: "openai", Endpoint: upstream.URL + "/v1", APIKey: "fake-upstream-key", Model: "ccl-fixture",
+		Name: "fixture", Type: "openai", Endpoint: upstream.URL + "/v1", APIKey: "fake-upstream-key", Model: "gbx-fixture",
 	})
 	if err != nil {
 		t.Fatal(err)

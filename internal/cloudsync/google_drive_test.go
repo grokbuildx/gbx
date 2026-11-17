@@ -269,20 +269,20 @@ func TestGoogleOAuthClientIsInjectedAtBuildOrDevelopmentTime(t *testing.T) {
 
 	// Release -ldflags set the package vars.
 	googleOAuthClientID, googleOAuthClientSecret = "release-id", "release-secret"
-	t.Setenv("CCL_GOOGLE_OAUTH_CLIENT_ID", "")
-	t.Setenv("CCL_GOOGLE_OAUTH_CLIENT_SECRET", "")
+	t.Setenv("GBX_GOOGLE_OAUTH_CLIENT_ID", "")
+	t.Setenv("GBX_GOOGLE_OAUTH_CLIENT_SECRET", "")
 	if config := googleOAuthConfig(""); config.ClientID != "release-id" || config.ClientSecret != "release-secret" {
 		t.Fatalf("release client = %q / %q", config.ClientID, config.ClientSecret)
 	}
 	// Development env overrides them.
-	t.Setenv("CCL_GOOGLE_OAUTH_CLIENT_ID", "development-id")
-	t.Setenv("CCL_GOOGLE_OAUTH_CLIENT_SECRET", "development-secret")
+	t.Setenv("GBX_GOOGLE_OAUTH_CLIENT_ID", "development-id")
+	t.Setenv("GBX_GOOGLE_OAUTH_CLIENT_SECRET", "development-secret")
 	if config := googleOAuthConfig(""); config.ClientID != "development-id" || config.ClientSecret != "development-secret" {
 		t.Fatalf("development client = %q / %q", config.ClientID, config.ClientSecret)
 	}
 	// A build without a client refuses to start a login.
 	googleOAuthClientID = ""
-	t.Setenv("CCL_GOOGLE_OAUTH_CLIENT_ID", "")
+	t.Setenv("GBX_GOOGLE_OAUTH_CLIENT_ID", "")
 	if _, err := authorizeGoogleDriveAt(context.Background(), filepath.Join(t.TempDir(), "auth.json"), nil); err == nil ||
 		!strings.Contains(err.Error(), "no Google OAuth client") {
 		t.Fatalf("login without a client: %v", err)

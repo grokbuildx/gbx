@@ -2,7 +2,7 @@ package provider
 
 import "strings"
 
-// retiredGeminiHaikuModel is the Gemini default CCL used to write.
+// retiredGeminiHaikuModel is the Gemini default GBX used to write.
 // Neither Antigravity catalog still lists it, and requesting it returns 404.
 const (
 	retiredGeminiHaikuModel = "gemini-3.1-pro-low"

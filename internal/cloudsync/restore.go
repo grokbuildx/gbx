@@ -29,7 +29,7 @@ func (m *Manager) backupCurrent(tag string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	name := time.Now().UTC().Format("20060102T150405.000000000Z") + ".ccl"
+	name := time.Now().UTC().Format("20060102T150405.000000000Z") + ".gbx"
 	path := filepath.Join(m.localDir, backupsDirectory, name)
 	if err := writeAtomic(path, encrypted, 0o600); err != nil {
 		return "", fmt.Errorf("create encrypted local backup: %w", err)

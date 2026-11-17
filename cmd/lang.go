@@ -20,7 +20,7 @@ import (
 var errLangNeedsChoice = errors.New("no language given")
 
 // parseLangArg maps what a user may type to the code stored in config.yaml.
-// Anything unrecognized is an error rather than a silent fallback: `ccl lang zn`
+// Anything unrecognized is an error rather than a silent fallback: `gbx lang zn`
 // used to save English, reporting success for a language nobody asked for.
 func parseLangArg(arg string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(arg)) {
@@ -61,18 +61,18 @@ func langDisplayName(code string) string {
 var langCmd = &cobra.Command{
 	Use:   "lang [zh|zh-TW|en]",
 	Short: "Set the display language",
-	Long: `Set the display language for ccl prompts.
+	Long: `Set the display language for gbx prompts.
 
 Without arguments, shows the current language and offers a choice. Answering
 nothing leaves the configuration untouched.
 
-CCL_LANG overrides the saved language, so an export in your shell wins over what
-this command writes; ccl says so when that is the case.
+GBX_LANG overrides the saved language, so an export in your shell wins over what
+this command writes; gbx says so when that is the case.
 
 Examples:
-  ccl lang        # show current and choose
-  ccl lang zh     # switch to Chinese
-  ccl lang en     # switch to English
+  gbx lang        # show current and choose
+  gbx lang zh     # switch to Chinese
+  gbx lang en     # switch to English
 `,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -91,12 +91,12 @@ Examples:
 
 		// Without a terminal there is nobody to answer the prompt, so reporting
 		// the current language is the whole job. Writing a language chosen by
-		// an EOF is how `ccl lang` used to silently switch a shell to English.
+		// an EOF is how `gbx lang` used to silently switch a shell to English.
 		if !term.IsTerminal(os.Stdin.Fd()) {
 			warnIfLangEnvOverrides(out)
 			fmt.Fprintln(out, locale.T(
-				"未指定语言，配置未改动。用 `ccl lang zh` 或 `ccl lang en` 切换。",
-				"No language given, configuration left unchanged. Use `ccl lang zh` or `ccl lang en` to switch."))
+				"未指定语言，配置未改动。用 `gbx lang zh` 或 `gbx lang en` 切换。",
+				"No language given, configuration left unchanged. Use `gbx lang zh` or `gbx lang en` to switch."))
 			return nil
 		}
 
@@ -145,17 +145,17 @@ func applyLang(out io.Writer, code string) error {
 	return nil
 }
 
-// warnIfLangEnvOverrides reports a CCL_LANG export, which locale resolves ahead
+// warnIfLangEnvOverrides reports a GBX_LANG export, which locale resolves ahead
 // of config.yaml: without this the command claims to have switched languages
 // while the next run still reads the one from the environment.
 func warnIfLangEnvOverrides(out io.Writer) {
-	env := strings.TrimSpace(os.Getenv("CCL_LANG"))
+	env := strings.TrimSpace(os.Getenv("GBX_LANG"))
 	if env == "" {
 		return
 	}
 	fmt.Fprintln(out, locale.Tf(
-		"⚠️  CCL_LANG=%s 优先于配置文件，实际显示语言仍由它决定。取消 export 后本设置才生效。",
-		"⚠️  CCL_LANG=%s takes precedence over the config file and still decides the display language. Unset it for this setting to take effect.",
+		"⚠️  GBX_LANG=%s 优先于配置文件，实际显示语言仍由它决定。取消 export 后本设置才生效。",
+		"⚠️  GBX_LANG=%s takes precedence over the config file and still decides the display language. Unset it for this setting to take effect.",
 		env))
 }
 

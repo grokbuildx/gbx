@@ -68,7 +68,7 @@ func TestStandaloneProxyAddsCodexModelsAndRestoresUserEdits(t *testing.T) {
 	if len(catalog.Models) != 2 || catalog.Models[1]["future_metadata"] != "preserved" {
 		t.Fatal("native picker metadata lost")
 	}
-	request, _ := http.NewRequest(http.MethodPost, s.Codex.BaseURL+"/responses", strings.NewReader(`{"model":"ccl/chosen/model-a","input":"fixture"}`))
+	request, _ := http.NewRequest(http.MethodPost, s.Codex.BaseURL+"/responses", strings.NewReader(`{"model":"gbx/chosen/model-a","input":"fixture"}`))
 	request.Header.Set("Authorization", "Bearer fake-native-key")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {

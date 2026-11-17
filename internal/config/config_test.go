@@ -31,7 +31,7 @@ func TestSaveAndLoadUsesPrivateAtomicConfigFile(t *testing.T) {
 		t.Fatalf("Save() error: %v", err)
 	}
 
-	path := filepath.Join(home, ".ccl", "config.yaml")
+	path := filepath.Join(home, ".gbx", "config.yaml")
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat saved config: %v", err)
@@ -39,7 +39,7 @@ func TestSaveAndLoadUsesPrivateAtomicConfigFile(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("config permissions = %o, want 600", got)
 	}
-	if matches, err := filepath.Glob(filepath.Join(home, ".ccl", ".config-*.tmp")); err != nil || len(matches) != 0 {
+	if matches, err := filepath.Glob(filepath.Join(home, ".gbx", ".config-*.tmp")); err != nil || len(matches) != 0 {
 		t.Fatalf("temporary config files = %v, err=%v", matches, err)
 	}
 
@@ -59,7 +59,7 @@ func TestSaveAndLoadUsesPrivateAtomicConfigFile(t *testing.T) {
 func TestLoadMergesLegacySlotMappingsIntoModelPoolAndSaveDropsLegacyFields(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".ccl"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".gbx"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	legacyYAML := `active_provider: wb
@@ -75,7 +75,7 @@ providers:
     haikuModel: space-bunny
     customModelId: deepseek-v4.1-flash
 `
-	configFile := filepath.Join(home, ".ccl", "config.yaml")
+	configFile := filepath.Join(home, ".gbx", "config.yaml")
 	if err := os.WriteFile(configFile, []byte(legacyYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}

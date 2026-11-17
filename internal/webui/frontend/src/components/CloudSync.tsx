@@ -28,9 +28,9 @@ const PLATFORM_LABEL: Record<string, string> = { "google-drive": "Google Drive",
 type Login = { id: string; output: string[]; urls: string[]; done: boolean; ok: boolean; cancelled?: boolean; error?: string };
 type Outcome = { ok: boolean; text: string; output?: string; retry?: { action: "push" | "pull"; remote: string } };
 
-// CloudSync is `ccl cloud` in the settings dialog: the remotes with their
+// CloudSync is `gbx cloud` in the settings dialog: the remotes with their
 // state, push and pull, and logging in to iCloud or Google Drive. Every
-// change runs ccl itself on the server.
+// change runs gbx itself on the server.
 export function CloudSync({ api, onPulled }: { api: Api; onPulled: () => void }) {
   const { t, lang } = useI18n();
   const [overview, setOverview] = useState<CloudOverview | null>(null);

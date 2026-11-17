@@ -92,7 +92,7 @@ func relayBridgeStream(w http.ResponseWriter, body io.Reader, model, notice stri
 			return
 		}
 	}
-	const message = "CCL runtime stream ended before a terminal response"
+	const message = "GBX runtime stream ended before a terminal response"
 	if events.sequence == 0 {
 		writeError(w, http.StatusBadGateway, "api_error", message, "upstream_stream_error")
 	} else {

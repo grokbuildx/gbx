@@ -75,7 +75,7 @@ func buildMixedRoutes(modelSpec string, protocols map[string]string) (mixedRoute
 	}
 	if len(result.chat)+len(result.responses) == 0 {
 		if skippedUnsupportedProtocol != "" {
-			return mixedRouteSet{}, fmt.Errorf("gateway models only offer the %s protocol, which CCL no longer supports", skippedUnsupportedProtocol)
+			return mixedRouteSet{}, fmt.Errorf("gateway models only offer the %s protocol, which GBX no longer supports", skippedUnsupportedProtocol)
 		}
 		return mixedRouteSet{}, fmt.Errorf("mixed-protocol runtime produced no usable model routes")
 	}
@@ -84,7 +84,7 @@ func buildMixedRoutes(modelSpec string, protocols map[string]string) (mixedRoute
 
 // StartMixedProtocolAPIKeyRuntime starts a single Responses entrypoint that
 // routes each request to the correct upstream protocol for the requested
-// model: OpenAI Responses is forwarded, and OpenAI Chat goes through CCL's Chat
+// model: OpenAI Responses is forwarded, and OpenAI Chat goes through GBX's Chat
 // Completions adapter.
 func StartMixedProtocolAPIKeyRuntime(parent context.Context, endpoint, upstreamAPIKey, modelSpec string, protocols map[string]string) (*Runtime, error) {
 	if parent == nil {
@@ -170,7 +170,7 @@ func startMixedProtocolRouter(parent context.Context, endpoint, upstreamAPIKey s
 		endpoint: "http://" + listener.Addr().String() + "/v1", apiKey: apiKey,
 		httpServer: server, cancel: cancel, done: make(chan struct{}), runErr: make(chan error, 1),
 		started: started, usage: usage,
-		// Surface the catalog so callers like `ccl map` and `ccl provider models --all`
+		// Surface the catalog so callers like `gbx map` and `gbx provider models --all`
 		// see the routed models instead of falling through to heuristics.
 		models: append([]string(nil), routes.models...),
 	}
@@ -249,12 +249,12 @@ func (r *mixedProtocolRouter) handleResponses(writer http.ResponseWriter, reques
 	model := requestModelID(body)
 	lower := strings.ToLower(model)
 	if r.codex != nil && r.responses[lower] {
-		LogDebugEvent("protocol_route", "component", "mixed", "model", model, "protocol", "openai_responses", "owner", "ccl")
+		LogDebugEvent("protocol_route", "component", "mixed", "model", model, "protocol", "openai_responses", "owner", "gbx")
 		r.codex.handleResponses(writer, request)
 		return
 	}
 	if r.chatSvc != nil && r.chat[lower] {
-		LogDebugEvent("protocol_route", "component", "mixed", "model", model, "protocol", "openai_chat", "owner", "ccl")
+		LogDebugEvent("protocol_route", "component", "mixed", "model", model, "protocol", "openai_chat", "owner", "gbx")
 		r.chatSvc.handleResponses(writer, request)
 		return
 	}

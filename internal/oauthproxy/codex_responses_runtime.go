@@ -163,7 +163,7 @@ func startCodexOAuth(parent context.Context, modelSpec, credentialFile string) (
 		models = runtimeModelAliases(modelSpec)
 	}
 	// Preserve configured routes, but publish the live account catalog so stale
-	// mappings do not limit the choices shown by ccl map and ccl set.
+	// mappings do not limit the choices shown by gbx map and gbx set.
 	effectiveModelSpec := strings.Join(append([]string{modelSpec}, models...), ",")
 	details := make(map[string]protocol.ModelInfo, len(modelInfos))
 	for _, info := range modelInfos {
@@ -796,7 +796,7 @@ func (s *codexResponsesService) recordObservedUsage(clientModel string, observer
 
 // sanitizePassthroughResponsesInput filters input reasoning items before
 // forwarding with store=false. Stateless Responses upstreams reject reasoning
-// items that lack provider-encrypted content or carry CCL synthetic IDs.
+// items that lack provider-encrypted content or carry GBX synthetic IDs.
 func sanitizePassthroughResponsesInput(payload map[string]any) {
 	items, ok := payload["input"].([]any)
 	if !ok || len(items) == 0 {
@@ -811,7 +811,7 @@ func sanitizePassthroughResponsesInput(payload map[string]any) {
 		}
 		id := stringValue(item["id"])
 		enc := strings.TrimSpace(stringValue(item["encrypted_content"]))
-		if strings.HasPrefix(id, cclReasoningIDPrefix) {
+		if strings.HasPrefix(id, gbxReasoningIDPrefix) {
 			if strings.HasPrefix(enc, codexReasoningSignaturePrefix) {
 				if unwrapped, err := codexReasoningFromSignature(enc); err == nil {
 					if unwrappedMap, isObj := unwrapped.(map[string]any); isObj && strings.TrimSpace(stringValue(unwrappedMap["encrypted_content"])) != "" {
@@ -912,7 +912,7 @@ func (a *codexOAuthAuthorizer) load() (*codexOAuthCredential, error) {
 	raw, err := os.ReadFile(a.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no Codex credentials found; run `ccl oauth gpt` first")
+			return nil, fmt.Errorf("no Codex credentials found; run `gbx oauth gpt` first")
 		}
 		return nil, fmt.Errorf("read Codex credential %s: %w", filepath.Base(a.path), err)
 	}

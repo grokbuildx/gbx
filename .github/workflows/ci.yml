@@ -86,10 +86,10 @@ jobs:
       - name: Test portable filesystem, protocol and provider contracts
         run: go test -race ./internal/fsutil ./internal/provider ./internal/protocol ./internal/modelrouting ./internal/modelsdev ./internal/proxymanager ./internal/codex ./internal/webui
       - name: Build native CLI
-        run: go build -o ccl-verify${{ runner.os == 'Windows' && '.exe' || '' }} .
+        run: go build -o gbx-verify${{ runner.os == 'Windows' && '.exe' || '' }} .
       - name: Test standalone proxy process lifecycle
         env:
-          CCL_TEST_BINARY: ${{ github.workspace }}/ccl-verify${{ runner.os == 'Windows' && '.exe' || '' }}
+          GBX_TEST_BINARY: ${{ github.workspace }}/gbx-verify${{ runner.os == 'Windows' && '.exe' || '' }}
         run: go test -race -v ./integration/proxy
       - name: Test Windows configuration UI and command routing
         if: runner.os == 'Windows'
@@ -98,16 +98,16 @@ jobs:
         run: go test -race -v ./internal/oauthproxy -run 'Test(LoginQoder|LoginWorkBuddy|Qoder|WorkBuddy|Cursor|LoginCursor|ProviderRefresh|ProviderCredential|ProviderNetwork|RetryUpstream)'
       - name: Compile macOS menu bar script
         if: runner.os == 'macOS'
-        run: osacompile -l JavaScript -o "$RUNNER_TEMP/ccl-menubar.scpt" internal/proxymanager/menubar.jxa
+        run: osacompile -l JavaScript -o "$RUNNER_TEMP/gbx-menubar.scpt" internal/proxymanager/menubar.jxa
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: Test npm packaging
         run: node --test scripts/npm-packages.test.js
       - name: Install pinned Codex for shared proxy verification
-        run: npm install --prefix "${{ runner.temp }}/ccl-codex" --no-audit --no-fund @openai/codex@0.166.0
+        run: npm install --prefix "${{ runner.temp }}/gbx-codex" --no-audit --no-fund @openai/codex@0.166.0
       - name: Test real Codex catalog and local tool loop
         env:
-          CCL_TEST_BINARY: ${{ github.workspace }}/ccl-verify${{ runner.os == 'Windows' && '.exe' || '' }}
-          CCL_TEST_CODEX: ${{ runner.temp }}/ccl-codex/node_modules/.bin/codex${{ runner.os == 'Windows' && '.cmd' || '' }}
+          GBX_TEST_BINARY: ${{ github.workspace }}/gbx-verify${{ runner.os == 'Windows' && '.exe' || '' }}
+          GBX_TEST_CODEX: ${{ runner.temp }}/gbx-codex/node_modules/.bin/codex${{ runner.os == 'Windows' && '.cmd' || '' }}
         run: go test -race -v ./integration/codex ./internal/codex

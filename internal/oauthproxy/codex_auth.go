@@ -33,7 +33,7 @@ type codexLoginCallback struct {
 // loginCodex runs the OpenAI Codex OAuth PKCE authorization-code flow with a
 // local loopback callback and persists a credential the codexOAuthAuthorizer
 // reads (type/id_token/access_token/refresh_token/account_id/email/expired).
-// CCL owns this authenticator and its persisted credential format.
+// GBX owns this authenticator and its persisted credential format.
 func loginCodex(ctx context.Context, authDir string, opts LoginOptions) (LoginResult, error) {
 	if ctx == nil {
 		ctx = context.Background()

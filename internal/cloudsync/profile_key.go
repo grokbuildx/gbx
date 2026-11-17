@@ -16,7 +16,7 @@ func loadProfileKeyFile(localDir, profileID string) ([]byte, error) {
 		return nil, err
 	}
 	if len(key) != 32 {
-		return nil, fmt.Errorf("invalid local cloud encryption key; run `ccl cloud logout` and `ccl cloud login` again")
+		return nil, fmt.Errorf("invalid local cloud encryption key; run `gbx cloud logout` and `gbx cloud login` again")
 	}
 	return append([]byte(nil), key...), nil
 }

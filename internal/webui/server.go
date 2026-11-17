@@ -37,9 +37,9 @@ var webAssets embed.FS
 const (
 	TokenHeader = "Authorization"
 	// PageTokenHeader is what the page sends: it leaves Authorization to a
-	// proxy's Basic auth in front of ccl serve. A request that carries it is
+	// proxy's Basic auth in front of gbx serve. A request that carries it is
 	// judged by it alone.
-	PageTokenHeader = "X-CCL-Token"
+	PageTokenHeader = "X-GBX-Token"
 	// TokenQuery is accepted only by the read-only stream and events endpoints:
 	// EventSource cannot set a header.
 	TokenQuery = "token"
@@ -50,7 +50,7 @@ type Config struct {
 	// Token authenticates /api requests. It may be empty only when the server
 	// listens on a loopback address and RequireToken is false.
 	Token string
-	// RequireToken makes an empty Token a startup error. ccl serve sets it when
+	// RequireToken makes an empty Token a startup error. gbx serve sets it when
 	// the bind address is reachable from outside the machine.
 	RequireToken bool
 	// Workspace, Workspaces and WorkspaceRoots are the directories
@@ -72,11 +72,11 @@ type Config struct {
 	Version string
 	// Launch overrides the process launcher (tests).
 	Launch LaunchFunc
-	// SelfBinary is the ccl executable; subscription logins run `ccl oauth`.
+	// SelfBinary is the gbx executable; subscription logins run `gbx oauth`.
 	SelfBinary string
-	// LatestVersion names the newest ccl release, for the update notice.
+	// LatestVersion names the newest gbx release, for the update notice.
 	LatestVersion func() (string, error)
-	// Shell turns on the web terminal (ccl serve --shell).
+	// Shell turns on the web terminal (gbx serve --shell).
 	Shell bool
 	// LockWorkspaces keeps the page from adding folders (--lock-workspaces).
 	LockWorkspaces bool
@@ -85,7 +85,7 @@ type Config struct {
 	BasePath string
 }
 
-// Server is the HTTP surface of ccl serve.
+// Server is the HTTP surface of gbx serve.
 type Server struct {
 	store    *Store
 	runner   *Runner
@@ -153,12 +153,12 @@ func (s *Server) view(meta Meta) SessionView {
 	return SessionView{Meta: meta, Running: s.timeline.Running(meta.ID)}
 }
 
-// New creates a server. An empty token is an error: ccl serve never listens
+// New creates a server. An empty token is an error: gbx serve never listens
 // without authentication.
 func New(cfg Config) (*Server, error) {
 	token := strings.TrimSpace(cfg.Token)
 	if token == "" && cfg.RequireToken {
-		return nil, errors.New("a token is required when listening beyond 127.0.0.1: pass --token or set CCL_SERVE_TOKEN")
+		return nil, errors.New("a token is required when listening beyond 127.0.0.1: pass --token or set GBX_SERVE_TOKEN")
 	}
 	basePath, err := NormalizeBasePath(strings.TrimSpace(cfg.BasePath))
 	if err != nil {
@@ -229,8 +229,8 @@ func New(cfg Config) (*Server, error) {
 	}
 	runner.OnRuntimeCatalog = server.recordProviderCatalog
 	defProvider := strings.TrimSpace(cfg.DefaultProvider)
-	// Turns ask before tools as the terminal would, unless ccl's bypass mode
-	// (ccl bypass) is on.
+	// Turns ask before tools as the terminal would, unless gbx's bypass mode
+	// (gbx bypass) is on.
 	permissionMode := "default"
 	if loaded, err := config.Load(); err == nil {
 		if defProvider == "" {
@@ -275,7 +275,7 @@ func (s *Server) effectiveDefaultProvider() string {
 func (s *Server) Store() *Store { return s.store }
 
 // ErrClosing refuses a turn while the server shuts down.
-var ErrClosing = errors.New("ccl serve is shutting down")
+var ErrClosing = errors.New("gbx serve is shutting down")
 
 // Close stops what the server started: scheduled messages, subscription
 // logins, terminals and turns in flight. A cancelled turn is still stored with
@@ -564,7 +564,7 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "load ccl config: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "load gbx config: "+err.Error())
 		return
 	}
 	providers := []ProviderInfo{{
@@ -1139,17 +1139,17 @@ func (s *Server) validateProvider(name string) error {
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("load ccl config: %w", err)
+		return fmt.Errorf("load gbx config: %w", err)
 	}
 	if provider.IsDefaultProvider(name) {
 		if strings.TrimSpace(cfg.LegacyClaudeDefault) != "" {
-			return errors.New("the default Claude account has been retired; run ccl use default to select Grok Build's own login, or choose another provider")
+			return errors.New("the default Claude account has been retired; run gbx use default to select Grok Build's own login, or choose another provider")
 		}
 		return nil
 	}
 	p, ok := cfg.Providers[name]
 	if !ok {
-		return fmt.Errorf("provider %q not found; use ccl ls or ccl set", name)
+		return fmt.Errorf("provider %q not found; use gbx ls or gbx set", name)
 	}
 	p.Name = name
 	return provider.ValidateRuntime(p)
@@ -1363,7 +1363,7 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(body); err != nil {
-		log.Printf("ccl serve: write response: %v", err)
+		log.Printf("gbx serve: write response: %v", err)
 	}
 }
 

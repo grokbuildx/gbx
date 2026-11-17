@@ -59,7 +59,7 @@ func TestGuardEnforcesLoopbackEvenWithToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// ccl serve binds loopback only; non-loopback Host and cross-site Origin
+	// gbx serve binds loopback only; non-loopback Host and cross-site Origin
 	// are refused even when the request carries a valid token.
 	if got := guardedRequest(t, server, "GET", "/health", "192.168.1.20:8099", "", "", ""); got != http.StatusForbidden {
 		t.Fatalf("LAN host with a token = %d, want 403", got)

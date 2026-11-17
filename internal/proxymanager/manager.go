@@ -71,7 +71,7 @@ func Default() (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{Dir: filepath.Join(home, ".ccl", "proxy")}, nil
+	return &Manager{Dir: filepath.Join(home, ".gbx", "proxy")}, nil
 }
 
 func (m *Manager) statePath() string { return filepath.Join(m.Dir, "state.json") }
@@ -254,7 +254,7 @@ func (m *Manager) Start(ctx context.Context, executable string, p provider.Provi
 		return nil, fmt.Errorf("invalid Codex catalog mode")
 	}
 	if catalogMode == codex.CatalogRemote && mode != "independent" {
-		return nil, fmt.Errorf("remote CCL catalogs require --independent; shared mode uses local JSON")
+		return nil, fmt.Errorf("remote GBX catalogs require --independent; shared mode uses local JSON")
 	}
 	additional := m.AdditionalProviders
 	if additional == nil && existing != nil {
@@ -275,7 +275,7 @@ func (m *Manager) Start(ctx context.Context, executable string, p provider.Provi
 		return m.Read()
 	}
 	// Codex retains its endpoint in memory. Replacing a daemon must bind the
-	// same port so retries from already-open native and CCL chats can recover.
+	// same port so retries from already-open native and GBX chats can recover.
 	codexAddress := m.CodexListenAddress
 	if existing != nil && existing.Codex != nil && existing.CodexHome == codexHome {
 		endpoint, err := url.Parse(existing.Codex.BaseURL)
@@ -362,7 +362,7 @@ func (m *Manager) Run(ctx context.Context, p provider.Provider, id string) (runE
 		if err != nil {
 			return err
 		}
-		return fmt.Errorf("a previous proxy needs recovery; run ccl codex stop")
+		return fmt.Errorf("a previous proxy needs recovery; run gbx codex stop")
 	}
 	providers, err := boundProviders(p, m.AdditionalProviders)
 	if err != nil {

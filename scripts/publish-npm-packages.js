@@ -25,7 +25,7 @@ let cacheBuster = 0;
 
 function fresh(url) {
   const copy = new URL(url);
-  copy.searchParams.set('ccl-check', Date.now().toString(36) + '-' + (++cacheBuster));
+  copy.searchParams.set('gbx-check', Date.now().toString(36) + '-' + (++cacheBuster));
   return copy;
 }
 

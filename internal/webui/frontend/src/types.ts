@@ -1,4 +1,4 @@
-// Wire types of the ccl serve API (internal/webui). Field names follow the Go
+// Wire types of the gbx serve API (internal/webui). Field names follow the Go
 // JSON tags.
 
 export interface Usage {
@@ -67,7 +67,7 @@ export interface MCPServer {
 export interface Capabilities {
   slashCommands: string[];
   mcpServers: MCPServer[];
-  // The mode a session without its own uses (follows ccl's bypass setting).
+  // The mode a session without its own uses (follows gbx's bypass setting).
   defaultPermissionMode?: string;
   defaultProvider?: string;
   defaultModel?: string;
@@ -145,7 +145,7 @@ export interface Health {
   workspace: string;
   workspaces?: Workspace[];
   authRequired: boolean;
-  // The web terminal is on (ccl serve --shell).
+  // The web terminal is on (gbx serve --shell).
   shell?: boolean;
 }
 
@@ -306,7 +306,7 @@ export interface WorktreeStatus extends SessionWorktree {
   upstream?: string;
 }
 
-// One `ccl cloud` remote with its state; times are zero ("0001-…") when unknown.
+// One `gbx cloud` remote with its state; times are zero ("0001-…") when unknown.
 export interface CloudRemote {
   alias: string;
   provider: string;

@@ -17,20 +17,20 @@ import (
 	"github.com/grokbuildx/gbx/internal/fsutil"
 )
 
-var ErrNoLocalData = errors.New("no ccl configuration or OAuth credentials found to sync")
+var ErrNoLocalData = errors.New("no gbx configuration or OAuth credentials found to sync")
 
-func cclDirectory() (string, error) {
+func gbxDirectory() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".ccl"), nil
+	return filepath.Join(home, ".gbx"), nil
 }
 
 func defaultICloudDirectory() (string, error) {
-	if override := strings.TrimSpace(os.Getenv("CCL_ICLOUD_DRIVE_DIR")); override != "" {
+	if override := strings.TrimSpace(os.Getenv("GBX_ICLOUD_DRIVE_DIR")); override != "" {
 		if !filepath.IsAbs(override) {
-			return "", fmt.Errorf("CCL_ICLOUD_DRIVE_DIR must be an absolute path")
+			return "", fmt.Errorf("GBX_ICLOUD_DRIVE_DIR must be an absolute path")
 		}
 		return filepath.Join(override, remoteDirectory), nil
 	}
@@ -53,7 +53,7 @@ func defaultICloudDirectory() (string, error) {
 }
 
 func collectLocalFiles() ([]snapshotFile, string, error) {
-	root, err := cclDirectory()
+	root, err := gbxDirectory()
 	if err != nil {
 		return nil, "", err
 	}
@@ -76,13 +76,13 @@ func collectLocalFiles() ([]snapshotFile, string, error) {
 		}
 		totalSize += int64(len(data))
 		if totalSize > maxEncryptedSize {
-			return fmt.Errorf("ccl configuration exceeds the %d MiB sync safety limit", maxEncryptedSize>>20)
+			return fmt.Errorf("gbx configuration exceeds the %d MiB sync safety limit", maxEncryptedSize>>20)
 		}
 		files = append(files, snapshotFile{Path: archivePath, Mode: 0o600, Data: data})
 		return nil
 	}
 	if err := add(filepath.Join(root, "config.yaml"), "config.yaml"); err != nil {
-		return nil, "", fmt.Errorf("read ccl config: %w", err)
+		return nil, "", fmt.Errorf("read gbx config: %w", err)
 	}
 	authDir := filepath.Join(root, "auth")
 	entries, readErr := os.ReadDir(authDir)

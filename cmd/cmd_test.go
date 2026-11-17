@@ -77,7 +77,7 @@ func TestProviderHelpUsesShortSubcommands(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for _, want := range []string{"ccl provider [command]", "  ls", "  cp", "  mv", "  rm", "  preview", "  set", "  use", "  models"} {
+	for _, want := range []string{"gbx provider [command]", "  ls", "  cp", "  mv", "  rm", "  preview", "  set", "  use", "  models"} {
 		if !contains(out, want) {
 			t.Fatalf("expected provider help to contain %q, got:\n%s", want, out)
 		}
@@ -124,7 +124,7 @@ func TestResolveProviderIgnoresShellCredentials(t *testing.T) {
 	if err == nil {
 		t.Fatalf("resolveProvider() built a provider from the shell: %+v", p)
 	}
-	if !strings.Contains(err.Error(), "ccl use default") {
+	if !strings.Contains(err.Error(), "gbx use default") {
 		t.Fatalf("error does not offer the subscription path: %v", err)
 	}
 }
@@ -331,7 +331,7 @@ func TestCloudAndOAuthCommandTrees(t *testing.T) {
 	}
 	// The former/removed root commands are not registered at root.
 	for _, name := range []string{"cp", "mv", "env", "effort", "models", "login", "push", "pull", "status", "key", "logout", "tag", "device"} {
-		if isCclCommand(name) {
+		if isGbxCommand(name) {
 			t.Fatalf("root shortcut %q is still registered", name)
 		}
 	}
@@ -363,9 +363,9 @@ func TestCloudLoginHelpDescribesPlatformsAndKeyModes(t *testing.T) {
 		"no OAuth JSON required",
 		"drive.appdata",
 		"appDataFolder",
-		"only needs ccl cloud login",
+		"only needs gbx cloud login",
 		"Examples:",
-		"ccl cloud login google-drive personal",
+		"gbx cloud login google-drive personal",
 		"default: google-drive",
 		"login [platform] [alias]",
 	} {
@@ -383,7 +383,7 @@ func TestDoctorHelpDescribesProviderHealth(t *testing.T) {
 	for _, want := range []string{
 		"Show environment prerequisites",
 		"Model pool (provider.Model) lists the models exposed by the provider runtime",
-		"ccl cloud status",
+		"gbx cloud status",
 	} {
 		if !contains(out, want) {
 			t.Fatalf("expected doctor help to contain %q, got:\n%s", want, out)

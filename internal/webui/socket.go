@@ -15,14 +15,14 @@ import (
 // (sun_path is 104 bytes on macOS, including the terminating NUL).
 const maxSocketPath = 103
 
-// DefaultSocketPath is where `ccl serve --socket` listens when it is given no
+// DefaultSocketPath is where `gbx serve --socket` listens when it is given no
 // path: next to the conversations, in a directory only this user can open.
 func DefaultSocketPath() (string, error) {
 	root, err := DefaultRoot()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(filepath.Dir(root), "ccl.sock"), nil
+	return filepath.Join(filepath.Dir(root), "gbx.sock"), nil
 }
 
 // ListenUnix listens on a Unix socket at path that only this user can

@@ -22,7 +22,7 @@ type UsageTotals struct {
 // generated.
 func (t UsageTotals) TokenTotal() int64 { return t.InputTokens + t.OutputTokens }
 
-// UsageTracker accumulates per-model token usage for a single ccl session.
+// UsageTracker accumulates per-model token usage for a single gbx session.
 //
 // One instance is shared by every runtime a session starts (a provider can run
 // more than one backend, e.g. plain Responses fronted by the compatibility
@@ -90,7 +90,7 @@ type UsageModelTotals struct {
 }
 
 // FormatUsageSummary renders one line per model plus a total line, in the style
-// of the existing "[ccl log] session ended" line: a single fixed prefix,
+// of the existing "[gbx log] session ended" line: a single fixed prefix,
 // printed unconditionally rather than gated behind the debug toggle, because
 // this is usage information for the user, not a diagnostic.
 //
@@ -115,10 +115,10 @@ func FormatUsageSummary(totals []UsageModelTotals) string {
 		grandCacheRead += entry.CacheReadTokens
 		grandCacheWrite += entry.CacheWriteTokens
 		grandRequests += entry.Requests
-		lines = append(lines, "[ccl usage] "+formatUsageLine(entry.Model, entry.UsageTotals))
+		lines = append(lines, "[gbx usage] "+formatUsageLine(entry.Model, entry.UsageTotals))
 	}
 	if len(sorted) > 1 {
-		lines = append(lines, "[ccl usage] "+formatUsageLine("total", UsageTotals{
+		lines = append(lines, "[gbx usage] "+formatUsageLine("total", UsageTotals{
 			InputTokens:      grandInput,
 			OutputTokens:     grandOutput,
 			CacheReadTokens:  grandCacheRead,

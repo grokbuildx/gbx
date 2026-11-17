@@ -1,5 +1,5 @@
 {
-  "name": "@claudecodelaunch/ccl",
+  "name": "@grokbuildx/gbx",
   "version": "1.0.0",
   "description": "Launcher and provider proxy for Grok Build and Codex. Source version is a placeholder; release workflow rewrites it from the git tag before npm publish.",
   "repository": {
@@ -7,7 +7,7 @@
     "url": "git+https://github.com/grokbuildx/gbx.git"
   },
   "bin": {
-    "ccl": "bin/ccl.exe"
+    "gbx": "bin/gbx.exe"
   },
   "engines": {
     "node": ">=22"

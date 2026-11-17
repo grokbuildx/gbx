@@ -51,7 +51,7 @@ func (m *Manager) preparePush() (preparedPush, error) {
 	}
 	if state.PendingHash != "" && state.PendingHash != hash {
 		if state.ExplicitTag {
-			return preparedPush{}, fmt.Errorf("local configuration changed after tag %q was created; run `ccl tag %s` again", tag, tag)
+			return preparedPush{}, fmt.Errorf("local configuration changed after tag %q was created; run `gbx tag %s` again", tag, tag)
 		}
 	}
 	createdAt := nowUTC()
@@ -106,11 +106,11 @@ func (m *Manager) planPush(prepared preparedPush, force bool) (*pushPlan, error)
 	if remoteLatestID != "" && !force {
 		switch {
 		case state.LastRemoteID == "":
-			return nil, fmt.Errorf("the remote already contains a snapshot unknown to this device; run `ccl cloud pull` first or use `ccl cloud push --force`")
+			return nil, fmt.Errorf("the remote already contains a snapshot unknown to this device; run `gbx cloud pull` first or use `gbx cloud push --force`")
 		case remoteLatestID != state.LastRemoteID && prepared.hash != state.LastLocalHash:
 			return nil, fmt.Errorf("local and remote configurations both changed; pull first or push with an explicit tag and --force")
 		case remoteLatestID != state.LastRemoteID:
-			return nil, fmt.Errorf("the remote has a newer snapshot; run `ccl cloud pull` before pushing")
+			return nil, fmt.Errorf("the remote has a newer snapshot; run `gbx cloud pull` before pushing")
 		}
 	}
 	if remoteLatest.Hash == prepared.hash {
@@ -142,7 +142,7 @@ func (plan *pushPlan) commit(prepared preparedPush, clearPending bool) (PushResu
 		return PushResult{}, err
 	}
 	if plan.upload {
-		objectPath := filepath.Join(m.remoteDir, snapshotsDirectory, prepared.id+".ccl")
+		objectPath := filepath.Join(m.remoteDir, snapshotsDirectory, prepared.id+".gbx")
 		if err := os.MkdirAll(filepath.Dir(objectPath), 0o700); err != nil {
 			return PushResult{}, err
 		}
@@ -498,7 +498,7 @@ func (m *Manager) Pull(tagValue string, force bool) (PullResult, error) {
 	if tag == defaultTag && !force && !record.CreatedAt.IsZero() &&
 		!state.LastRemoteCreatedAt.IsZero() && record.CreatedAt.Before(state.LastRemoteCreatedAt) {
 		return PullResult{}, fmt.Errorf(
-			"remote snapshot %s is older than the newest snapshot this device has synchronized; this can indicate a cloud rollback - run `ccl cloud pull --force` only if that is intended",
+			"remote snapshot %s is older than the newest snapshot this device has synchronized; this can indicate a cloud rollback - run `gbx cloud pull --force` only if that is intended",
 			shortIdentifier(id),
 		)
 	}
@@ -524,12 +524,12 @@ func (m *Manager) Pull(tagValue string, force bool) (PullResult, error) {
 		return PullResult{Tag: tag, Hash: payload.Hash, ID: id, Downloaded: false}, nil
 	}
 	// A device that has never synchronized and has no providers or OAuth
-	// logins holds only ccl's own defaults, which the pull may replace (the
+	// logins holds only gbx's own defaults, which the pull may replace (the
 	// backup below still keeps them).
 	freshInstall := state.LastLocalHash == "" && !localFilesHaveProviders(localFiles)
 	if localHash != "" && !force && !freshInstall {
 		if state.LastLocalHash == "" || localHash != state.LastLocalHash {
-			return PullResult{}, fmt.Errorf("local configuration has unsynchronized changes; run `ccl cloud push`, tag it, or use `ccl cloud pull --force`")
+			return PullResult{}, fmt.Errorf("local configuration has unsynchronized changes; run `gbx cloud push`, tag it, or use `gbx cloud pull --force`")
 		}
 	}
 	backupPath, err := m.backupCurrent(tag)
@@ -567,7 +567,7 @@ func (m *Manager) loadSnapshot(id string) (snapshotPayload, error) {
 			return snapshotPayload{}, fmt.Errorf("invalid snapshot id")
 		}
 	}
-	path := filepath.Join(m.remoteDir, snapshotsDirectory, id+".ccl")
+	path := filepath.Join(m.remoteDir, snapshotsDirectory, id+".gbx")
 	info, err := os.Lstat(path)
 	if err != nil {
 		return snapshotPayload{}, fmt.Errorf("read encrypted snapshot: %w", err)

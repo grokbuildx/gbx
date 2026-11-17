@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestNativeHistoryPreservesNativeStateAndReplaysCCLSummaries(t *testing.T) {
+func TestNativeHistoryPreservesNativeStateAndReplaysGBXSummaries(t *testing.T) {
 	for _, body := range []string{
 		`{"model":"native","store":false,"input":[{"type":"reasoning","id":"rs_native","encrypted_content":"native-encrypted","summary":[]}]}`,
 		`{"model":"native","store":true,"input":[{"type":"reasoning","id":"rs_stored","summary":[]}]}`,
@@ -21,10 +21,10 @@ func TestNativeHistoryPreservesNativeStateAndReplaysCCLSummaries(t *testing.T) {
 		}
 	}
 	body, _ := json.Marshal(map[string]any{"model": "native", "store": false, "include": []string{"reasoning.encrypted_content"}, "input": []any{
-		map[string]any{"type": "reasoning", "id": "rs_legacy_ccl", "summary": []any{}},
-		map[string]any{"type": "reasoning", "id": "rs_ccl_local", "encrypted_content": "adapter-opaque", "summary": []any{}},
+		map[string]any{"type": "reasoning", "id": "rs_legacy_gbx", "summary": []any{}},
+		map[string]any{"type": "reasoning", "id": "rs_gbx_local", "encrypted_content": "adapter-opaque", "summary": []any{}},
 		map[string]any{"type": "reasoning", "id": "rs_native", "encrypted_content": "native-encrypted", "summary": []any{}},
-		map[string]any{"type": "compaction", "id": "cmp_ccl", "status": "completed", "encrypted_content": encodeCompactionSummary("keep-this-goal")},
+		map[string]any{"type": "compaction", "id": "cmp_gbx", "status": "completed", "encrypted_content": encodeCompactionSummary("keep-this-goal")},
 		map[string]any{"type": "message", "role": "user", "content": "continue"},
 	}})
 	var request map[string]any
@@ -37,7 +37,7 @@ func TestNativeHistoryPreservesNativeStateAndReplaysCCLSummaries(t *testing.T) {
 	}
 	summary := items[1].(map[string]any)
 	if summary["type"] != "message" || summary["encrypted_content"] != nil || summary["id"] != nil || summary["status"] != nil || !strings.Contains(textValue(summary["content"]), "keep-this-goal") {
-		t.Fatalf("CCL summary not replayed: %+v", summary)
+		t.Fatalf("GBX summary not replayed: %+v", summary)
 	}
 }
 
@@ -77,7 +77,7 @@ func TestCodexSwitchesBetweenConvertedAndNativeHistory(t *testing.T) {
 		writeChatText(w, r, "converted-continued")
 	}, "openai", Options{Desktop: true, OpenAIURL: native.URL, ChatGPTURL: native.URL})
 	tools := []any{map[string]any{"type": "function", "name": "lookup"}}
-	first := responseObject(t, postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "input": "keep-this-goal", "tools": tools}))
+	first := responseObject(t, postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "input": "keep-this-goal", "tools": tools}))
 	history := []any{map[string]any{"role": "user", "content": "keep-this-goal"}}
 	history = append(history, first["output"].([]any)...)
 	// Cover conversations created by the previous adapter as well.
@@ -85,7 +85,7 @@ func TestCodexSwitchesBetweenConvertedAndNativeHistory(t *testing.T) {
 	second := responseObject(t, postResponses(t, g, map[string]any{"model": "native-model", "store": false, "input": history}))
 	history = append(history, second["output"].([]any)...)
 	history = append(history, map[string]any{"role": "user", "content": "continue again"})
-	third := responseObject(t, postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "input": history, "tools": tools}))
+	third := responseObject(t, postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "input": history, "tools": tools}))
 	if nativeCalls.Load() != 1 || convertedCalls.Load() != 2 || !strings.Contains(textValue(third), "converted-continued") {
 		t.Fatal("model switching did not continue the conversation")
 	}

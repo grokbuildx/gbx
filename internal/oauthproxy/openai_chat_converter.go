@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// chatCompletionsConvertedRequest is the CCL-owned wire representation of one
+// chatCompletionsConvertedRequest is the GBX-owned wire representation of one
 // Responses request destined for an OpenAI Chat Completions upstream.
 type chatCompletionsConvertedRequest struct {
 	adapterRequest

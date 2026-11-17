@@ -9,12 +9,12 @@ import (
 
 func TestCodexCatalogPublishesReasoningControls(t *testing.T) {
 	info := protocol.ModelInfo{ID: "reasoner", ReasoningLevels: protocol.ChatReasoningLevels(), DefaultReasoningLevel: "medium"}
-	model := newModel("ccl/work/reasoner", "reasoner", map[string]protocol.ModelInfo{"reasoner": info}, nil)
+	model := newModel("gbx/work/reasoner", "reasoner", map[string]protocol.ModelInfo{"reasoner": info}, nil)
 	levels, ok := model["supported_reasoning_levels"].([]protocol.ReasoningLevel)
 	if !ok || len(levels) != 3 || levels[0].Effort != "low" || levels[2].Effort != "high" || model["default_reasoning_level"] != "medium" {
 		t.Fatalf("missing reasoning picker controls: %+v", model)
 	}
-	unknown := newModel("ccl/work/plain", "plain", nil, nil)
+	unknown := newModel("gbx/work/plain", "plain", nil, nil)
 	if levels := unknown["supported_reasoning_levels"].([]protocol.ReasoningLevel); len(levels) != 0 || unknown["default_reasoning_level"] != nil {
 		t.Fatal("reasoning support was invented for an unknown model")
 	}
@@ -53,8 +53,8 @@ func TestCodexCatalogDefaultsToGPTEffortWhenNoneAreAdvertised(t *testing.T) {
 }
 
 func TestCodexDuplicateNamesKeepDistinctModelVariants(t *testing.T) {
-	models := []Model{{"slug": "ccl/work/hy4", "display_name": "Hy4 preview"}, {"slug": "ccl/work/hy4-x", "display_name": "Hy4 preview"}, {"slug": "ccl/work/other", "display_name": "Other"}}
-	routes := map[string]Route{"ccl/work/hy4": {Model: "hy4"}, "ccl/work/hy4-x": {Model: "hy4-x"}}
+	models := []Model{{"slug": "gbx/work/hy4", "display_name": "Hy4 preview"}, {"slug": "gbx/work/hy4-x", "display_name": "Hy4 preview"}, {"slug": "gbx/work/other", "display_name": "Other"}}
+	routes := map[string]Route{"gbx/work/hy4": {Model: "hy4"}, "gbx/work/hy4-x": {Model: "hy4-x"}}
 	disambiguateModelNames(models, routes)
 	if models[0]["display_name"] == models[1]["display_name"] || !strings.Contains(models[1]["display_name"].(string), "[hy4-x]") || models[2]["display_name"] != "Other" {
 		t.Fatal("model variants are still ambiguous or unique names changed")
@@ -62,28 +62,28 @@ func TestCodexDuplicateNamesKeepDistinctModelVariants(t *testing.T) {
 }
 
 func TestCodexWorkBuddyPickerMergesRevisionsWithoutDroppingRoutes(t *testing.T) {
-	models := []Model{{"slug": "ccl/work/hy4-preview-x", "display_name": "Hy4 preview"}, {"slug": "ccl/work/hy4-preview", "display_name": "Hy4 preview"}, {"slug": "ccl/work/other", "display_name": "Other"}}
-	routes := map[string]Route{"ccl/work/hy4-preview-x": {Model: "hy4-preview-x"}, "ccl/work/hy4-preview": {Model: "hy4-preview"}, "ccl/work/other": {Model: "other"}}
+	models := []Model{{"slug": "gbx/work/hy4-preview-x", "display_name": "Hy4 preview"}, {"slug": "gbx/work/hy4-preview", "display_name": "Hy4 preview"}, {"slug": "gbx/work/other", "display_name": "Other"}}
+	routes := map[string]Route{"gbx/work/hy4-preview-x": {Model: "hy4-preview-x"}, "gbx/work/hy4-preview": {Model: "hy4-preview"}, "gbx/work/other": {Model: "other"}}
 	picker := uniqueWorkBuddyModels(models, routes)
-	if len(picker) != 2 || picker[0]["slug"] != "ccl/work/hy4-preview" || picker[0]["display_name"] != "Hy4 preview" {
+	if len(picker) != 2 || picker[0]["slug"] != "gbx/work/hy4-preview" || picker[0]["display_name"] != "Hy4 preview" {
 		t.Fatalf("internal revisions still duplicate the picker: %v", picker)
 	}
-	if len(routes) != 3 || routes["ccl/work/hy4-preview-x"].Model != "hy4-preview-x" {
+	if len(routes) != 3 || routes["gbx/work/hy4-preview-x"].Model != "hy4-preview-x" {
 		t.Fatal("resumed sessions lost their original route")
 	}
 }
 
 func TestCodexLabelsOmitConfigurationNames(t *testing.T) {
-	model := newModel("ccl/private-config/reasoner", "reasoner", map[string]protocol.ModelInfo{"reasoner": {DisplayName: "Reasoner"}}, nil)
+	model := newModel("gbx/private-config/reasoner", "reasoner", map[string]protocol.ModelInfo{"reasoner": {DisplayName: "Reasoner"}}, nil)
 	if model["display_name"] != "Reasoner" || strings.Contains(model["description"].(string), "private-config") {
 		t.Fatal("configuration name leaked into a model label")
 	}
 	merged, err := MergeCatalog(Catalog{Models: []Model{{"slug": "native", "display_name": "Reasoner"}}}, []Model{model})
-	if err != nil || merged.Models[0]["display_name"] != "Reasoner (CCL)" || model["display_name"] != "Reasoner" {
+	if err != nil || merged.Models[0]["display_name"] != "Reasoner (GBX)" || model["display_name"] != "Reasoner" {
 		t.Fatalf("native collision changed the source or needs a shorter label: %v %v", merged, err)
 	}
-	merged, err = MergeCatalog(Catalog{Models: []Model{{"slug": "native", "display_name": "Native"}, {"slug": "ccl/old/reasoner", "display_name": "Reasoner"}}}, []Model{model})
+	merged, err = MergeCatalog(Catalog{Models: []Model{{"slug": "native", "display_name": "Native"}, {"slug": "gbx/old/reasoner", "display_name": "Reasoner"}}}, []Model{model})
 	if err != nil || len(merged.Models) != 2 || merged.Models[0]["display_name"] != "Reasoner" {
-		t.Fatalf("stale CCL cache caused a false name collision: %v %v", merged, err)
+		t.Fatalf("stale GBX cache caused a false name collision: %v %v", merged, err)
 	}
 }

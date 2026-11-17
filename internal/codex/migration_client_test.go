@@ -100,7 +100,7 @@ func TestRealCodexSwitchesToIndependentAfterNativeCompaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("OPENAI_API_KEY", converted.Token())
-	output = run("-c", `model_provider="openai"`, "-c", "openai_base_url="+strconv.Quote(converted.BaseURL()), "-m", "ccl/chosen/model-a", "-c", `web_search="disabled"`, "exec", "resume", "--json", "--skip-git-repo-check", session, "Continue using the independent provider.")
+	output = run("-c", `model_provider="openai"`, "-c", "openai_base_url="+strconv.Quote(converted.BaseURL()), "-m", "gbx/chosen/model-a", "-c", `web_search="disabled"`, "exec", "resume", "--json", "--skip-git-repo-check", session, "Continue using the independent provider.")
 	assertCodexThreadID(t, output, session)
 	if !strings.Contains(output, "independent-resumed-after-native-compaction") {
 		t.Fatalf("resume failed: %s", output)

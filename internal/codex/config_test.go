@@ -42,7 +42,7 @@ func TestCodexRootEditsPreserveUnrelatedTOML(t *testing.T) {
 func TestCodexOverlayRestoresOnlyUnchangedFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	catalog := filepath.Join(dir, "ccl-models.json")
+	catalog := filepath.Join(dir, "gbx-models.json")
 	original := "# user settings\nmodel = 'native-model'\nopenai_base_url = 'https://original.invalid/v1'\n[projects.\"/tmp/work\"]\ntrust_level = 'trusted'\n"
 	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
@@ -97,14 +97,14 @@ func TestCodexOverlayDoesNotOverwriteConcurrentStartupEdit(t *testing.T) {
 }
 
 func TestCodexMergedCatalogRetainsNativeMetadata(t *testing.T) {
-	native := Catalog{Models: []Model{{"slug": "native-a", "future_field": map[string]any{"important": true}}, {"slug": "ccl/old/model", "display_name": "stale"}}}
-	custom := []Model{{"slug": "ccl/new/model", "display_name": "new"}}
+	native := Catalog{Models: []Model{{"slug": "native-a", "future_field": map[string]any{"important": true}}, {"slug": "gbx/old/model", "display_name": "stale"}}}
+	custom := []Model{{"slug": "gbx/new/model", "display_name": "new"}}
 	merged, err := MergeCatalog(native, custom)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(merged.Models) != 2 || merged.Models[1]["future_field"] == nil {
-		t.Fatal("native metadata was replaced or stale CCL route retained")
+		t.Fatal("native metadata was replaced or stale GBX route retained")
 	}
 }
 
@@ -213,7 +213,7 @@ func TestNativeCatalogStrictFixtureIsolationAndStaleCacheUpgrade(t *testing.T) {
 		return
 	}
 
-	// 3. When bundled CLI is available, stale real cache and CCL-only leftover catalogs upgrade to code_mode_only.
+	// 3. When bundled CLI is available, stale real cache and GBX-only leftover catalogs upgrade to code_mode_only.
 	fakeCodex := filepath.Join(t.TempDir(), "fake-codex")
 	script := "#!/bin/sh\necho '{\"models\":[{\"slug\":\"gpt-5.4\",\"tool_mode\":\"code_mode_only\",\"shell_type\":\"unified_exec\",\"node_repl_auto_review_required\":true}]}'\n"
 	if err := os.WriteFile(fakeCodex, []byte(script), 0o700); err != nil {
@@ -226,12 +226,12 @@ func TestNativeCatalogStrictFixtureIsolationAndStaleCacheUpgrade(t *testing.T) {
 		t.Fatalf("stale cache was not upgraded from bundled catalog: err=%v catalog=%+v", err, upgraded)
 	}
 
-	cclOnlyPath := filepath.Join(t.TempDir(), "independent-leftover.json")
-	if err := os.WriteFile(cclOnlyPath, []byte(`{"models":[{"slug":"ccl/prev/model-a"}]}`), 0o600); err != nil {
+	gbxOnlyPath := filepath.Join(t.TempDir(), "independent-leftover.json")
+	if err := os.WriteFile(gbxOnlyPath, []byte(`{"models":[{"slug":"gbx/prev/model-a"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	recovered, err := nativeCatalog(context.Background(), t.TempDir(), map[string]any{"model_catalog_json": cclOnlyPath})
+	recovered, err := nativeCatalog(context.Background(), t.TempDir(), map[string]any{"model_catalog_json": gbxOnlyPath})
 	if err != nil || recovered.Models[0]["slug"] != "gpt-5.4" || recovered.Models[0]["tool_mode"] != "code_mode_only" {
-		t.Fatalf("CCL-only leftover catalog did not recover native catalog: err=%v catalog=%+v", err, recovered)
+		t.Fatalf("GBX-only leftover catalog did not recover native catalog: err=%v catalog=%+v", err, recovered)
 	}
 }

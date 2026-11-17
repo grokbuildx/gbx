@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Qualify Codex catalog refresh with a temporary profile and metadata-only server.
 
-CCL_TEST_CODEX=/path/to/codex python3 integration/modelpicker/catalog_refresh.py
+GBX_TEST_CODEX=/path/to/codex python3 integration/modelpicker/catalog_refresh.py
 The default idle period covers the observed 270-second worker and 300-second TTL.
 Use --idle-seconds 0 for the immediate cache/configuration cases only.
 """
@@ -36,12 +36,12 @@ def notification_methods(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--codex", default=os.environ.get("CCL_TEST_CODEX"))
+    parser.add_argument("--codex", default=os.environ.get("GBX_TEST_CODEX"))
     parser.add_argument("--idle-seconds", type=float, default=306)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if not args.codex or args.idle_seconds < 0:
-        parser.error("provide --codex or CCL_TEST_CODEX and a nonnegative idle period")
+        parser.error("provide --codex or GBX_TEST_CODEX and a nonnegative idle period")
     executable = str(Path(args.codex).resolve())
     started = time.monotonic()
     lock = threading.Lock()
@@ -86,7 +86,7 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        with tempfile.TemporaryDirectory(prefix="ccl-catalog-refresh-") as home:
+        with tempfile.TemporaryDirectory(prefix="gbx-catalog-refresh-") as home:
             base = f"http://127.0.0.1:{server.server_port}"
             Path(home, "config.toml").write_text(
                 'model_provider="fixture"\nmodel="model-A"\n'
@@ -165,7 +165,7 @@ def main():
                 })
 
             try:
-                rpc(0, "initialize", {"clientInfo": {"name": "ccl-fixture", "version": "1"},
+                rpc(0, "initialize", {"clientInfo": {"name": "gbx-fixture", "version": "1"},
                                       "capabilities": {"experimentalApi": True}})
                 proc.stdin.write(json.dumps({"method": "initialized"}) + "\n")
                 proc.stdin.flush()

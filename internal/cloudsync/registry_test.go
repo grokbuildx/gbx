@@ -10,18 +10,18 @@ import (
 
 func writeSyncFixture(t *testing.T, home string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(home, ".ccl", "auth"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".gbx", "auth"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(home, ".ccl", "config.yaml"),
+		filepath.Join(home, ".gbx", "config.yaml"),
 		[]byte("active_provider: test\n"),
 		0o600,
 	); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(home, ".ccl", "auth", "credential.json"),
+		filepath.Join(home, ".gbx", "auth", "credential.json"),
 		[]byte(`{"type":"xai","token":"secret"}`),
 		0o600,
 	); err != nil {
@@ -34,7 +34,7 @@ func TestMultipleRemotesReuseOneEncryptedSnapshot(t *testing.T) {
 	firstDrive := t.TempDir()
 	secondDrive := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", firstDrive)
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", firstDrive)
 	writeSyncFixture(t, home)
 
 	first, err := LoginICloudNamed("personal")
@@ -44,7 +44,7 @@ func TestMultipleRemotesReuseOneEncryptedSnapshot(t *testing.T) {
 	if first.Alias != "personal" {
 		t.Fatalf("first alias = %q", first.Alias)
 	}
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", secondDrive)
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", secondDrive)
 	second, err := LoginICloudNamed("backup")
 	if err != nil {
 		t.Fatal(err)
@@ -72,13 +72,13 @@ func TestMultipleRemotesReuseOneEncryptedSnapshot(t *testing.T) {
 		t.Fatalf("snapshot IDs differ: %+v", outcomes)
 	}
 	firstCipher, err := os.ReadFile(filepath.Join(
-		firstDrive, remoteDirectory, snapshotsDirectory, firstID+".ccl",
+		firstDrive, remoteDirectory, snapshotsDirectory, firstID+".gbx",
 	))
 	if err != nil {
 		t.Fatal(err)
 	}
 	secondCipher, err := os.ReadFile(filepath.Join(
-		secondDrive, remoteDirectory, snapshotsDirectory, firstID+".ccl",
+		secondDrive, remoteDirectory, snapshotsDirectory, firstID+".gbx",
 	))
 	if err != nil {
 		t.Fatal(err)
@@ -121,12 +121,12 @@ func TestPartialPushJournalRetriesOnlyIncompleteRemote(t *testing.T) {
 	firstDrive := t.TempDir()
 	secondDrive := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", firstDrive)
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", firstDrive)
 	writeSyncFixture(t, home)
 	if _, err := LoginICloudNamed("first"); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", secondDrive)
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", secondDrive)
 	if _, err := LoginICloudNamed("second"); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestPartialPushJournalRetriesOnlyIncompleteRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := markPushOperationComplete(
-		filepath.Join(home, ".ccl"), &operation, firstManager.remoteID,
+		filepath.Join(home, ".gbx"), &operation, firstManager.remoteID,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestPartialPushJournalRetriesOnlyIncompleteRemote(t *testing.T) {
 	if outcomes[0].Result.Uploaded {
 		t.Fatal("completed remote was uploaded again")
 	}
-	entries, err := os.ReadDir(operationsDirectory(filepath.Join(home, ".ccl")))
+	entries, err := os.ReadDir(operationsDirectory(filepath.Join(home, ".gbx")))
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestPartialPushJournalRetriesOnlyIncompleteRemote(t *testing.T) {
 func TestCloudDoctorDetectsBroadKeyPermissions(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", t.TempDir())
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", t.TempDir())
 	writeSyncFixture(t, home)
 	if _, err := LoginICloudNamed("personal"); err != nil {
 		t.Fatal(err)
@@ -195,7 +195,7 @@ func TestCloudDoctorDetectsBroadKeyPermissions(t *testing.T) {
 	if HasDiagnosticErrors(report) {
 		t.Fatalf("healthy diagnostics = %+v", report)
 	}
-	if err := os.Chmod(profileKeyPath(filepath.Join(home, ".ccl"), report.ProfileID), 0o644); err != nil {
+	if err := os.Chmod(profileKeyPath(filepath.Join(home, ".gbx"), report.ProfileID), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	report = DiagnoseLocal()
@@ -207,12 +207,12 @@ func TestCloudDoctorDetectsBroadKeyPermissions(t *testing.T) {
 func TestCloudLoadRejectsSymlinkedProfileKey(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", t.TempDir())
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", t.TempDir())
 	writeSyncFixture(t, home)
 	if _, err := LoginICloudNamed("personal"); err != nil {
 		t.Fatal(err)
 	}
-	localDir := filepath.Join(home, ".ccl")
+	localDir := filepath.Join(home, ".gbx")
 	registry, err := loadRegistry(localDir)
 	if err != nil {
 		t.Fatal(err)

@@ -1,6 +1,6 @@
 {
-  "name": "ccl",
-  "short_name": "ccl",
+  "name": "gbx",
+  "short_name": "gbx",
   "description": "Claude Code in the browser, with any provider",
   "start_url": "./",
   "scope": "./",

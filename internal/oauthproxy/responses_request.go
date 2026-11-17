@@ -15,7 +15,7 @@ import (
 // upstream wire format from that. Chat Completions clients are adapted to
 // Responses in chat_front.go, so backends never see a second inbound dialect.
 
-// responsesWireRequest is the subset of a Responses request body CCL reads.
+// responsesWireRequest is the subset of a Responses request body GBX reads.
 type responsesWireRequest struct {
 	Model             string              `json:"model"`
 	Instructions      json.RawMessage     `json:"instructions"`
@@ -423,7 +423,7 @@ func flattenResponsesTools(tools []map[string]any, discovered []map[string]any) 
 			if hostedResponsesTool(kind) {
 				return nil
 			}
-			return fmt.Errorf("tool type %q is not supported by this CCL provider; use local function tools", kind)
+			return fmt.Errorf("tool type %q is not supported by this GBX provider; use local function tools", kind)
 		}
 		if name == "" {
 			return fmt.Errorf("tool name is required")
@@ -484,7 +484,7 @@ func flattenResponsesTools(tools []map[string]any, discovered []map[string]any) 
 }
 
 // discoveredResponsesTools reads only the definitions the client supplied in
-// this request. Tool search is client-owned; CCL neither indexes nor runs it.
+// this request. Tool search is client-owned; GBX neither indexes nor runs it.
 func discoveredResponsesTools(items []map[string]any) ([]map[string]any, error) {
 	var result []map[string]any
 	for _, item := range items {
@@ -528,7 +528,7 @@ func toolCallingInstructions(tools []conversationTool, registry toolRegistry) st
 		return ""
 	}
 	var out strings.Builder
-	out.WriteString("\n\nCCL tool calling protocol for the current request:\nOnly call functions declared in the current tools list, using their complete declaration names exactly. The logical names used in instructions map to declarations as follows (instructions may prefix an unnamespaced tool with functions.; explicit namespace mappings take precedence):\n")
+	out.WriteString("\n\nGBX tool calling protocol for the current request:\nOnly call functions declared in the current tools list, using their complete declaration names exactly. The logical names used in instructions map to declarations as follows (instructions may prefix an unnamespaced tool with functions.; explicit namespace mappings take precedence):\n")
 	for _, tool := range tools {
 		spec := registry[tool.Name]
 		logical := spec.Name
@@ -545,21 +545,21 @@ func toolCallingInstructions(tools []conversationTool, registry toolRegistry) st
 	return out.String()
 }
 
-// cclReasoningIDPrefix marks reasoning items a converted CCL backend produced.
+// gbxReasoningIDPrefix marks reasoning items a converted GBX backend produced.
 // Only those are replayed to a converted backend: native reasoning belongs to
 // the provider that issued it.
-const cclReasoningIDPrefix = "rs_ccl_"
+const gbxReasoningIDPrefix = "rs_gbx_"
 
 // CompactionSummaryPrefix marks a compaction item whose payload is a readable
-// summary CCL produced, as opposed to a provider's encrypted compaction.
-const CompactionSummaryPrefix = "ccl1:"
+// summary GBX produced, as opposed to a provider's encrypted compaction.
+const CompactionSummaryPrefix = "gbx1:"
 
 // EncodeCompactionSummary wraps a readable summary as a compaction payload.
 func EncodeCompactionSummary(summary string) string {
 	return CompactionSummaryPrefix + base64.StdEncoding.EncodeToString([]byte(summary))
 }
 
-// DecodeCompactionSummary reads a compaction payload CCL produced.
+// DecodeCompactionSummary reads a compaction payload GBX produced.
 func DecodeCompactionSummary(encoded string) (string, bool) {
 	raw, ok := strings.CutPrefix(encoded, CompactionSummaryPrefix)
 	if !ok || raw == "" {
@@ -869,14 +869,14 @@ func responsesStructuredFormat(raw json.RawMessage) (*conversationFormat, error)
 		return nil, nil
 	case "json_schema":
 	default:
-		return nil, fmt.Errorf("text.format type %q is not supported by this CCL provider", format.Type)
+		return nil, fmt.Errorf("text.format type %q is not supported by this GBX provider", format.Type)
 	}
 	var schema map[string]any
 	if decodeProtocolJSON(format.Schema, &schema) != nil || schema == nil {
 		return nil, fmt.Errorf("text.format requires an object schema")
 	}
 	if format.Name == "" {
-		format.Name = "ccl_structured_output"
+		format.Name = "gbx_structured_output"
 	}
 	return &conversationFormat{Name: format.Name, Description: format.Description, Strict: format.Strict, Schema: format.Schema}, nil
 }
@@ -1072,7 +1072,7 @@ func (r *conversationRequest) readItems(items []map[string]any) error {
 			r.appendParts("user", conversationPart{Kind: partToolResult, CallID: id, Output: output})
 		case "reasoning":
 			id, _ := item["id"].(string)
-			if !strings.HasPrefix(id, cclReasoningIDPrefix) {
+			if !strings.HasPrefix(id, gbxReasoningIDPrefix) {
 				// Native reasoning belongs to the provider that issued it. Keep the
 				// messages and tool history when a conversation changes backend.
 				continue
@@ -1098,7 +1098,7 @@ func (r *conversationRequest) readItems(items []map[string]any) error {
 			}
 			r.appendParts("user", textPart("Conversation summary:\n"+summary))
 		case "item_reference":
-			return fmt.Errorf("item_reference input requires stored responses, which this CCL provider does not keep")
+			return fmt.Errorf("item_reference input requires stored responses, which this GBX provider does not keep")
 		default:
 			if hostedResponsesItem(kind) {
 				// A hosted tool's own record has no meaning to another backend.

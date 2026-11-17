@@ -32,7 +32,7 @@ func TestParseResponsesRequestCoversAllItemAndToolForms(t *testing.T) {
 
 	// 2. Complex input: developer message, custom tool, namespaced tool, client
 	// tool_search with deferred tool loaded via tool_search_output, unavailable
-	// historical tool call/result, and CCL-prefixed vs foreign reasoning.
+	// historical tool call/result, and GBX-prefixed vs foreign reasoning.
 	complexRaw := []byte(`{
 		"model": "gpt-test",
 		"instructions": "Base system.",
@@ -50,7 +50,7 @@ func TestParseResponsesRequestCoversAllItemAndToolForms(t *testing.T) {
 		"input": [
 			{"role": "developer", "content": "Extra developer instruction."},
 			{"role": "user", "content": [{"type": "input_text", "text": "Start task"}]},
-			{"type": "reasoning", "id": "rs_ccl_abc", "summary": [{"type": "summary_text", "text": "own reasoning"}], "encrypted_content": "sig-own"},
+			{"type": "reasoning", "id": "rs_gbx_abc", "summary": [{"type": "summary_text", "text": "own reasoning"}], "encrypted_content": "sig-own"},
 			{"type": "reasoning", "id": "rs_foreign_xyz", "summary": [{"type": "summary_text", "text": "foreign reasoning"}], "encrypted_content": "sig-foreign"},
 			{"type": "tool_search_call", "call_id": "search_1", "arguments": {"query": "deferred"}},
 			{"type": "tool_search_output", "call_id": "search_1", "tools": [
@@ -88,7 +88,7 @@ func TestParseResponsesRequestCoversAllItemAndToolForms(t *testing.T) {
 	if !foundLoaded {
 		t.Fatalf("deferred_loaded was not loaded from tool_search_output: %+v", parsed.Tools)
 	}
-	// Verify CCL reasoning kept its signature while foreign reasoning was ignored.
+	// Verify GBX reasoning kept its signature while foreign reasoning was ignored.
 	var sawOwnReasoning bool
 	var sawDemotedCall bool
 	for _, turn := range parsed.Turns {

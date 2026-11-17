@@ -40,9 +40,9 @@ func TestCloudLoginDefaultsToGoogleDriveAndReadsThePastedRedirect(t *testing.T) 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv("CCL_SYNC_PASSPHRASE", "test-passphrase")
-	t.Setenv("CCL_GOOGLE_OAUTH_CLIENT_ID", "test-client.apps.googleusercontent.com")
-	t.Setenv("CCL_GOOGLE_OAUTH_CLIENT_SECRET", "test-secret")
+	t.Setenv("GBX_SYNC_PASSPHRASE", "test-passphrase")
+	t.Setenv("GBX_GOOGLE_OAUTH_CLIENT_ID", "test-client.apps.googleusercontent.com")
+	t.Setenv("GBX_GOOGLE_OAUTH_CLIENT_SECRET", "test-secret")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	command := RootCmd()
@@ -53,7 +53,7 @@ func TestCloudLoginDefaultsToGoogleDriveAndReadsThePastedRedirect(t *testing.T) 
 	command.SetArgs([]string{"cloud", "login", "--no-browser"})
 	err := command.ExecuteContext(ctx)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
-		t.Fatalf("ccl cloud login --no-browser: %v", err)
+		t.Fatalf("gbx cloud login --no-browser: %v", err)
 	}
 	for _, text := range []string{"accounts.google.com", "drive.appdata", "paste it here"} {
 		if !strings.Contains(output.String(), text) {

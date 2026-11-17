@@ -92,10 +92,10 @@ func setProviderAuthHeaders(req *http.Request, p provider.Provider) {
 
 func printProviderExperienceWarnings(p provider.Provider) {
 	if level := strings.TrimSpace(p.EffortLevel); level != "" {
-		doctorInfo(fmt.Sprintf("Effort starts at %s each session (change or clear it in ccl set).", level))
+		doctorInfo(fmt.Sprintf("Effort starts at %s each session (change or clear it in gbx set).", level))
 	}
 	if p.FastMode {
-		doctorInfo("Fast is on: ccl asks the Codex upstream for priority service (faster, higher usage); turn it off in ccl set Review & Apply.")
+		doctorInfo("Fast is on: gbx asks the Codex upstream for priority service (faster, higher usage); turn it off in gbx set Review & Apply.")
 	}
 	if p.OAuthProvider == "" && provider.IsOpenAICompatibleType(p.Type) && endpointPathIsEmpty(p.Endpoint) {
 		doctorWarn("OpenAI-compatible endpoint has no path; if model tests fail, try adding /v1.")

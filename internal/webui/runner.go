@@ -51,7 +51,7 @@ type LaunchSpec struct {
 	Attachments []LaunchAttachment
 	// attachmentViews is what the stored user message shows of them.
 	attachmentViews []Attachment
-	// runtimeUsage is populated by DefaultLauncher when a managed ccl runtime
+	// runtimeUsage is populated by DefaultLauncher when a managed gbx runtime
 	// serves the turn, providing fallback token counts if ACP omits Usage.
 	runtimeUsage *func() Usage
 	// routeDefaults is populated by DefaultLauncher for configured providers so
@@ -123,7 +123,7 @@ func (r *Runner) remember(init InitPayload) {
 	r.mu.Unlock()
 }
 
-// NewRunner returns a runner using the real ccl Grok Build launcher.
+// NewRunner returns a runner using the real gbx Grok Build launcher.
 func NewRunner(maxConcurrency int) *Runner {
 	if maxConcurrency < 1 {
 		maxConcurrency = 1
@@ -162,11 +162,11 @@ func applyWorkspaceSandboxEnv(env []string, workspace string) []string {
 
 // DefaultLauncher prepares Grok Build over ACP stdio with the conversation's
 // selected provider, model, effort and permission mode. It never writes
-// ~/.ccl/config.yaml.
+// ~/.gbx/config.yaml.
 func DefaultLauncher(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return nil, nil, fmt.Errorf("load ccl config: %w", err)
+		return nil, nil, fmt.Errorf("load gbx config: %w", err)
 	}
 	grokPath, err := groklaunch.LookPath()
 	if err != nil {
@@ -176,7 +176,7 @@ func DefaultLauncher(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), e
 	name := strings.TrimSpace(spec.Provider)
 	if name == "" || provider.IsDefaultProvider(name) {
 		if strings.TrimSpace(cfg.LegacyClaudeDefault) != "" {
-			return nil, nil, errors.New("the default Claude account has been retired; run ccl use default to select Grok Build's own login, or choose another provider")
+			return nil, nil, errors.New("the default Claude account has been retired; run gbx use default to select Grok Build's own login, or choose another provider")
 		}
 		args := buildArgs(spec)
 		cmd := process.Command(grokPath, args...)
@@ -185,7 +185,7 @@ func DefaultLauncher(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), e
 	}
 	p, ok := cfg.Providers[name]
 	if !ok || name == "" {
-		return nil, nil, fmt.Errorf("provider %q not found; use ccl ls or ccl set", name)
+		return nil, nil, fmt.Errorf("provider %q not found; use gbx ls or gbx set", name)
 	}
 	p.Name = name
 	if err := provider.ValidateRuntime(p); err != nil {

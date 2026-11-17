@@ -1,10 +1,10 @@
-// Package config reads and writes ~/.ccl/config.yaml.
+// Package config reads and writes ~/.gbx/config.yaml.
 //
 // Load is read-only: it normalizes in memory so every caller sees the same
 // derived values, but never writes. Every change goes through Update, which holds
 // an exclusive file lock across re-read → change → atomic write, so a
-// long-running command (ccl set, an OAuth login) cannot overwrite what another
-// ccl process changed in the meantime.
+// long-running command (gbx set, an OAuth login) cannot overwrite what another
+// gbx process changed in the meantime.
 package config
 
 import (
@@ -18,7 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// CurrentVersion is the config schema this ccl writes.
+// CurrentVersion is the config schema this gbx writes.
 const CurrentVersion = 2
 
 func ConfigPath() string {
@@ -31,7 +31,7 @@ func configPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".ccl", "config.yaml"), nil
+	return filepath.Join(home, ".gbx", "config.yaml"), nil
 }
 
 // Load reads the config and normalizes it in memory. It never writes; a
@@ -65,7 +65,7 @@ func read() (*provider.Config, error) {
 
 // Update applies fn to the current config under the config lock and writes the
 // result. fn sees the latest file, not a snapshot taken earlier, so concurrent
-// ccl processes cannot drop each other's changes. Returning an error from fn
+// gbx processes cannot drop each other's changes. Returning an error from fn
 // leaves the file untouched.
 func Update(fn func(*provider.Config) error) error {
 	return withLock(func(path string) error {
@@ -111,7 +111,7 @@ func write(path string, cfg *provider.Config) error {
 	return writeFileAtomic(path, data, 0o600)
 }
 
-// withLock runs fn while holding an exclusive lock on ~/.ccl/.config.lock.
+// withLock runs fn while holding an exclusive lock on ~/.gbx/.config.lock.
 func withLock(fn func(path string) error) error {
 	path, err := configPath()
 	if err != nil {
@@ -122,7 +122,7 @@ func withLock(fn func(path string) error) error {
 	}
 	unlock, err := lockFile(filepath.Join(filepath.Dir(path), ".config.lock"))
 	if err != nil {
-		return fmt.Errorf("lock ccl config: %w", err)
+		return fmt.Errorf("lock gbx config: %w", err)
 	}
 	defer unlock()
 	return fn(path)

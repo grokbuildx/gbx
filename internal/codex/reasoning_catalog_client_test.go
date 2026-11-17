@@ -71,7 +71,7 @@ func TestRealCodexModelListRetainsPerModelEfforts(t *testing.T) {
 				"space-bunny":         {"low", "medium", "high", "xhigh", "max"},
 			}
 			for id, efforts := range want {
-				alias := "ccl/chosen/" + id
+				alias := "gbx/chosen/" + id
 				model := slices.IndexFunc(result, func(model clientReasoningModel) bool { return model.Model == alias })
 				if model < 0 {
 					t.Fatalf("app-server omitted %s", alias)
@@ -99,7 +99,7 @@ func readClientModelList(t *testing.T, home string) []clientReasoningModel {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, os.Getenv("CCL_TEST_CODEX"), "-c", "features.code_mode_host=true", "app-server")
+	command := exec.CommandContext(ctx, os.Getenv("GBX_TEST_CODEX"), "-c", "features.code_mode_host=true", "app-server")
 	command.Dir = home
 	process.ConfigureGroup(command)
 	stdin, err := command.StdinPipe()
@@ -118,7 +118,7 @@ func readClientModelList(t *testing.T, home string) []clientReasoningModel {
 	defer func() { process.KillTree(command); _ = command.Wait() }()
 	encoder := json.NewEncoder(stdin)
 	for _, request := range []map[string]any{
-		{"id": 0, "method": "initialize", "params": map[string]any{"clientInfo": map[string]any{"name": "ccl-fixture", "version": "1"}, "capabilities": map[string]any{"experimentalApi": true}}},
+		{"id": 0, "method": "initialize", "params": map[string]any{"clientInfo": map[string]any{"name": "gbx-fixture", "version": "1"}, "capabilities": map[string]any{"experimentalApi": true}}},
 		{"method": "initialized"},
 		{"id": 1, "method": "model/list", "params": map[string]any{"includeHidden": true, "cursor": nil, "limit": 100}},
 	} {

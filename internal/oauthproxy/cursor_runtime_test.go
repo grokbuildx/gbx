@@ -16,7 +16,7 @@ import (
 )
 
 // cursorStubUpstream serves the Connect Run path from a scripted handler and
-// records the frames CCL writes there, so a test can assert both directions.
+// records the frames GBX writes there, so a test can assert both directions.
 type cursorStubUpstream struct {
 	server *httptest.Server
 	calls  int
@@ -199,7 +199,7 @@ func TestCursorStreamEmitsTextThenParksOnMcpCall(t *testing.T) {
 		if got := request.Header.Get("X-Cursor-Client-Version"); got != cursorCLIVersion {
 			t.Errorf("client version = %q", got)
 		}
-		if got := request.Header.Get("User-Agent"); !strings.HasPrefix(got, "ccl/") {
+		if got := request.Header.Get("User-Agent"); !strings.HasPrefix(got, "gbx/") {
 			t.Errorf("user agent = %q", got)
 		}
 		// The Run frame arrives before any answer.
@@ -311,7 +311,7 @@ func TestCursorResumesParkedStreamWithToolResult(t *testing.T) {
 }
 
 // describeCursorFrame renders a client frame as its decodable text, so a test
-// can assert what CCL sent without hard-coding protobuf bytes.
+// can assert what GBX sent without hard-coding protobuf bytes.
 func describeCursorFrame(frame cursorStubFrame) string {
 	var out strings.Builder
 	walkCursorStrings(frame.Body, &out)

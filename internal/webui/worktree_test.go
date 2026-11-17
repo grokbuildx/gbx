@@ -47,7 +47,7 @@ func TestWorktreeSessionRunsMergesAndCleansUp(t *testing.T) {
 	var session SessionView
 	_ = json.Unmarshal(body, &session)
 	tree := session.Worktree
-	if tree == nil || tree.Branch != "ccl/"+session.ID[:8] || tree.Base != "main" || session.Workspace != workspace {
+	if tree == nil || tree.Branch != "gbx/"+session.ID[:8] || tree.Base != "main" || session.Workspace != workspace {
 		t.Fatalf("session = %s", body)
 	}
 	matches, _ := filepath.Glob(filepath.Join(root, ".worktrees", "*", tree.Name))
@@ -207,7 +207,7 @@ func TestWorktreePreservesLocalSkillsMCPAndSandboxProfile(t *testing.T) {
 		t.Fatal("expected worktreeUsesCustomSandbox(dir) = true")
 	}
 	sandboxRaw, err := os.ReadFile(filepath.Join(dir, ".grok", "sandbox.toml"))
-	if err != nil || !strings.Contains(string(sandboxRaw), "[profiles.ccl_worktree]") || !strings.Contains(string(sandboxRaw), ".git") {
+	if err != nil || !strings.Contains(string(sandboxRaw), "[profiles.gbx_worktree]") || !strings.Contains(string(sandboxRaw), ".git") {
 		t.Fatalf("unexpected .grok/sandbox.toml = %q (%v)", sandboxRaw, err)
 	}
 

@@ -9,15 +9,15 @@ import (
 	"github.com/grokbuildx/gbx/internal/modelsdev"
 )
 
-// TestMain keeps the whole package away from the developer's real ~/.ccl and
+// TestMain keeps the whole package away from the developer's real ~/.gbx and
 // ~/.grok: a test that forgets t.Setenv("HOME") still lands in a throwaway
 // home. The UI language is pinned to English so text assertions do not depend
 // on the machine's locale or a real config's `lang`.
 func TestMain(m *testing.M) {
-	if os.Getenv("CCL_TEST_FAKE_GROK") == "1" {
+	if os.Getenv("GBX_TEST_FAKE_GROK") == "1" {
 		os.Exit(fakeGrokProcess())
 	}
-	home, err := os.MkdirTemp("", "ccl-cmd-test-home-")
+	home, err := os.MkdirTemp("", "gbx-cmd-test-home-")
 	if err != nil {
 		panic(err)
 	}

@@ -15,7 +15,7 @@ func writeRawConfig(t *testing.T, body string) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	path := filepath.Join(home, ".ccl", "config.yaml")
+	path := filepath.Join(home, ".gbx", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}

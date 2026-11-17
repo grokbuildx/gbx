@@ -40,7 +40,7 @@ type Overlay struct {
 	ProviderBlock string         `json:"provider_block,omitempty"`
 }
 
-const IndependentProviderID = "ccl_proxy"
+const IndependentProviderID = "gbx_proxy"
 
 func Home() (string, error) {
 	if directory := strings.TrimSpace(os.Getenv("CODEX_HOME")); directory != "" {
@@ -99,12 +99,12 @@ func Plan(ctx context.Context, g *Gateway, directory string) (*Overlay, error) {
 		profileScope = []string{"profiles", profile}
 	}
 	if !g.options.Independent && selected != "" && selected != "openai" {
-		return nil, fmt.Errorf("Codex uses a custom model_provider; select Codex's native OpenAI provider before enabling its CCL proxy")
+		return nil, fmt.Errorf("Codex uses a custom model_provider; select Codex's native OpenAI provider before enabling its GBX proxy")
 	}
 	if g.options.Independent {
 		providers, _ := fields["model_providers"].(map[string]any)
 		if _, exists := providers[IndependentProviderID]; exists {
-			return nil, fmt.Errorf("Codex provider %q already exists; rename that provider before enabling independent CCL mode", IndependentProviderID)
+			return nil, fmt.Errorf("Codex provider %q already exists; rename that provider before enabling independent GBX mode", IndependentProviderID)
 		}
 		g.options.Desktop = false
 	}
@@ -155,15 +155,15 @@ func Plan(ctx context.Context, g *Gateway, directory string) (*Overlay, error) {
 		}
 		g.legacyCompaction = make(map[string]Route)
 		for _, entry := range native.Models {
-			if slug, _ := entry["slug"].(string); slug != "" && !strings.HasPrefix(strings.ToLower(slug), "ccl/") {
+			if slug, _ := entry["slug"].(string); slug != "" && !strings.HasPrefix(strings.ToLower(slug), "gbx/") {
 				g.legacyCompaction[slug] = g.routes[model]
 			}
 		}
 		values["model_provider"], values["model"] = IndependentProviderID, model
 		quote := func(value string) string { encoded, _ := json.Marshal(value); return string(encoded) }
-		overlay.ProviderBlock = fmt.Sprintf("\n# CCL temporary provider\n[model_providers.%s]\nname = \"CCL\"\nbase_url = %s\nwire_api = \"responses\"\nrequires_openai_auth = false\nsupports_websockets = false\nexperimental_bearer_token = %s\n# End CCL temporary provider\n", IndependentProviderID, quote(base), quote(g.Token()))
+		overlay.ProviderBlock = fmt.Sprintf("\n# GBX temporary provider\n[model_providers.%s]\nname = \"GBX\"\nbase_url = %s\nwire_api = \"responses\"\nrequires_openai_auth = false\nsupports_websockets = false\nexperimental_bearer_token = %s\n# End GBX temporary provider\n", IndependentProviderID, quote(base), quote(g.Token()))
 		if g.options.CatalogMode == CatalogRemote {
-			overlay.ProviderBlock = strings.Replace(overlay.ProviderBlock, "# End CCL temporary provider", "model_catalog_url = "+quote(base+"/models")+"\n# End CCL temporary provider", 1)
+			overlay.ProviderBlock = strings.Replace(overlay.ProviderBlock, "# End GBX temporary provider", "model_catalog_url = "+quote(base+"/models")+"\n# End GBX temporary provider", 1)
 		}
 	}
 	addChanges := func(scope []string, source map[string]any, values map[string]string) error {
@@ -309,7 +309,7 @@ func cliPackageEntrypoint(cliDir string) string {
 func hasNativeModels(catalog Catalog) bool {
 	for _, model := range catalog.Models {
 		id, _ := model["slug"].(string)
-		if strings.TrimSpace(id) != "" && !strings.HasPrefix(strings.ToLower(id), "ccl/") {
+		if strings.TrimSpace(id) != "" && !strings.HasPrefix(strings.ToLower(id), "gbx/") {
 			return true
 		}
 	}
@@ -319,7 +319,7 @@ func hasNativeModels(catalog Catalog) bool {
 func hasCodeModeModel(catalog Catalog) bool {
 	for _, model := range catalog.Models {
 		id, _ := model["slug"].(string)
-		if !strings.HasPrefix(strings.ToLower(id), "ccl/") && model["tool_mode"] == "code_mode_only" {
+		if !strings.HasPrefix(strings.ToLower(id), "gbx/") && model["tool_mode"] == "code_mode_only" {
 			return true
 		}
 	}
@@ -405,7 +405,7 @@ func bundledNativeCatalog(ctx context.Context) (Catalog, error) {
 	if err != nil {
 		return Catalog{}, err
 	}
-	scratch, err := os.MkdirTemp("", "ccl-codex-catalog-")
+	scratch, err := os.MkdirTemp("", "gbx-codex-catalog-")
 	if err != nil {
 		return Catalog{}, err
 	}
@@ -570,7 +570,7 @@ func withConfig(ctx context.Context, path string, edit func([]byte, map[string]a
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	unlock, err := fsutil.AcquireFileLock(ctx, path+".ccl-lock")
+	unlock, err := fsutil.AcquireFileLock(ctx, path+".gbx-lock")
 	if err != nil {
 		return err
 	}
@@ -601,7 +601,7 @@ func (o *Overlay) Apply(ctx context.Context) error {
 		if o.ProviderBlock != "" {
 			providers, _ := fields["model_providers"].(map[string]any)
 			if _, exists := providers[IndependentProviderID]; exists {
-				return nil, fmt.Errorf("CCL provider table changed during startup")
+				return nil, fmt.Errorf("GBX provider table changed during startup")
 			}
 		}
 		for _, change := range o.Changes {

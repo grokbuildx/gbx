@@ -15,26 +15,26 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "ccl",
+	Use:   "gbx",
 	Short: "Multi-provider launcher for Grok Build and Codex",
-	Long: `ccl launches Grok Build with the active provider from ~/.ccl/config.yaml.
+	Long: `gbx launches Grok Build with the active provider from ~/.gbx/config.yaml.
 
 Common commands:
-  ccl                         Start Grok Build with the active provider
-  ccl --provider <name>       Launch once with another provider
-  ccl use [name]              Switch providers; default uses Grok Build's own login
-  ccl set [name]              Add or update a provider
-  ccl ls                      List providers
-  ccl preview [name]          Preview the Grok Build settings JSON
-  ccl oauth <backend>         Log in with a subscription account
-  ccl codex -p <name>         Connect provider models to Codex
-  ccl serve -p <name>         Use Grok Build in a local browser
-  ccl doctor                  Check environment and provider connectivity
-  ccl cloud login|push|pull   Manage encrypted configuration sync
-  ccl log on|off              Configure per-session logs
+  gbx                         Start Grok Build with the active provider
+  gbx --provider <name>       Launch once with another provider
+  gbx use [name]              Switch providers; default uses Grok Build's own login
+  gbx set [name]              Add or update a provider
+  gbx ls                      List providers
+  gbx preview [name]          Preview the Grok Build settings JSON
+  gbx oauth <backend>         Log in with a subscription account
+  gbx codex -p <name>         Connect provider models to Codex
+  gbx serve -p <name>         Use Grok Build in a local browser
+  gbx doctor                  Check environment and provider connectivity
+  gbx cloud login|push|pull   Manage encrypted configuration sync
+  gbx log on|off              Configure per-session logs
 
-Grok arguments pass through. Use ccl grok to bypass ccl command names
-(for example, ccl grok doctor and ccl grok update).
+Grok arguments pass through. Use gbx grok to bypass gbx command names
+(for example, gbx grok doctor and gbx grok update).
 `,
 	// Execute prints every error once; cobra printing it as well duplicated it.
 	SilenceErrors: true,
@@ -47,7 +47,7 @@ Grok arguments pass through. Use ccl grok to bypass ccl command names
 
 func Execute() {
 	configureLogging()
-	// ccl codex start/stop recover under their own lifecycle lock.
+	// gbx codex start/stop recover under their own lifecycle lock.
 	if len(os.Args) < 2 || os.Args[1] != "codex" {
 		recoverStaleProxy()
 	}
@@ -92,9 +92,9 @@ func configureLogging() {
 	oauthproxy.ConfigureLogLevel(configuredLogLevel(cfg.LogLevel))
 }
 
-func isCclCommand(arg string) bool {
+func isGbxCommand(arg string) bool {
 	switch arg {
-	// --version asks about ccl. -v is forwarded to Grok.
+	// --version asks about gbx. -v is forwarded to Grok.
 	case "help", "completion", "-h", "--help", "--version":
 		return true
 	}
@@ -119,7 +119,7 @@ func resolveRootGrokArgs(rawArgs []string) (name string, rest []string, dispatch
 	}
 	name, rest, handled, delimited, err := parseLaunchOptionsWithDelim(rawArgs)
 	first := rawArgs[0]
-	if !handled && isCclCommand(first) {
+	if !handled && isGbxCommand(first) {
 		return "", nil, false, nil
 	}
 	if err != nil {
@@ -131,8 +131,8 @@ func resolveRootGrokArgs(rawArgs []string) (name string, rest []string, dispatch
 	return name, rest, true, nil
 }
 
-// Only a leading --provider selects a CCL provider. Grok flags such as
-// --agent are passed through. -- separates CCL's option from Grok arguments.
+// Only a leading --provider selects a GBX provider. Grok flags such as
+// --agent are passed through. -- separates GBX's option from Grok arguments.
 func parseLaunchOptions(args []string) (name string, rest []string, handled bool, err error) {
 	name, rest, handled, _, err = parseLaunchOptionsWithDelim(args)
 	return name, rest, handled, err
@@ -174,7 +174,7 @@ func runGrok(args []string, name string) error {
 func runGrokWithOverride(args []string, override string) error {
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("load ccl config: %w", err)
+		return fmt.Errorf("load gbx config: %w", err)
 	}
 	explicitProvider := strings.TrimSpace(override) != ""
 	name := override
@@ -196,8 +196,8 @@ func resolveProvider() (provider.Provider, error) {
 func resolveProviderFromConfig(cfg *provider.Config, name string) (provider.Provider, error) {
 	if name == "" {
 		return provider.Provider{}, errors.New(locale.T(
-			"未选择 Provider。用 ccl set 添加、ccl use <name> 选择，或用 ccl use default 直接以 Grok Build 自身登录启动",
-			"no provider selected. Add one with ccl set, choose one with ccl use <name>, or run Grok Build on its own login with ccl use default",
+			"未选择 Provider。用 gbx set 添加、gbx use <name> 选择，或用 gbx use default 直接以 Grok Build 自身登录启动",
+			"no provider selected. Add one with gbx set, choose one with gbx use <name>, or run Grok Build on its own login with gbx use default",
 		))
 	}
 	p, ok := cfg.Providers[name]

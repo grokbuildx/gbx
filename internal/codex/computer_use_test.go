@@ -117,7 +117,7 @@ func TestGrokOAuthUsesConvertedBridgeWithCodeModeAndLocalCompaction(t *testing.T
 		t.Fatalf("turn 2 did not complete: %+v", turn2)
 	}
 
-	// Remote compaction trigger on Grok OAuth must produce a local ccl1: token without calling /responses/compact.
+	// Remote compaction trigger on Grok OAuth must produce a local gbx1: token without calling /responses/compact.
 	compacted := responseObject(t, postResponses(t, g, map[string]any{
 		"model":                alias,
 		"previous_response_id": turn2["id"],
@@ -130,7 +130,7 @@ func TestGrokOAuthUsesConvertedBridgeWithCodeModeAndLocalCompaction(t *testing.T
 	}
 	compactionItem, _ := compactedOut[0].(map[string]any)
 	encoded, _ := compactionItem["encrypted_content"].(string)
-	if !strings.HasPrefix(encoded, "ccl1:") || compactUpstreamHits.Load() != 0 {
+	if !strings.HasPrefix(encoded, "gbx1:") || compactUpstreamHits.Load() != 0 {
 		t.Fatalf("grok OAuth did not compact locally: encoded=%q compactUpstreamHits=%d", encoded, compactUpstreamHits.Load())
 	}
 

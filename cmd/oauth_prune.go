@@ -76,8 +76,8 @@ func newOAuthPruneCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "prune",
 		Short: "Delete OAuth credentials no provider uses",
-		Long: `List credential files under ~/.ccl/auth that no provider is bound to
-(left behind by ccl provider rm or by logging in again), and delete them after
+		Long: `List credential files under ~/.gbx/auth that no provider is bound to
+(left behind by gbx provider rm or by logging in again), and delete them after
 confirmation.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -91,7 +91,7 @@ confirmation.`,
 func runOAuthPrune(out io.Writer, yes bool) error {
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("load ccl config: %w", err)
+		return fmt.Errorf("load gbx config: %w", err)
 	}
 	authDir, err := oauthproxy.AuthDir()
 	if err != nil {

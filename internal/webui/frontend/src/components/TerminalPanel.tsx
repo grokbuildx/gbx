@@ -6,7 +6,7 @@ import { RotateCcw } from "lucide-react";
 import { HttpError, type Api } from "../api";
 import { useI18n } from "../i18n";
 
-// The web terminal (ccl serve --shell), shown in a tab. It is its own chunk.
+// The web terminal (gbx serve --shell), shown in a tab. It is its own chunk.
 // Switching away unmounts it and leaves the shell running; coming back
 // re-attaches and the server replays the recent output. Closing the tab ends
 // the shell.

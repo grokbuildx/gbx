@@ -23,7 +23,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// doctorProbeTimeout bounds each connectivity probe issued by `ccl doctor`.
+// doctorProbeTimeout bounds each connectivity probe issued by `gbx doctor`.
 const doctorProbeTimeout = 5 * time.Second
 
 var doctorCmd = newDoctorCommand()
@@ -44,12 +44,12 @@ Model pool (provider.Model) lists the models exposed by the provider runtime
 for Grok Build, Codex, and the Web UI.
 
 Doctor only reads: it lists models and checks the endpoint with a catalog
-request, and never changes ~/.ccl/config.yaml. --probe additionally sends a
+request, and never changes ~/.gbx/config.yaml. --probe additionally sends a
 1-token request to every model in the pool, which counts against your plan.
 
-For cloud sync status, see "ccl cloud status".
-For live request failures enable "ccl log on" and check the session log file
-when the Grok Build session ends (default ~/.ccl/logs/ccl-debug-grok_<id>.log).
+For cloud sync status, see "gbx cloud status".
+For live request failures enable "gbx log on" and check the session log file
+when the Grok Build session ends (default ~/.gbx/logs/gbx-debug-grok_<id>.log).
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDoctor(cmd.Context(), probe, *target)
@@ -118,7 +118,7 @@ func runDoctor(ctx context.Context, probe bool, target providerTarget) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	doctorHeader("ccl Doctor")
+	doctorHeader("gbx Doctor")
 
 	doctorSection("Environment")
 
@@ -136,7 +136,7 @@ func runDoctor(ctx context.Context, probe bool, target providerTarget) error {
 	}
 	if provider.IsDefaultProvider(cfg.ActiveProvider) && target.name == "" {
 		if strings.TrimSpace(cfg.LegacyClaudeDefault) != "" {
-			doctorErr("The default Claude account has been retired. Run ccl use default or choose another provider.")
+			doctorErr("The default Claude account has been retired. Run gbx use default or choose another provider.")
 		} else {
 			doctorInfo("Active provider: default (Grok Build's own login)")
 		}
@@ -190,14 +190,14 @@ func runDoctor(ctx context.Context, probe bool, target providerTarget) error {
 			doctorSection("Model verification")
 			if !probe {
 				doctorInfo(fmt.Sprintf("Skipped: %d model(s) in the pool.", len(configuredModels)))
-				doctorHint("Run `ccl doctor --probe` or `ccl models --probe` to send a 1-token test to each (billed).")
+				doctorHint("Run `gbx doctor --probe` or `gbx models --probe` to send a 1-token test to each (billed).")
 				return nil
 			}
 			availableSet := testModelsConcurrently(ctx, configuredModels, probeTarget.Endpoint, probeTarget.APIKey, probeWireType(probeTarget), probeTarget.ModelProtocols)
 			available, unavailable := classifyModels(configuredModels, availableSet)
 			doctorKV("Summary", modelVerificationSummary(available, unavailable))
 			if len(unavailable) > 0 {
-				doctorHint("Run `ccl models --probe` to inspect individual model results.")
+				doctorHint("Run `gbx models --probe` to inspect individual model results.")
 			}
 		}
 	}
@@ -211,7 +211,7 @@ func runDoctor(ctx context.Context, probe bool, target providerTarget) error {
 // that compact at 85% of their advertised window.
 //
 // runtimeProvider carries the live endpoint/key of the embedded runtime;
-// configured carries the user's ccl config.
+// configured carries the user's gbx config.
 func printDoctorContextBudget(runtimeProvider, configured provider.Provider, modelNames map[string]string) {
 	doctorSection("Context budget")
 
@@ -359,13 +359,13 @@ func smallestPoolWindow(p provider.Provider, windows map[string]int) (smallest i
 
 // printDoctorIgnoredContextEnv names context variables exported in the shell.
 //
-// ccl no longer passes those through, so a value left over from an older
+// gbx no longer passes those through, so a value left over from an older
 // workaround has no effect. Saying so is the difference between "my export does
 // nothing" being a mystery and being expected.
 func printDoctorIgnoredContextEnv() {
 	for _, key := range provider.ManagedContextEnvKeys() {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			doctorInfo(fmt.Sprintf("%s=%s is set in your shell and is ignored: ccl passes only its own variables to Codex", key, value))
+			doctorInfo(fmt.Sprintf("%s=%s is set in your shell and is ignored: gbx passes only its own variables to Codex", key, value))
 		}
 	}
 }
@@ -504,7 +504,7 @@ func testModelsConcurrently(ctx context.Context, models []string, endpoint, apiK
 	}
 	// 8 workers, not 50: a large concurrent burst against one gateway trips
 	// per-key rate limits and marks healthy models unavailable. doctor is a
-	// deliberate one-shot diagnosis, so it batches wider than the ccl set page's
+	// deliberate one-shot diagnosis, so it batches wider than the gbx set page's
 	// interactive slotTestConcurrency (2), which re-runs probes while typing.
 	const batchSize = 8
 
@@ -719,7 +719,7 @@ func printDoctorOAuthHealth(p provider.Provider, runtime *oauthproxy.Runtime) {
 	doctorSection("Subscription account")
 	if runtime == nil {
 		offline := inspectDoctorOAuthCredential(p)
-		doctorKV("Source", "offline files (~/.ccl/auth)")
+		doctorKV("Source", "offline files (~/.gbx/auth)")
 		doctorKV("Configured", fmt.Sprintf("%d", offline.Configured))
 		doctorKV("Present", fmt.Sprintf("%d", offline.Present))
 		doctorKV("Healthy", fmt.Sprintf("%d", offline.Healthy))
@@ -752,7 +752,7 @@ func printDoctorOAuthHealth(p provider.Provider, runtime *oauthproxy.Runtime) {
 		doctorOK("Subscription credential is healthy")
 	case live.Healthy == 0:
 		doctorWarn("No healthy subscription credential loaded")
-		doctorHint("Authenticate the subscription account again with `ccl oauth <provider> [alias]`")
+		doctorHint("Authenticate the subscription account again with `gbx oauth <provider> [alias]`")
 	default:
 		doctorInfo(fmt.Sprintf("Credential health degraded: %d usable of %d loaded", live.Healthy, live.Loaded))
 	}
@@ -968,7 +968,7 @@ func printDoctorProviderDetails(p provider.Provider) {
 			doctorKV("Model pool", "0 (live runtime catalog)")
 		} else {
 			doctorWarn("Model pool: 0 configured")
-			doctorHint("Run `ccl set` to detect models for this provider")
+			doctorHint("Run `gbx set` to detect models for this provider")
 		}
 	} else {
 		doctorKV("Model pool", fmt.Sprintf("%d configured", len(pool)))

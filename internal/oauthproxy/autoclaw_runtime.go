@@ -11,8 +11,8 @@ import (
 	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
-// startAutoClawOAuth runs a CCL-owned Responses-to-OpenAI Chat adapter. The
-// client talks to the local loopback endpoint, while CCL sends the
+// startAutoClawOAuth runs a GBX-owned Responses-to-OpenAI Chat adapter. The
+// client talks to the local loopback endpoint, while GBX sends the
 // converted request to AutoClaw's managed OpenAI Chat proxy with the exact
 // X-Authorization/X-Request-Model contract used by the desktop app.
 func startAutoClawOAuth(parent context.Context, _ string, modelSpec, credentialFile string) (*Runtime, error) {
@@ -45,7 +45,7 @@ func startAutoClawOAuth(parent context.Context, _ string, modelSpec, credentialF
 			// the caller decide whether to retry.
 			service.fastRetry = false
 			// AutoClaw's managed broker is implemented with Node fetch/undici,
-			// which currently sends HTTP/1.1. Match that transport when CCL
+			// which currently sends HTTP/1.1. Match that transport when GBX
 			// calls the same endpoint; some WAF rules distinguish HTTP/2.
 			transport := newUpstreamTransport(90 * time.Second)
 			transport.ForceAttemptHTTP2 = false

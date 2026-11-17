@@ -258,7 +258,7 @@ func (s *kiroService) availableModels(ctx context.Context) ([]kiroAvailableModel
 		return nil, fmt.Errorf("Kiro model discovery failed: %w", errors.Join(discoveryErrors...))
 	}
 
-	// Preserve explicitly configured ccl aliases (notably [1m]) only when their
+	// Preserve explicitly configured gbx aliases (notably [1m]) only when their
 	// normalized backend model is present in the account's upstream catalog.
 	for _, alias := range s.models {
 		backendID := mapKiroModel(alias)
@@ -436,7 +436,7 @@ func (c *kiroModelCatalog) bootstrapPortalSession(ctx context.Context, service *
 	}
 	addKiroPortalCookies(request, &credential, idp)
 	request.Header.Set("Accept", "text/html")
-	request.Header.Set("User-Agent", "ccl KiroWebPortal model discovery")
+	request.Header.Set("User-Agent", "gbx KiroWebPortal model discovery")
 	response, err := service.client.Do(request)
 	if err != nil {
 		return credential, true, fmt.Errorf("load Kiro Web Portal session: %w", err)
@@ -493,7 +493,7 @@ func (c *kiroModelCatalog) requestPortalModels(ctx context.Context, service *kir
 	request.Header.Set("Referer", "https://app.kiro.dev/home")
 	request.Header.Set("amz-sdk-invocation-id", uuidString())
 	request.Header.Set("amz-sdk-request", "attempt=1; max=1")
-	request.Header.Set("x-amz-user-agent", "aws-sdk-go/1.0.0 ua/2.1 os/"+runtime.GOOS+" lang/go md/ccl m/N,M,E")
+	request.Header.Set("x-amz-user-agent", "aws-sdk-go/1.0.0 ua/2.1 os/"+runtime.GOOS+" lang/go md/gbx m/N,M,E")
 	if credential.userID != "" {
 		request.Header.Set("x-kiro-userid", credential.userID)
 	}

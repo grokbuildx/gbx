@@ -24,7 +24,7 @@ func isolatedManager(t *testing.T) (*Manager, string) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
-	t.Setenv("CCL_PROXY_NO_MENUBAR", "1")
+	t.Setenv("GBX_PROXY_NO_MENUBAR", "1")
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
 	locale.SetLanguage("en")
 	path := filepath.Join(home, ".claude", "settings.json")
@@ -37,7 +37,7 @@ func isolatedManager(t *testing.T) (*Manager, string) {
 	if err := os.WriteFile(filepath.Join(os.Getenv("CODEX_HOME"), "models_cache.json"), []byte(`{"models":[{"slug":"native-fixture"}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return &Manager{Dir: filepath.Join(home, ".ccl", "proxy")}, path
+	return &Manager{Dir: filepath.Join(home, ".gbx", "proxy")}, path
 }
 
 func awaitRunning(t *testing.T, m *Manager) *State {
@@ -129,7 +129,7 @@ func TestStandaloneCodexProxyLeavesClaudeSettingsAlone(t *testing.T) {
 				if response.StatusCode != 401 {
 					t.Fatal("control endpoint accepted missing credentials")
 				}
-				request, _ := http.NewRequest(http.MethodPost, state.BaseURL+"/responses", strings.NewReader(`{"model":"ccl/chosen/model-a","input":"fixture"}`))
+				request, _ := http.NewRequest(http.MethodPost, state.BaseURL+"/responses", strings.NewReader(`{"model":"gbx/chosen/model-a","input":"fixture"}`))
 				request.Header.Set("Authorization", "Bearer fake-native-key")
 				response, err = http.DefaultClient.Do(request)
 				if err != nil {

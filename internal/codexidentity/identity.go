@@ -1,7 +1,7 @@
-// Package codexidentity defines the Codex wire identity owned by CCL.
+// Package codexidentity defines the Codex wire identity owned by GBX.
 //
-// Keep these values owned by CCL: an external implementation update must never
-// silently change how CCL identifies its Codex Responses requests.
+// Keep these values owned by GBX: an external implementation update must never
+// silently change how GBX identifies its Codex Responses requests.
 package codexidentity
 
 import (
@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	// ClientVersion is the Codex protocol baseline implemented by CCL. Update it
-	// deliberately when validating CCL against a newer Codex client protocol.
+	// ClientVersion is the Codex protocol baseline implemented by GBX. Update it
+	// deliberately when validating GBX against a newer Codex client protocol.
 	ClientVersion = "0.162.1"
 	Originator    = "codex_cli_rs"
 )

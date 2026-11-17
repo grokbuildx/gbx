@@ -73,12 +73,12 @@ func TestPrepareDiscoversModelsAndStartsResponsesRuntime(t *testing.T) {
 }
 
 // TestPrepareStartsAutoClawRuntime pins the AutoClaw contract: the remote
-// bearer credential remains inside a CCL-owned runtime and Claude Code receives
+// bearer credential remains inside a GBX-owned runtime and Claude Code receives
 // only an ephemeral loopback endpoint/key.
 func TestPrepareStartsAutoClawRuntime(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestPrepareAutoClawReportsMissingCredential(t *testing.T) {
 	if err == nil {
 		t.Fatal("Prepare() must fail when the bound credential is missing")
 	}
-	if !strings.Contains(err.Error(), "ccl oauth autoclaw") {
+	if !strings.Contains(err.Error(), "gbx oauth autoclaw") {
 		t.Fatalf("error = %v", err)
 	}
 }

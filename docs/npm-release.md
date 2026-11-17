@@ -1,23 +1,23 @@
 # Platform-specific npm releases
 
-The launcher package remains `@claudecodelaunch/ccl`. Its exact-version optional dependencies each contain one native binary, with npm `os` and `cpu` metadata selecting the current platform:
+The launcher package remains `@grokbuildx/gbx`. Its exact-version optional dependencies each contain one native binary, with npm `os` and `cpu` metadata selecting the current platform:
 
 | Package suffix | Release asset |
 | --- | --- |
-| `darwin-x64` | `ccl-darwin-amd64.gz` |
-| `darwin-arm64` | `ccl-darwin-arm64.gz` |
-| `linux-x64` | `ccl-linux-amd64.gz` |
-| `linux-arm64` | `ccl-linux-arm64.gz` |
-| `win32-x64` | `ccl-win32-x64.exe.gz` |
-| `win32-arm64` | `ccl-win32-arm64.exe.gz` |
+| `darwin-x64` | `gbx-darwin-amd64.gz` |
+| `darwin-arm64` | `gbx-darwin-arm64.gz` |
+| `linux-x64` | `gbx-linux-amd64.gz` |
+| `linux-arm64` | `gbx-linux-arm64.gz` |
+| `win32-x64` | `gbx-win32-x64.exe.gz` |
+| `win32-arm64` | `gbx-win32-arm64.exe.gz` |
 
-Each suffix is prefixed with `@claudecodelaunch/ccl-`. The launcher contains no native binaries: its `ccl` command is the `bin/ccl.exe` placeholder, which the `bin/install.js` postinstall replaces with a hard link to (or copy of) the platform binary. The installed command therefore runs without Node.js.
+Each suffix is prefixed with `@grokbuildx/gbx-`. The launcher contains no native binaries: its `gbx` command is the `bin/gbx.exe` placeholder, which the `bin/install.js` postinstall replaces with a hard link to (or copy of) the platform binary. The installed command therefore runs without Node.js.
 
 The placeholder has no shebang, so npm's Windows shim executes the placed binary directly. When postinstall did not run (`--ignore-scripts`, pnpm or bun without trusted scripts, `--omit=optional`), Unix shells run the placeholder with `sh`, which hands off to `node bin/wrapper.js`; `node bin/install.js` places the binary afterwards. Older bundled installations are still recognized by the wrapper.
 
 ## First release setup
 
-npm Trusted Publishing is configured separately for each package. Before the first release using this layout, an owner of the `@claudecodelaunch` npm scope must create/bootstrap the six packages and configure their trusted publisher for:
+npm Trusted Publishing is configured separately for each package. Before the first release using this layout, an owner of the `@grokbuildx` npm scope must create/bootstrap the six packages and configure their trusted publisher for:
 
 - GitHub owner/repository: `grokbuildx/gbx`
 - Workflow filename: `release.yml`
@@ -31,7 +31,7 @@ This bootstrap was completed on 2026-10-15: each platform package has a `0.0.0` 
 - Use npm 11.15 or newer and pass `--allow-publish`. Older npm sends no permission flag and the registry answers a bare `400`:
 
   ```bash
-  npx -y npm@latest trust github @claudecodelaunch/ccl-<platform> --file release.yml --repository grokbuildx/gbx --allow-publish -y
+  npx -y npm@latest trust github @grokbuildx/gbx-<platform> --file release.yml --repository grokbuildx/gbx --allow-publish -y
   ```
 - Every publish and trust call needs its own browser 2FA confirmation, which expires after about five minutes.
 
@@ -39,7 +39,7 @@ This bootstrap was completed on 2026-10-15: each platform package has a `0.0.0` 
 
 `node scripts/build-npm-packages.js vMAJOR.MINOR.PATCH` validates all six compressed release assets under `dist/` and stages seven packages under `dist/npm/`. Legacy four-component tags become npm prerelease versions, matching the previous workflow.
 
-`node scripts/publish-npm-packages.js dist/npm` skips versions that already exist, publishes the six platform packages in parallel, and publishes the launcher once npm has accepted all six. It does not wait for npm to serve them: npm can take from about one to more than thirteen minutes per package, and an install in that window skips the unresolved optional dependency without failing. `bin/install.js` then downloads the same `.gz` asset from the GitHub release (`CCL_RELEASE_DOWNLOAD_URL` overrides the base URL), verifies it against `SHA256SUMS`, and places it; the npm job runs after the GitHub release job for that reason. A failed download fails the install. Reruns safely continue from already-published versions.
+`node scripts/publish-npm-packages.js dist/npm` skips versions that already exist, publishes the six platform packages in parallel, and publishes the launcher once npm has accepted all six. It does not wait for npm to serve them: npm can take from about one to more than thirteen minutes per package, and an install in that window skips the unresolved optional dependency without failing. `bin/install.js` then downloads the same `.gz` asset from the GitHub release (`GBX_RELEASE_DOWNLOAD_URL` overrides the base URL), verifies it against `SHA256SUMS`, and places it; the npm job runs after the GitHub release job for that reason. A failed download fails the install. Reruns safely continue from already-published versions.
 
 The launcher declares `engines.node >=22`.
 

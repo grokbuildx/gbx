@@ -43,7 +43,7 @@ func TestConvertAnthropicMessagesToKiro(t *testing.T) {
 		}],
 		"input":[
 			{"role":"user","content":"Read the file"},
-			{"id":"rs_ccl_1","type":"reasoning","summary":[{"type":"summary_text","text":"I should inspect it."}]},
+			{"id":"rs_gbx_1","type":"reasoning","summary":[{"type":"summary_text","text":"I should inspect it."}]},
 			{"type":"function_call","call_id":"toolu_1","name":"` + longToolName + `","arguments":"{\"path\":\"/tmp/a\"}"},
 			{"type":"function_call_output","call_id":"toolu_1","output":"contents"},
 			{"role":"user","content":"Continue"}
@@ -496,8 +496,8 @@ func TestLimitKiroTextFieldsKeepsHeadAndTail(t *testing.T) {
 		"assistant": assistant,
 		"result":    result,
 	} {
-		if len(value) > kiroMaxTextFieldBytes || !strings.Contains(value, "[ccl truncated ") {
-			t.Fatalf("%s length=%d marker=%t", name, len(value), strings.Contains(value, "[ccl truncated "))
+		if len(value) > kiroMaxTextFieldBytes || !strings.Contains(value, "[gbx truncated ") {
+			t.Fatalf("%s length=%d marker=%t", name, len(value), strings.Contains(value, "[gbx truncated "))
 		}
 	}
 	if !strings.HasPrefix(current, "CURRENT-BEGIN-") || !strings.HasSuffix(current, "-CURRENT-END") {
@@ -1011,7 +1011,7 @@ func TestStartKiroRuntimeExposesAnthropicModels(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatal(err)
 	}

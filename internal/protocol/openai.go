@@ -76,7 +76,7 @@ type ModelResponse struct {
 			DefaultReasoningEffort string          `json:"default_reasoning_effort,omitempty"`
 			ReasoningEffort        json.RawMessage `json:"reasoning_effort,omitempty"`
 		} `json:"capabilities,omitempty"`
-		// Optional gateway and CCL model metadata.
+		// Optional gateway and GBX model metadata.
 		RateMultiplier     *float64 `json:"rate_multiplier,omitempty"`
 		RateUnit           string   `json:"rate_unit,omitempty"`
 		IsNew              bool     `json:"is_new,omitempty"`

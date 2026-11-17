@@ -53,7 +53,7 @@ func TestIndependentOverlayUsesSeparateAuthAndRestoresProfile(t *testing.T) {
 			if json.Unmarshal(raw, &catalog) != nil || len(catalog.Models) != 1 || catalog.Models[0]["tool_mode"] != "code_mode_only" {
 				t.Fatal("independent catalog contains native routes or lost client tools")
 			}
-			request, _ := http.NewRequest("POST", g.BaseURL()+"/responses", strings.NewReader(`{"model":"ccl/chosen/model-a","input":"hi"}`))
+			request, _ := http.NewRequest("POST", g.BaseURL()+"/responses", strings.NewReader(`{"model":"gbx/chosen/model-a","input":"hi"}`))
 			response, err := http.DefaultClient.Do(request)
 			if err != nil {
 				t.Fatal(err)
@@ -62,7 +62,7 @@ func TestIndependentOverlayUsesSeparateAuthAndRestoresProfile(t *testing.T) {
 			if response.StatusCode != 401 {
 				t.Fatal("independent route accepted a missing loopback credential")
 			}
-			request, _ = http.NewRequest("POST", g.BaseURL()+"/responses", strings.NewReader(`{"model":"ccl/chosen/model-a","input":"hi"}`))
+			request, _ = http.NewRequest("POST", g.BaseURL()+"/responses", strings.NewReader(`{"model":"gbx/chosen/model-a","input":"hi"}`))
 			request.Header.Set("Authorization", "Bearer "+g.Token())
 			response, err = http.DefaultClient.Do(request)
 			if err != nil {
@@ -74,7 +74,7 @@ func TestIndependentOverlayUsesSeparateAuthAndRestoresProfile(t *testing.T) {
 			}
 			for _, payload := range []string{
 				`{"model":"native-model","input":"normal inference"}`,
-				`{"model":"ccl/unknown/model","input":[{"type":"compaction_trigger"}]}`,
+				`{"model":"gbx/unknown/model","input":[{"type":"compaction_trigger"}]}`,
 				`{"model":"native-model","input":"normal inference","tools":[{"type":"function","name":"run"}],"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"compaction\"}"}}`,
 			} {
 				request, _ := http.NewRequest("POST", g.BaseURL()+"/responses", strings.NewReader(payload))
@@ -105,13 +105,13 @@ func TestIndependentOverlayUsesSeparateAuthAndRestoresProfile(t *testing.T) {
 
 func TestIndependentOverlayRetainsLaterUserEdits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
-	block := "\n[model_providers.ccl_proxy]\nname = 'CCL'\n"
+	block := "\n[model_providers.gbx_proxy]\nname = 'GBX'\n"
 	o := &Overlay{Path: path, ProviderBlock: block, Changes: []ConfigChange{{Key: "model_provider", Applied: pointer(IndependentProviderID)}}}
 	if err := o.Apply(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
-	data = []byte(strings.Replace(string(data), "name = 'CCL'", "name = 'User changed'", 1))
+	data = []byte(strings.Replace(string(data), "name = 'GBX'", "name = 'User changed'", 1))
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}

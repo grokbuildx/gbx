@@ -17,17 +17,17 @@ import (
 // TestXaiGrokLiveCompatibility is opt-in because it consumes Grok subscription
 // quota. Pass a credential basename, never an access token:
 //
-//	CCL_GROK_LIVE_CREDENTIAL=xai-....json go test ./internal/oauthproxy -run TestXaiGrokLiveCompatibility -v
+//	GBX_GROK_LIVE_CREDENTIAL=xai-....json go test ./internal/oauthproxy -run TestXaiGrokLiveCompatibility -v
 //
 // The test exercises the complete Claude Messages -> OpenAI Responses -> Grok
 // stream path, including live catalog discovery and Grok routing headers.
 func TestXaiGrokLiveCompatibility(t *testing.T) {
-	credentialFile := strings.TrimSpace(os.Getenv("CCL_GROK_LIVE_CREDENTIAL"))
+	credentialFile := strings.TrimSpace(os.Getenv("GBX_GROK_LIVE_CREDENTIAL"))
 	if credentialFile == "" {
-		t.Skip("set CCL_GROK_LIVE_CREDENTIAL to run the quota-consuming Grok integration test")
+		t.Skip("set GBX_GROK_LIVE_CREDENTIAL to run the quota-consuming Grok integration test")
 	}
 	if filepath.Base(credentialFile) != credentialFile {
-		t.Fatal("CCL_GROK_LIVE_CREDENTIAL must be a credential basename, not a path")
+		t.Fatal("GBX_GROK_LIVE_CREDENTIAL must be a credential basename, not a path")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

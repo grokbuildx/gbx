@@ -14,7 +14,7 @@ import (
 )
 
 // Cloud sync from the page. Reading (remotes and their status) goes through
-// internal/cloudsync directly; every change runs `ccl cloud …` (the server's
+// internal/cloudsync directly; every change runs `gbx cloud …` (the server's
 // own binary), so login, encryption and conflict rules stay in one place.
 //
 //	GET  /api/cloud                     remotes, each with its status
@@ -167,7 +167,7 @@ func (s *Server) cloudLogin(w http.ResponseWriter, r *http.Request) {
 		args = append(args, alias)
 	}
 	// The page shows the URL; a browser on this machine completes the login
-	// through ccl's own 127.0.0.1 callback, any other pastes the address back.
+	// through gbx's own 127.0.0.1 callback, any other pastes the address back.
 	if platform == "google-drive" {
 		args = append(args, "--no-browser")
 	}
@@ -197,7 +197,7 @@ func (s *Server) cloudLoginProgress(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 	address := strings.TrimSpace(body.Address)
-	// One line, and only the redirected address: ccl reads its query.
+	// One line, and only the redirected address: gbx reads its query.
 	if address == "" || strings.ContainsAny(address, "\r\n") || len(address) > 4096 {
 		writeError(w, http.StatusBadRequest, "paste the whole redirected 127.0.0.1 address")
 		return
@@ -218,7 +218,7 @@ func (s *Server) cloudLoginProgress(w http.ResponseWriter, r *http.Request, id s
 }
 
 // cloudCommand runs push, pull, primary (remote use) or logout and returns
-// what ccl printed. A refusal (a conflict, local changes) is 409 with the
+// what gbx printed. A refusal (a conflict, local changes) is 409 with the
 // output, so the page can offer --force.
 func (s *Server) cloudCommand(w http.ResponseWriter, r *http.Request, action string) {
 	var body struct {
@@ -276,7 +276,7 @@ func (s *Server) cloudCommand(w http.ResponseWriter, r *http.Request, action str
 	var exit *exec.ExitError
 	switch {
 	case errors.As(err, &exit):
-		writeJSON(w, http.StatusConflict, map[string]any{"error": lastLine(text, "ccl cloud "+action+" failed"), "output": text})
+		writeJSON(w, http.StatusConflict, map[string]any{"error": lastLine(text, "gbx cloud "+action+" failed"), "output": text})
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	default:

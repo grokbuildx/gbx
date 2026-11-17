@@ -16,7 +16,7 @@ import (
 // default test directories on macOS exceed.
 func shortTempDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "ccl")
+	dir, err := os.MkdirTemp("", "gbx")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestListenUnixReplacesOnlyStaleSockets(t *testing.T) {
 		t.Skip("socket file modes are POSIX")
 	}
 	dir := shortTempDir(t)
-	path := filepath.Join(dir, "web", "ccl.sock")
+	path := filepath.Join(dir, "web", "gbx.sock")
 
 	first, err := ListenUnix(path)
 	if err != nil {
@@ -81,7 +81,7 @@ func TestUnixSocketNeedsNoLoopbackHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(shortTempDir(t), "ccl.sock")
+	path := filepath.Join(shortTempDir(t), "gbx.sock")
 	listener, err := ListenUnix(path)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestUnixSocketNeedsNoLoopbackHost(t *testing.T) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", path)
 		},
 	}}
-	request, _ := http.NewRequest(http.MethodPost, "http://ccl.example/api/sessions", strings.NewReader(`{}`))
+	request, _ := http.NewRequest(http.MethodPost, "http://gbx.example/api/sessions", strings.NewReader(`{}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Origin", "https://evil.example")
 	response, err := client.Do(request)
@@ -111,7 +111,7 @@ func TestUnixSocketNeedsNoLoopbackHost(t *testing.T) {
 
 	tcp := newHTTPTestServer(t, server.Handler())
 	request, _ = http.NewRequest(http.MethodGet, tcp+"/api/sessions", nil)
-	request.Host = "ccl.example"
+	request.Host = "gbx.example"
 	response, err = http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)

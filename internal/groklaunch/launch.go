@@ -162,7 +162,7 @@ func buildConfigOverlay(p provider.Provider, defaultModel string) string {
 	return string(raw)
 }
 
-// NormalizeReasoningEffort maps a CCL reasoning effort tier onto Grok Build's
+// NormalizeReasoningEffort maps a GBX reasoning effort tier onto Grok Build's
 // accepted ReasoningEffort enum (none, minimal, low, medium, high, xhigh, max),
 // clamping Codex's "ultra" tier to "max" and dropping unrecognized values.
 func NormalizeReasoningEffort(level string) string {
@@ -356,7 +356,7 @@ func prepare(ctx context.Context, grokPath string, p provider.Provider, sessionN
 	}
 	oauthproxy.LogInfoEvent("provider_ready", "session", sessionName, "agent", "grokbuild", "provider", p.Name,
 		"oauth", p.OAuthProvider, "protocol", provider.ProtocolLabelForProvider(p),
-		"data_plane", "ccl_proxy", "upstream_errors_visible", true,
+		"data_plane", "gbx_proxy", "upstream_errors_visible", true,
 		"base", oauthproxy.SafeLogEndpoint(session.Provider.Endpoint))
 
 	resolved := session.Provider
@@ -383,7 +383,7 @@ func prepare(ctx context.Context, grokPath string, p provider.Provider, sessionN
 	}
 	// Isolate Grok Build from any cached OIDC session in ~/.grok/auth.json.
 	// Without this, Grok prefers its cached grok.com JWT over XAI_API_KEY on
-	// inference requests, causing the CCL loopback runtime to reject the JWT
+	// inference requests, causing the GBX loopback runtime to reject the JWT
 	// with 401 invalid_local_api_key.
 	authPath, err := writeSettingsBytes([]byte("{}\n"), sessionName)
 	if err != nil {
@@ -525,7 +525,7 @@ func sameEnvKey(left, right string) bool {
 }
 
 // RunCommand runs cmd while catching the signals that would
-// otherwise kill ccl before its deferred cleanup (settings file, embedded
+// otherwise kill gbx before its deferred cleanup (settings file, embedded
 // runtime) can run, forwarding the ones Grok Build would not receive itself.
 func RunCommand(cmd *exec.Cmd) error {
 	signals := make(chan os.Signal, 4)

@@ -31,7 +31,7 @@ function run(argv) {
   }
 
   ObjC.registerSubclass({
-    name: 'CCLProxyMenuAction',
+    name: 'GBXProxyMenuAction',
     superclass: 'NSObject',
     methods: {
       'stopProxy:': {
@@ -55,17 +55,17 @@ function run(argv) {
     }
   });
 
-  const action = $.CCLProxyMenuAction.alloc.init;
+  const action = $.GBXProxyMenuAction.alloc.init;
   const item = $.NSStatusBar.systemStatusBar.statusItemWithLength($.NSVariableStatusItemLength);
-  const image = $.NSImage.imageWithSystemSymbolNameAccessibilityDescription('arrow.triangle.branch', 'CCL Codex');
+  const image = $.NSImage.imageWithSystemSymbolNameAccessibilityDescription('arrow.triangle.branch', 'GBX Codex');
   if (image) {
     image.template = true;
     item.button.image = image;
   } else {
-    item.button.title = $('CCL');
+    item.button.title = $('GBX');
   }
-  item.button.toolTip = $('CCL Codex: ' + provider);
-  const menu = $.NSMenu.alloc.initWithTitle('CCL Codex');
+  item.button.toolTip = $('GBX Codex: ' + provider);
+  const menu = $.NSMenu.alloc.initWithTitle('GBX Codex');
   menu.autoenablesItems = false;
   menu.delegate = action;
 
@@ -75,7 +75,7 @@ function run(argv) {
     catch (_) { config = {current: provider, providers: []}; }
     menu.removeAllItems;
     const heading = $.NSMenuItem.alloc.init;
-    heading.title = $('CCL Codex: ' + config.current);
+    heading.title = $('GBX Codex: ' + config.current);
     heading.enabled = false;
     menu.addItem(heading);
     menu.addItem($.NSMenuItem.separatorItem);

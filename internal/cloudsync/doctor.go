@@ -10,7 +10,7 @@ import (
 // by returning false when later checks would be meaningless.
 func DiagnoseLocal() DiagnosticReport {
 	var report DiagnosticReport
-	localDir, err := cclDirectory()
+	localDir, err := gbxDirectory()
 	if err != nil {
 		report.add("error", err.Error())
 		return report

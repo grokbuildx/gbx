@@ -21,7 +21,7 @@ import (
 	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
-// Cursor's agent API is a bidirectional Connect stream: CCL sends one Run
+// Cursor's agent API is a bidirectional Connect stream: GBX sends one Run
 // request and then keeps writing on the same request body while reading
 // interactions, exec requests and KV lookups back. The local adapter speaks OpenAI
 // Responses, so this runtime translates in both directions and, when Cursor asks
@@ -48,7 +48,7 @@ var (
 	cursorConnectBaseURL = "https://api2.cursor.sh"
 	// cursorFallbackModels is the compatibility list used when the account's
 	// catalog cannot be read. Cursor publishes no stable catalog endpoint, so a
-	// failed discovery must not leave ccl with no models at all.
+	// failed discovery must not leave gbx with no models at all.
 	cursorFallbackModels = []string{
 		"composer-2", "claude-4-sonnet", "claude-3.5-sonnet", "gpt-4o", "cursor-small", "gemini-2.5-pro",
 	}
@@ -115,7 +115,7 @@ func (a *cursorOAuthAuthorizer) load() (*cursorOAuthCredential, error) {
 	raw, err := os.ReadFile(a.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no Cursor credentials found; run `ccl oauth cursor` first")
+			return nil, fmt.Errorf("no Cursor credentials found; run `gbx oauth cursor` first")
 		}
 		return nil, fmt.Errorf("read Cursor credential %s: %w", filepath.Base(a.path), err)
 	}
@@ -147,7 +147,7 @@ func (a *cursorOAuthAuthorizer) load() (*cursorOAuthCredential, error) {
 // sign in again.
 func (a *cursorOAuthAuthorizer) refresh(ctx context.Context, credential *cursorOAuthCredential) (*cursorOAuthCredential, error) {
 	if credential.refreshToken == "" {
-		return nil, fmt.Errorf("Cursor credential %s has no refresh token; run `ccl oauth cursor` again", filepath.Base(a.path))
+		return nil, fmt.Errorf("Cursor credential %s has no refresh token; run `gbx oauth cursor` again", filepath.Base(a.path))
 	}
 	payload, err := json.Marshal(map[string]string{
 		"grant_type":    "refresh_token",
@@ -176,7 +176,7 @@ func (a *cursorOAuthAuthorizer) refresh(ctx context.Context, credential *cursorO
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if cursorShouldLogout(response.StatusCode, body) {
-			return nil, fmt.Errorf("Cursor credential %s was rejected (HTTP %d); run `ccl oauth cursor` again",
+			return nil, fmt.Errorf("Cursor credential %s was rejected (HTTP %d); run `gbx oauth cursor` again",
 				filepath.Base(a.path), response.StatusCode)
 		}
 		return nil, fmt.Errorf("refresh Cursor token: HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
@@ -718,7 +718,7 @@ func (s *cursorService) openStream(ctx context.Context, frame []byte) (*cursorSe
 	request.Header.Set("Accept-Encoding", "identity")
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-Cursor-Client-Version", cursorCLIVersion)
-	request.Header.Set("User-Agent", "ccl/"+cursorCLIVersion)
+	request.Header.Set("User-Agent", "gbx/"+cursorCLIVersion)
 	go func() {
 		if _, writeErr := pipeWriter.Write(cursorFrameConnect(frame, 0)); writeErr != nil {
 			_ = pipeWriter.CloseWithError(writeErr)
@@ -1162,7 +1162,7 @@ func startCursorOAuth(parent context.Context, modelSpec, credentialFile string) 
 		return nil, fmt.Errorf("Cursor credential %s is disabled", filepath.Base(path))
 	}
 	if credential.accessToken == "" && credential.refreshToken == "" {
-		return nil, fmt.Errorf("Cursor credential %s has no access or refresh token; run `ccl oauth cursor` again", filepath.Base(path))
+		return nil, fmt.Errorf("Cursor credential %s has no access or refresh token; run `gbx oauth cursor` again", filepath.Base(path))
 	}
 	discoveryClient := &http.Client{Transport: newUpstreamTransport(20 * time.Second)}
 	discoveryCtx, cancelDiscovery := context.WithTimeout(parent, 20*time.Second)

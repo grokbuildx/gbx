@@ -145,7 +145,7 @@ func TestGemini3RealSignatureStaysWhileLaterCallIsSigned(t *testing.T) {
 	signature := geminiPartSignaturePrefix + base64.StdEncoding.EncodeToString([]byte(rawPart))
 	input := []any{
 		map[string]any{"role": "user", "content": "run it"},
-		map[string]any{"id": "rs_ccl_1", "type": "reasoning", "summary": []any{map[string]any{"type": "summary_text", "text": "check"}}, "encrypted_content": signature},
+		map[string]any{"id": "rs_gbx_1", "type": "reasoning", "summary": []any{map[string]any{"type": "summary_text", "text": "check"}}, "encrypted_content": signature},
 		map[string]any{"type": "function_call", "call_id": "call_1", "name": "exec", "arguments": `{"cmd":"ls"}`},
 		map[string]any{"type": "function_call", "call_id": "call_2", "name": "exec", "arguments": `{"cmd":"pwd"}`},
 		map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "a"},

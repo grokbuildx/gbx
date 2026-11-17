@@ -165,11 +165,11 @@ func TestModelsDevBackfillsModalitiesAndOutputLimitsWithoutInventingUnknownVisio
 	if err != nil {
 		t.Fatal(err)
 	}
-	visionModel := newModel("ccl/grok/grok-vision", "grok-vision", details, nil)
+	visionModel := newModel("gbx/grok/grok-vision", "grok-vision", details, nil)
 	if !slices.Equal(visionModel["input_modalities"].([]string), []string{"text", "image"}) || visionModel["supports_image_detail_original"] != true || details["grok-vision"].MaxOutputTokens != 65536 {
 		t.Fatalf("expected vision + max output backfill on grok-vision: model=%+v info=%+v", visionModel, details["grok-vision"])
 	}
-	unknownModel := newModel("ccl/grok/unknown-local-model", "unknown-local-model", details, nil)
+	unknownModel := newModel("gbx/grok/unknown-local-model", "unknown-local-model", details, nil)
 	if !slices.Equal(unknownModel["input_modalities"].([]string), []string{"text"}) || unknownModel["supports_image_detail_original"] != false {
 		t.Fatalf("unknown model must stay text-only: %+v", unknownModel)
 	}
@@ -221,17 +221,17 @@ func TestMultiModelPoolPreservesGPTDefaultsForUnrecognizedSiblingsAndOneMVariant
 		bySlug[entry["slug"].(string)] = entry
 	}
 	// 1. Recognized [1m] variant resolves canonical models.dev efforts and 1M context.
-	bunny1M := bySlug["ccl/pool/space-bunny[1m]"]
+	bunny1M := bySlug["gbx/pool/space-bunny[1m]"]
 	if bunny1M["context_window"] != 1_000_000 || len(bunny1M["supported_reasoning_levels"].([]protocol.ReasoningLevel)) != 5 {
 		t.Fatalf("1M variant lost context or models.dev efforts: %+v", bunny1M)
 	}
 	// 2. Authoritative empty effort list from wandb provider stays empty (not filled with GPT defaults).
-	toggleOnly := bySlug["ccl/pool/deepseek-ai/DeepSeek-V4.1-Flash"]
+	toggleOnly := bySlug["gbx/pool/deepseek-ai/DeepSeek-V4.1-Flash"]
 	if len(toggleOnly["supported_reasoning_levels"].([]protocol.ReasoningLevel)) != 0 || toggleOnly["default_reasoning_level"] != nil {
 		t.Fatalf("known toggle-only model gained effort levels: %+v", toggleOnly)
 	}
 	// 3. Unrecognized sibling model in a runtime with no catalog levels keeps GPT compatibility defaults.
-	unlisted := bySlug["ccl/pool/future-unlisted-model"]
+	unlisted := bySlug["gbx/pool/future-unlisted-model"]
 	if !slices.Equal(unlisted["supported_reasoning_levels"].([]protocol.ReasoningLevel), protocol.GPTReasoningLevels()) || unlisted["default_reasoning_level"] != protocol.GPTDefaultReasoningLevel {
 		t.Fatalf("unrecognized sibling lost GPT compatibility effort controls: %+v", unlisted)
 	}
@@ -248,7 +248,7 @@ func TestMultiModelPoolPreservesGPTDefaultsForUnrecognizedSiblingsAndOneMVariant
 			DefaultReasoningLevel: "high",
 		},
 	}
-	marked := newModel("ccl/work/claude-sonnet-4-6[1m]", "claude-sonnet-4-6[1m]", bareDetails, map[string]string{"claude-sonnet-4-6": "Claude Sonnet 4.6"})
+	marked := newModel("gbx/work/claude-sonnet-4-6[1m]", "claude-sonnet-4-6[1m]", bareDetails, map[string]string{"claude-sonnet-4-6": "Claude Sonnet 4.6"})
 	if marked["display_name"] != "Claude Sonnet 4.6" || marked["supports_image_detail_original"] != true || marked["default_reasoning_level"] != "high" {
 		t.Fatalf("[1m] model did not inherit bare runtime ModelDetails: %+v", marked)
 	}

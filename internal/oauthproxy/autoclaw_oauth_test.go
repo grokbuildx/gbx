@@ -35,7 +35,7 @@ func TestLoginAutoClawRunsBrowserOAuthWithoutDesktopState(t *testing.T) {
 		case autoclawGoogleOAuthURLPath:
 			_, _ = io.WriteString(writer, `{"code":0,"msg":"SUCCESS","data":{"oauth_url":"https://accounts.google.com/o/oauth2/auth?state=upstream-state"}}`)
 		case autoclawGoogleOAuthLoginPath:
-			_, _ = io.WriteString(writer, `{"code":0,"msg":"SUCCESS","data":{"access_token":"oauth-access-token","refresh_token":"oauth-refresh-token","user_id":"account-42","user_name":"CCL User","email":"ccl@example.com"}}`)
+			_, _ = io.WriteString(writer, `{"code":0,"msg":"SUCCESS","data":{"access_token":"oauth-access-token","refresh_token":"oauth-refresh-token","user_id":"account-42","user_name":"GBX User","email":"gbx@example.com"}}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -73,7 +73,7 @@ func TestLoginAutoClawRunsBrowserOAuthWithoutDesktopState(t *testing.T) {
 			return err
 		}
 		oauthURLRequest.Header.Set("Content-Type", "application/json")
-		oauthURLRequest.Header.Set("X-CCL-OAuth-Nonce", loginURL.Query().Get("nonce"))
+		oauthURLRequest.Header.Set("X-GBX-OAuth-Nonce", loginURL.Query().Get("nonce"))
 		oauthURLResponse, err := http.DefaultClient.Do(oauthURLRequest)
 		if err != nil {
 			return err
@@ -123,7 +123,7 @@ func TestLoginAutoClawRunsBrowserOAuthWithoutDesktopState(t *testing.T) {
 	if credential["access_token"] != "oauth-access-token" || credential["refresh_token"] != "oauth-refresh-token" || credential["source"] != "autoclaw_oauth" {
 		t.Fatalf("saved OAuth credential = %+v", credential)
 	}
-	if credential["user_id"] != "account-42" || credential["email"] != "ccl@example.com" {
+	if credential["user_id"] != "account-42" || credential["email"] != "gbx@example.com" {
 		t.Fatalf("saved OAuth identity = %+v", credential)
 	}
 
@@ -150,7 +150,7 @@ func TestLoginAutoClawRunsBrowserOAuthWithoutDesktopState(t *testing.T) {
 func TestAutoClawOAuthURLHandlerRequiresCaptchaProof(t *testing.T) {
 	handler := autoClawOAuthURLHandler(http.DefaultClient, "1.18.5", "device", "http://localhost/callback", "nonce", autoClawCaptchaConfig{Enabled: true}, &autoClawOAuthState{})
 	request := httptest.NewRequest(http.MethodPost, autoclawOAuthURLPath, strings.NewReader(`{}`))
-	request.Header.Set("X-CCL-OAuth-Nonce", "nonce")
+	request.Header.Set("X-GBX-OAuth-Nonce", "nonce")
 	response := httptest.NewRecorder()
 	handler(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "captcha verification is required") {

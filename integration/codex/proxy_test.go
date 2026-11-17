@@ -21,13 +21,13 @@ import (
 	"github.com/grokbuildx/gbx/internal/proxymanager"
 )
 
-// The real Codex reads the exact config written by ccl codex start. The native
+// The real Codex reads the exact config written by gbx codex start. The native
 // login is fake, model requests can reach only the local provider fixture, and
 // the command tool runs inside Codex itself rather than an emulated client.
 func TestRealCodexUsesStandaloneProxyAndLocalToolLoop(t *testing.T) {
-	binary, codex := os.Getenv("CCL_TEST_BINARY"), os.Getenv("CCL_TEST_CODEX")
+	binary, codex := os.Getenv("GBX_TEST_BINARY"), os.Getenv("GBX_TEST_CODEX")
 	if binary == "" || codex == "" {
-		t.Skip("set CCL_TEST_BINARY and CCL_TEST_CODEX")
+		t.Skip("set GBX_TEST_BINARY and GBX_TEST_CODEX")
 	}
 	binary, _ = filepath.Abs(binary)
 	codex, _ = filepath.Abs(codex)
@@ -41,7 +41,7 @@ func TestRealCodexUsesStandaloneProxyAndLocalToolLoop(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			for key, value := range map[string]string{"HOME": home, "USERPROFILE": home, "CODEX_HOME": codexHome, "CLAUDE_CONFIG_DIR": filepath.Join(home, "Claude"), "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "ALL_PROXY": "http://127.0.0.1:9", "NO_PROXY": "127.0.0.1,localhost", "OPENAI_API_KEY": "fake-native-key", "CCL_LANG": "en", "CCL_PROXY_NO_MENUBAR": "1"} {
+			for key, value := range map[string]string{"HOME": home, "USERPROFILE": home, "CODEX_HOME": codexHome, "CLAUDE_CONFIG_DIR": filepath.Join(home, "Claude"), "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "ALL_PROXY": "http://127.0.0.1:9", "NO_PROXY": "127.0.0.1,localhost", "OPENAI_API_KEY": "fake-native-key", "GBX_LANG": "en", "GBX_PROXY_NO_MENUBAR": "1"} {
 				t.Setenv(key, value)
 			}
 			configPath := filepath.Join(codexHome, "config.toml")
@@ -160,7 +160,7 @@ func TestRealCodexUsesStandaloneProxyAndLocalToolLoop(t *testing.T) {
 					t.Errorf("proxy cleanup: %v %s", err, output)
 				}
 			})
-			output, err := run(codex, "-m", "ccl/chosen/model-a", "-c", `web_search="disabled"`, "-c", `sandbox_mode="danger-full-access"`, "exec", "--json", "--skip-git-repo-check", "Use exec_command to echo codex-tool-fixture, then answer codex-fixture-done.")
+			output, err := run(codex, "-m", "gbx/chosen/model-a", "-c", `web_search="disabled"`, "-c", `sandbox_mode="danger-full-access"`, "exec", "--json", "--skip-git-repo-check", "Use exec_command to echo codex-tool-fixture, then answer codex-fixture-done.")
 			if err != nil || !strings.Contains(output, "codex-fixture-done") || calls.Load() < 2 || !sawResult.Load() {
 				t.Fatalf("real Codex tool loop: %v calls=%d result=%v\n%s", err, calls.Load(), sawResult.Load(), output)
 			}
@@ -183,15 +183,15 @@ func TestRealCodexUsesStandaloneProxyAndLocalToolLoop(t *testing.T) {
 // Exercise that exact boundary with the official client and fake credentials:
 // the old model must not silently cross into the newly selected account.
 func TestRealCodexRejectsGeminiRouteAfterWorkBuddySwitch(t *testing.T) {
-	binary, executable := os.Getenv("CCL_TEST_BINARY"), os.Getenv("CCL_TEST_CODEX")
+	binary, executable := os.Getenv("GBX_TEST_BINARY"), os.Getenv("GBX_TEST_CODEX")
 	if binary == "" || executable == "" {
-		t.Skip("set CCL_TEST_BINARY and CCL_TEST_CODEX")
+		t.Skip("set GBX_TEST_BINARY and GBX_TEST_CODEX")
 	}
 	binary, _ = filepath.Abs(binary)
 	executable, _ = filepath.Abs(executable)
 	home := t.TempDir()
 	codexHome := filepath.Join(home, "codex-home")
-	for key, value := range map[string]string{"HOME": home, "USERPROFILE": home, "CODEX_HOME": codexHome, "CLAUDE_CONFIG_DIR": filepath.Join(home, "claude-home"), "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "ALL_PROXY": "http://127.0.0.1:9", "NO_PROXY": "127.0.0.1,localhost", "OPENAI_API_KEY": "fake-native-key", "CCL_LANG": "en", "CCL_PROXY_NO_MENUBAR": "1"} {
+	for key, value := range map[string]string{"HOME": home, "USERPROFILE": home, "CODEX_HOME": codexHome, "CLAUDE_CONFIG_DIR": filepath.Join(home, "claude-home"), "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "ALL_PROXY": "http://127.0.0.1:9", "NO_PROXY": "127.0.0.1,localhost", "OPENAI_API_KEY": "fake-native-key", "GBX_LANG": "en", "GBX_PROXY_NO_MENUBAR": "1"} {
 		t.Setenv(key, value)
 	}
 	if err := os.MkdirAll(codexHome, 0o700); err != nil {
@@ -238,7 +238,7 @@ func TestRealCodexRejectsGeminiRouteAfterWorkBuddySwitch(t *testing.T) {
 			t.Errorf("stop fixture: %v\n%s", err, output)
 		}
 	})
-	output, err := run(executable, "-m", "ccl/gemini-fixture/model-a", "-c", `web_search="disabled"`, "exec", "--json", "--skip-git-repo-check", "Reply to the local fixture.")
+	output, err := run(executable, "-m", "gbx/gemini-fixture/model-a", "-c", `web_search="disabled"`, "exec", "--json", "--skip-git-repo-check", "Reply to the local fixture.")
 	if err != nil || !strings.Contains(output, "gemini-sandbox-done") || geminiCalls.Load() != 1 {
 		t.Fatalf("Gemini fixture failed: %v calls=%d\n%s", err, geminiCalls.Load(), output)
 	}
@@ -255,7 +255,7 @@ func TestRealCodexRejectsGeminiRouteAfterWorkBuddySwitch(t *testing.T) {
 	if session == "" {
 		t.Fatalf("Gemini fixture did not create a chat: %s", output)
 	}
-	manager := &proxymanager.Manager{Dir: filepath.Join(home, ".ccl", "proxy")}
+	manager := &proxymanager.Manager{Dir: filepath.Join(home, ".gbx", "proxy")}
 	before, err := manager.Read()
 	if err != nil || before == nil || before.Codex == nil {
 		t.Fatalf("missing Gemini state: %v", err)
@@ -297,11 +297,11 @@ func TestRealCodexRejectsGeminiRouteAfterWorkBuddySwitch(t *testing.T) {
 	}
 	// The desktop resumes with its persisted model. Passing it explicitly also
 	// prevents the CLI from replacing it with the new daemon's default model.
-	output, err = run(executable, "-m", "ccl/gemini-fixture/model-a", "exec", "resume", "--json", "--skip-git-repo-check", session, "Continue on the old model.")
-	if err == nil || !strings.Contains(output, "select a model from the active CCL provider") || workBuddyCalls.Load() != 0 || geminiCalls.Load() != 1 {
+	output, err = run(executable, "-m", "gbx/gemini-fixture/model-a", "exec", "resume", "--json", "--skip-git-repo-check", session, "Continue on the old model.")
+	if err == nil || !strings.Contains(output, "select a model from the active GBX provider") || workBuddyCalls.Load() != 0 || geminiCalls.Load() != 1 {
 		t.Fatalf("stale Gemini chat after provider switch: %v workbuddy=%d gemini=%d\n%s", err, workBuddyCalls.Load(), geminiCalls.Load(), output)
 	}
-	output, err = run(executable, "-m", "ccl/workbuddy-fixture/model-b", "-c", `web_search="disabled"`, "exec", "--json", "--skip-git-repo-check", "Reply to the WorkBuddy fixture.")
+	output, err = run(executable, "-m", "gbx/workbuddy-fixture/model-b", "-c", `web_search="disabled"`, "exec", "--json", "--skip-git-repo-check", "Reply to the WorkBuddy fixture.")
 	if err != nil || !strings.Contains(output, "workbuddy-sandbox-done") || workBuddyCalls.Load() != 1 {
 		t.Fatalf("WorkBuddy fixture failed: %v calls=%d\n%s", err, workBuddyCalls.Load(), output)
 	}

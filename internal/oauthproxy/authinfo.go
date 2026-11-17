@@ -34,7 +34,7 @@ type QuotaState struct {
 	BackoffLevel int
 }
 
-// AuthInfo is ccl's self-owned view of a loaded OAuth credential used by
+// AuthInfo is gbx's self-owned view of a loaded OAuth credential used by
 // Runtime.ListAuths. It carries only the fields needed by doctor diagnostics
 // and the per-backend listAuths implementations, while retaining the existing
 // field surface so consumers and tests need no semantic changes.

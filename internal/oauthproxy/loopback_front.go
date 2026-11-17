@@ -75,10 +75,10 @@ func inferenceRequestAllowed(writer http.ResponseWriter, request *http.Request, 
 
 // modelListEntry is one row of the OpenAI-shaped model list. api_backend tells
 // clients that support several wire protocols (such as Grok Build) to use
-// Responses, the protocol every CCL runtime implements without translation on
+// Responses, the protocol every GBX runtime implements without translation on
 // the client side.
 func modelListEntry(model string) map[string]any {
-	return map[string]any{"id": model, "object": "model", "created": 0, "owned_by": "ccl", "api_backend": "responses"}
+	return map[string]any{"id": model, "object": "model", "created": 0, "owned_by": "gbx", "api_backend": "responses"}
 }
 
 // serveModelList answers a model-list request with plain IDs.

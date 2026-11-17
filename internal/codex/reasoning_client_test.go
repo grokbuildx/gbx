@@ -33,9 +33,9 @@ func TestRealCodexReasoningOptionsReachChatProvider(t *testing.T) {
 
 func testRealCodexReasoningEffort(t *testing.T, effort string, independent bool) {
 	t.Helper()
-	executable := os.Getenv("CCL_TEST_CODEX")
+	executable := os.Getenv("GBX_TEST_CODEX")
 	if executable == "" {
-		t.Skip("set CCL_TEST_CODEX to the pinned official Codex client")
+		t.Skip("set GBX_TEST_CODEX to the pinned official Codex client")
 	}
 	executable, err := filepath.Abs(executable)
 	if err != nil {
@@ -74,7 +74,7 @@ func testRealCodexReasoningEffort(t *testing.T, effort string, independent bool)
 	// leaves the CLI override unset to verify that the catalog default works.
 	info := protocol.ModelInfo{ID: "model-a", DisplayName: "Reasoner", ReasoningLevels: protocol.GPTReasoningLevels()[:5], DefaultReasoningLevel: "max"}
 	editFixtureModels(g, func([]Model) []Model {
-		return []Model{newModel("ccl/chosen/model-a", "model-a", map[string]protocol.ModelInfo{"model-a": info}, nil)}
+		return []Model{newModel("gbx/chosen/model-a", "model-a", map[string]protocol.ModelInfo{"model-a": info}, nil)}
 	})
 	overlay, err := Plan(context.Background(), g, filepath.Join(home, "proxy"))
 	if err != nil {
@@ -83,7 +83,7 @@ func testRealCodexReasoningEffort(t *testing.T, effort string, independent bool)
 	if err := overlay.Apply(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"-m", "ccl/chosen/model-a", "-c", `web_search="disabled"`}
+	args := []string{"-m", "gbx/chosen/model-a", "-c", `web_search="disabled"`}
 	if effort != "max" {
 		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", effort))
 	}

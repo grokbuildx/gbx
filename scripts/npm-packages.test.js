@@ -17,7 +17,7 @@ const { buildPackages, releaseVersion, launcherFiles } = require('./build-npm-pa
 function fixture(t) {
   // macOS exposes /var through /private/var, and require.resolve returns the
   // canonical path. Keep the fixture and package resolution on the same root.
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ccl-npm-test-')));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gbx-npm-test-')));
   // Windows can briefly retain a handle after the copied native child exits.
   // Retry transient removal failures without hiding a persistent cleanup error.
   t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
@@ -37,10 +37,10 @@ test('release packages contain one binary each and a small launcher', t => {
   assert.deepEqual(fs.readdirSync(path.join(built.main, 'bin')).sort(), [...launcherFiles].sort());
   // npm rewrites a "./"-prefixed bin target and warns on every publish, so the
   // generated manifest already carries npm's normalized form.
-  assert.equal(main.bin.ccl, 'bin/ccl.exe');
+  assert.equal(main.bin.gbx, 'bin/gbx.exe');
   assert.equal(main.scripts.postinstall, 'node bin/install.js');
   // No shebang: npm's Windows shim must execute the placed binary directly.
-  assert.ok(!fs.readFileSync(path.join(built.main, 'bin', 'ccl.exe'), 'utf8').startsWith('#!'));
+  assert.ok(!fs.readFileSync(path.join(built.main, 'bin', 'gbx.exe'), 'utf8').startsWith('#!'));
   platforms.forEach(p => {
     const packageDir = path.join(built.output, p.os + '-' + p.arch);
     const pkg = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json')));
@@ -71,14 +71,14 @@ test('resolves all native packages and preserves legacy bundled installs', t => 
   // The advice must be the reinstall command, not "uninstall first": npm
   // skipped the platform package, so installing again is all that is missing.
   assert.throws(() => resolveBinary(path.join(fixture(t), 'bin'), 'linux', 'x64'),
-    /npm install -g @claudecodelaunch\/ccl@latest/);
+    /npm install -g @grokbuildx\/gbx@latest/);
 });
 
 test('postinstall replaces the placeholder with the native binary', t => {
   const root = fixture(t);
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin);
-  const placeholder = path.join(bin, 'ccl.exe');
+  const placeholder = path.join(bin, 'gbx.exe');
   fs.writeFileSync(placeholder, 'placeholder');
   assert.equal(install(bin, 'linux', 'x64'), false);
   assert.equal(fs.readFileSync(placeholder, 'utf8'), 'placeholder');
@@ -90,20 +90,20 @@ test('postinstall replaces the placeholder with the native binary', t => {
   for (let i = 0; i < 2; i++) assert.equal(install(bin, 'linux', 'x64'), true);
   assert.equal(fs.readFileSync(placeholder, 'utf8'), 'native');
   if (process.platform !== 'win32') assert.equal(fs.statSync(placeholder).mode & 0o777, 0o755);
-  assert.deepEqual(fs.readdirSync(bin), ['ccl.exe']);
+  assert.deepEqual(fs.readdirSync(bin), ['gbx.exe']);
 });
 
 test('placeholder falls back to wrapper.js through a bin symlink', { skip: process.platform === 'win32' }, t => {
   const root = fixture(t);
-  const bin = path.join(root, 'lib', 'ccl', 'bin');
+  const bin = path.join(root, 'lib', 'gbx', 'bin');
   fs.mkdirSync(bin, { recursive: true });
-  ['ccl.exe', 'wrapper.js', 'platforms.js'].forEach(file => fs.copyFileSync(path.join(__dirname, '..', 'bin', file), path.join(bin, file)));
+  ['gbx.exe', 'wrapper.js', 'platforms.js'].forEach(file => fs.copyFileSync(path.join(__dirname, '..', 'bin', file), path.join(bin, file)));
   const native = platforms.find(p => p.os === process.platform && p.arch === process.arch);
   assert.ok(native);
   fs.writeFileSync(path.join(bin, native.asset), '#!/bin/sh\necho "$1"\nexit 7\n', { mode: 0o755 });
   fs.mkdirSync(path.join(root, 'bin'));
-  const link = path.join(root, 'bin', 'ccl');
-  fs.symlinkSync(path.join('..', 'lib', 'ccl', 'bin', 'ccl.exe'), link);
+  const link = path.join(root, 'bin', 'gbx');
+  fs.symlinkSync(path.join('..', 'lib', 'gbx', 'bin', 'gbx.exe'), link);
   const result = spawnSync('/bin/sh', [link, 'argument with spaces'], { encoding: 'utf8' });
   assert.equal(result.status, 7, result.stderr);
   assert.equal(result.stdout.trim(), 'argument with spaces');
@@ -199,10 +199,10 @@ test('npm installs exactly one native tarball from platform optional dependencie
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   origin = 'http://127.0.0.1:' + server.address().port;
-  env.CCL_RELEASE_DOWNLOAD_URL = origin + '/releases/';
+  env.GBX_RELEASE_DOWNLOAD_URL = origin + '/releases/';
   t.after(() => server.close());
   const installAt = directory => new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cli, 'install', '@claudecodelaunch/ccl@' + built.version, '--prefix', path.join(root, directory), '--registry', origin,
+    const child = spawn(process.execPath, [cli, 'install', '@grokbuildx/gbx@' + built.version, '--prefix', path.join(root, directory), '--registry', origin,
       '--include=optional', '--prefer-online', '--noproxy=127.0.0.1', '--no-audit', '--no-fund', '--cache', path.join(root, directory + '-cache')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     child.stdout.on('data', data => { output += data; });
@@ -212,11 +212,11 @@ test('npm installs exactly one native tarball from platform optional dependencie
   });
   const result = await installAt('install');
   assert.equal(result.code, 0, result.output);
-  assert.deepEqual(downloaded.sort(), ['@claudecodelaunch/ccl', native.packageName].sort());
-  const launcherBin = path.join(root, 'install', 'node_modules', '@claudecodelaunch', 'ccl', 'bin');
+  assert.deepEqual(downloaded.sort(), ['@grokbuildx/gbx', native.packageName].sort());
+  const launcherBin = path.join(root, 'install', 'node_modules', '@grokbuildx', 'gbx', 'bin');
   assert.equal(fs.readFileSync(resolveBinary(launcherBin, process.platform, process.arch), 'utf8'), native.asset);
   // postinstall put the native binary behind the installed command itself.
-  assert.equal(fs.readFileSync(path.join(launcherBin, 'ccl.exe'), 'utf8'), native.asset);
+  assert.equal(fs.readFileSync(path.join(launcherBin, 'gbx.exe'), 'utf8'), native.asset);
 
   // Reproduce the release race with a fresh prefix/cache: npm skips the
   // optional package it cannot resolve yet, and postinstall downloads the
@@ -224,8 +224,8 @@ test('npm installs exactly one native tarball from platform optional dependencie
   platformUnavailable = true;
   const fallback = await installAt('missing-platform');
   assert.equal(fallback.code, 0, fallback.output);
-  const fallbackBin = path.join(root, 'missing-platform', 'node_modules', '@claudecodelaunch', 'ccl', 'bin');
-  assert.equal(fs.readFileSync(path.join(fallbackBin, 'ccl.exe'), 'utf8'), native.asset);
+  const fallbackBin = path.join(root, 'missing-platform', 'node_modules', '@grokbuildx', 'gbx', 'bin');
+  assert.equal(fs.readFileSync(path.join(fallbackBin, 'gbx.exe'), 'utf8'), native.asset);
 
   // A download that fails verification still fails the install.
   releaseBroken = true;
@@ -250,7 +250,7 @@ test('launcher is published only after every platform upload is accepted', async
     optionalDependencies[p.packageName] = '2.0.1';
   }
   fs.mkdirSync(path.join(root, 'main'));
-  fs.writeFileSync(path.join(root, 'main', 'package.json'), JSON.stringify({ name: '@claudecodelaunch/ccl', version: '2.0.1', optionalDependencies }));
+  fs.writeFileSync(path.join(root, 'main', 'package.json'), JSON.stringify({ name: '@grokbuildx/gbx', version: '2.0.1', optionalDependencies }));
   const published = [];
   const log = () => {};
   await assert.rejects(publishPackages(root, {

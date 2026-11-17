@@ -32,7 +32,7 @@ func TestFileLockContentionCanBeCanceledAndReacquired(t *testing.T) {
 }
 
 func TestFileLockProcessHelper(t *testing.T) {
-	path := os.Getenv("CCL_TEST_FILE_LOCK")
+	path := os.Getenv("GBX_TEST_FILE_LOCK")
 	if path == "" {
 		t.Skip("subprocess helper")
 	}
@@ -51,7 +51,7 @@ func TestFileLockSerializesSeparateProcesses(t *testing.T) {
 	}
 	defer release()
 	command := exec.Command(os.Args[0], "-test.run=^TestFileLockProcessHelper$", "-test.v")
-	command.Env = append(os.Environ(), "CCL_TEST_FILE_LOCK="+path)
+	command.Env = append(os.Environ(), "GBX_TEST_FILE_LOCK="+path)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("cross-process lock: %v\n%s", err, output)
 	}

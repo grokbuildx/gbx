@@ -21,7 +21,7 @@ type codexHTTPTraceTimings struct {
 
 // newCodexHTTPTrace records transport milestones only. It deliberately avoids
 // remote addresses, headers, and request content so timing diagnostics remain
-// safe to retain in a normal CCL log.
+// safe to retain in a normal GBX log.
 func newCodexHTTPTrace(started time.Time) (*httptrace.ClientTrace, func() codexHTTPTraceTimings) {
 	var mu sync.Mutex
 	var getConnAt, gotConnAt, dnsStarted, dnsDone time.Time

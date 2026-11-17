@@ -43,7 +43,7 @@ func TestSetLanguageAndT(t *testing.T) {
 	if got := T("中文", "English"); got != "中文" {
 		t.Fatalf("T chinese = %q", got)
 	}
-	if got := Tf("你好 %s", "Hello %s", "ccl"); got != "你好 ccl" {
+	if got := Tf("你好 %s", "Hello %s", "gbx"); got != "你好 gbx" {
 		t.Fatalf("Tf chinese = %q", got)
 	}
 
@@ -56,7 +56,7 @@ func TestSetLanguageAndT(t *testing.T) {
 	if got := T("中文", "English"); got != "English" {
 		t.Fatalf("T english = %q", got)
 	}
-	if got := Tf("你好 %s", "Hello %s", "ccl"); got != "Hello ccl" {
+	if got := Tf("你好 %s", "Hello %s", "gbx"); got != "Hello gbx" {
 		t.Fatalf("Tf english = %q", got)
 	}
 }
@@ -64,10 +64,10 @@ func TestSetLanguageAndT(t *testing.T) {
 func TestReadConfigLang(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".ccl"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".gbx"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".ccl", "config.yaml"), []byte("lang: zh-CN\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".gbx", "config.yaml"), []byte("lang: zh-CN\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := readConfigLang(); got != "zh-CN" {

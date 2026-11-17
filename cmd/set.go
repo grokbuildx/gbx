@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/grokbuildx/gbx/internal/config"
-	// 🔥 引入 ccl 统一的国际化组件
+	// 🔥 引入 gbx 统一的国际化组件
 	"github.com/grokbuildx/gbx/internal/locale"
 	"github.com/grokbuildx/gbx/internal/modelrouting"
 	"github.com/grokbuildx/gbx/internal/oauthproxy"
@@ -74,7 +74,7 @@ func runSetProviderDefaultModel(cmd *cobra.Command, args []string, rawModel stri
 		target = strings.TrimSpace(cfg.ActiveProvider)
 	}
 	if target == "" || provider.IsDefaultProvider(target) {
-		return fmt.Errorf("%s", locale.T("请先指定 Provider 名称或先通过 ccl use 激活一个 Provider", "specify a provider name or activate one first before setting --default-model"))
+		return fmt.Errorf("%s", locale.T("请先指定 Provider 名称或先通过 gbx use 激活一个 Provider", "specify a provider name or activate one first before setting --default-model"))
 	}
 	normalized := provider.NormalizeModelID(rawModel)
 	var updated provider.Provider
@@ -295,8 +295,8 @@ func RunProviderSet(args []string) error {
 	})
 	if collided {
 		fmt.Fprintf(os.Stderr, locale.T(
-			"ℹ️ 已有名为 %q 的 Provider，本次保存为 %q（可用 ccl provider mv 改名）\n",
-			"ℹ️ A provider named %q already exists; saved this one as %q (rename with ccl provider mv)\n",
+			"ℹ️ 已有名为 %q 的 Provider，本次保存为 %q（可用 gbx provider mv 改名）\n",
+			"ℹ️ A provider named %q already exists; saved this one as %q (rename with gbx provider mv)\n",
 		), requestedName, p.Name)
 	}
 	if err != nil {

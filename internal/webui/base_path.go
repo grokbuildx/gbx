@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// NormalizeBasePath returns the URL prefix ccl serve is mounted under: "" for
+// NormalizeBasePath returns the URL prefix gbx serve is mounted under: "" for
 // the root, otherwise the path without a trailing slash ("/chat/" is "/chat").
 // Only plain, unencoded segments are accepted, so a proxy, ServeMux and the
 // browser cannot read the same prefix differently.
@@ -69,7 +69,7 @@ func withinBasePath(path, basePath string) bool {
 
 // indexBaseSlot is the one tag of the built page the server fills in: the
 // page resolves its assets and API calls against it.
-const indexBaseSlot = `<base href="/" data-ccl-base>`
+const indexBaseSlot = `<base href="/" data-gbx-base>`
 
 // renderIndex fills the base slot and touches nothing else, compiled scripts
 // included.
@@ -77,5 +77,5 @@ func renderIndex(index []byte, basePath string) ([]byte, error) {
 	if bytes.Count(index, []byte(indexBaseSlot)) != 1 {
 		return nil, errors.New("the web UI's index.html must contain exactly one " + indexBaseSlot)
 	}
-	return bytes.Replace(index, []byte(indexBaseSlot), []byte(`<base href="`+basePath+`/" data-ccl-base>`), 1), nil
+	return bytes.Replace(index, []byte(indexBaseSlot), []byte(`<base href="`+basePath+`/" data-gbx-base>`), 1), nil
 }

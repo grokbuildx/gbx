@@ -31,7 +31,7 @@ func TestRunLogToggleAndShow(t *testing.T) {
 		t.Fatalf("on output missing status: %q", out.String())
 	}
 	if _, err := os.Stat(oauthproxy.ResolveLogTemplatePath()); !os.IsNotExist(err) {
-		t.Fatalf("ccl log on created a shared log file: %v", err)
+		t.Fatalf("gbx log on created a shared log file: %v", err)
 	}
 
 	out.Reset()

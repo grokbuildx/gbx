@@ -86,9 +86,9 @@ type autoClawOAuthLoginResponse struct {
 }
 
 // loginAutoClaw runs AutoClaw's Google OAuth flow without starting the desktop
-// application. CCL owns the loopback callback and a small local page that hosts
+// application. GBX owns the loopback callback and a small local page that hosts
 // the same Aliyun human-verification widget used by AutoClaw. The resulting
-// access and refresh tokens are stored under ~/.ccl/auth and refreshed by CCL.
+// access and refresh tokens are stored under ~/.gbx/auth and refreshed by GBX.
 func loginAutoClaw(ctx context.Context, authDir string, opts LoginOptions) (LoginResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -113,7 +113,7 @@ func loginAutoClaw(ctx context.Context, authDir string, opts LoginOptions) (Logi
 			supplier = "aliyun"
 		}
 		if supplier != "aliyun" {
-			return LoginResult{}, fmt.Errorf("AutoClaw OAuth requires unsupported %s captcha; use `ccl oauth autoclaw --from-desktop` after signing in with the desktop app", supplier)
+			return LoginResult{}, fmt.Errorf("AutoClaw OAuth requires unsupported %s captcha; use `gbx oauth autoclaw --from-desktop` after signing in with the desktop app", supplier)
 		}
 		if strings.TrimSpace(captchaConfig.Region) == "" || strings.TrimSpace(captchaConfig.Prefix) == "" || strings.TrimSpace(captchaConfig.SceneID) == "" {
 			return LoginResult{}, errors.New("AutoClaw OAuth returned an incomplete Aliyun captcha configuration")
@@ -174,7 +174,7 @@ func loginAutoClaw(ctx context.Context, authDir string, opts LoginOptions) (Logi
 	if err != nil {
 		return LoginResult{}, err
 	}
-	fmt.Println("AutoClaw authentication successful; CCL will refresh this session independently")
+	fmt.Println("AutoClaw authentication successful; GBX will refresh this session independently")
 	return result, nil
 }
 
@@ -243,7 +243,7 @@ func autoClawOAuthURLHandler(client *http.Client, version, deviceID, navigateURI
 	return func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Cache-Control", "no-store")
 		writer.Header().Set("Content-Type", "application/json")
-		if request.Method != http.MethodPost || subtle.ConstantTimeCompare([]byte(request.Header.Get("X-CCL-OAuth-Nonce")), []byte(expectedNonce)) != 1 {
+		if request.Method != http.MethodPost || subtle.ConstantTimeCompare([]byte(request.Header.Get("X-GBX-OAuth-Nonce")), []byte(expectedNonce)) != 1 {
 			writer.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(writer).Encode(responseBody{Error: "not found"})
 			return
@@ -325,7 +325,7 @@ func autoClawOAuthCallbackHandler(resultCh chan<- autoClawOAuthCallback, oauthSt
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if !oauthState.matches(result.state) {
 			writer.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(writer, "<h1>AutoClaw login rejected</h1><p>The OAuth state did not match this CCL login session.</p>")
+			_, _ = io.WriteString(writer, "<h1>AutoClaw login rejected</h1><p>The OAuth state did not match this GBX login session.</p>")
 			return
 		}
 		select {
@@ -336,7 +336,7 @@ func autoClawOAuthCallbackHandler(resultCh chan<- autoClawOAuthCallback, oauthSt
 			_, _ = io.WriteString(writer, "<h1>AutoClaw login failed</h1><p>Return to the terminal for details.</p>")
 			return
 		}
-		_, _ = io.WriteString(writer, "<h1>AutoClaw login received</h1><p>You can close this window and return to CCL.</p>")
+		_, _ = io.WriteString(writer, "<h1>AutoClaw login received</h1><p>You can close this window and return to GBX.</p>")
 	}
 }
 
@@ -414,7 +414,7 @@ func autoClawOAuthPageHTML(encodedConfig, nonce string) string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>CCL · AutoClaw sign-in</title>
+  <title>GBX · AutoClaw sign-in</title>
   <style>
     :root { color-scheme: light dark; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111318; color: #f4f5f7; }
@@ -427,7 +427,7 @@ func autoClawOAuthPageHTML(encodedConfig, nonce string) string {
 <body>
 <main>
   <h1>Sign in to AutoClaw</h1>
-  <p>After the security check, you will continue to Google. Credentials return only to this CCL process and are stored under <code>~/.ccl/auth</code>.</p>
+  <p>After the security check, you will continue to Google. Credentials return only to this GBX process and are stored under <code>~/.gbx/auth</code>.</p>
   <div id="captcha"></div>
   <button id="continue" type="button" disabled>Preparing security check…</button>
   <p id="status" role="status">Please wait.</p>
@@ -443,7 +443,7 @@ func autoClawOAuthPageHTML(encodedConfig, nonce string) string {
     setStatus("Creating the Google sign-in session…");
     const response = await fetch("` + autoclawOAuthURLPath + `", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-CCL-OAuth-Nonce": nonce },
+      headers: { "Content-Type": "application/json", "X-GBX-OAuth-Nonce": nonce },
       body: JSON.stringify({ ali_captcha_verify_param: verifyParam })
     });
     const payload = await response.json().catch(() => ({}));

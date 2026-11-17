@@ -27,7 +27,7 @@ func refreshModelsDevMetadata(parent context.Context, out io.Writer) error {
 	defer cancel()
 	snapshot, err := modelsDevRefresh(ctx)
 	if err != nil {
-		fmt.Fprintln(out, locale.T("模型元数据暂不可用，保留兼容设置；可通过 ccl set 重试。", "Model metadata unavailable; keeping compatibility settings. Retry with ccl set."))
+		fmt.Fprintln(out, locale.T("模型元数据暂不可用，保留兼容设置；可通过 gbx set 重试。", "Model metadata unavailable; keeping compatibility settings. Retry with gbx set."))
 		return err
 	}
 	if snapshot.Offline {
@@ -60,9 +60,9 @@ func modelsDevProviders(ctx context.Context) ([]modelsdev.Provider, error) {
 	return providers, nil
 }
 
-// modelsDevProviderToDraft converts a models.dev provider into a ccl provider
+// modelsDevProviderToDraft converts a models.dev provider into a gbx provider
 // draft plus its per-model display metadata. Only models whose AI SDK package
-// maps to a known ccl protocol are included; deprecated models are skipped. The
+// maps to a known gbx protocol are included; deprecated models are skipped. The
 // resulting provider uses the mixed-protocol "modelsdev" type and carries the
 // per-model protocol table the runtime needs to route each request.
 func modelsDevProviderToDraft(p modelsdev.Provider) (provider.Provider, map[string]protocol.ModelInfo) {

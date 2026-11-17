@@ -18,7 +18,7 @@ func processAlive(pid int, _ string) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// launchSignals are forwarded to Grok Build so ccl outlives it and can clean
+// launchSignals are forwarded to Grok Build so gbx outlives it and can clean
 // up. SIGINT is caught but not forwarded: the terminal already delivers it to
 // the whole foreground group, and a second copy would make Grok Build quit.
 var launchSignals = []os.Signal{syscall.SIGHUP, syscall.SIGTERM, syscall.SIGQUIT, os.Interrupt}

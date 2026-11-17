@@ -11,7 +11,7 @@ import (
 
 func TestSealAndOpenCompressedRoundTrip(t *testing.T) {
 	key := bytes.Repeat([]byte{0x2a}, 32)
-	plain := []byte(strings.Repeat("ccl snapshot ", 512))
+	plain := []byte(strings.Repeat("gbx snapshot ", 512))
 
 	sealed, err := sealCompressed(key, plain)
 	if err != nil {
@@ -43,7 +43,7 @@ func TestSealAndOpenCompressedRoundTrip(t *testing.T) {
 	}{
 		"short key":      {key: key[:16], encrypted: sealed, want: "invalid encryption key"},
 		"short envelope": {key: key, encrypted: envelopeMagic, want: "invalid encrypted sync envelope"},
-		"wrong magic":    {key: key, encrypted: append([]byte("CCLSYNC2"), sealed[8:]...), want: "invalid encrypted sync envelope"},
+		"wrong magic":    {key: key, encrypted: append([]byte("GBXSYNC2"), sealed[8:]...), want: "invalid encrypted sync envelope"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := openCompressed(value.key, value.encrypted); err == nil ||
@@ -234,17 +234,17 @@ func TestCollectLocalFilesRequiresConfigurationOrCredentials(t *testing.T) {
 		t.Fatalf("collectLocalFiles() on an empty home = %v, want ErrNoLocalData", err)
 	}
 
-	if err := os.MkdirAll(filepath.Join(home, ".ccl", "auth"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".gbx", "auth"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(home, ".ccl", "config.yaml"), []byte("active_provider: test\n"), 0o600,
+		filepath.Join(home, ".gbx", "config.yaml"), []byte("active_provider: test\n"), 0o600,
 	); err != nil {
 		t.Fatal(err)
 	}
 	// A directory, a non-JSON file and a backslash name are all skipped: only
 	// the config travels, so the snapshot is still usable.
-	auth := filepath.Join(home, ".ccl", "auth")
+	auth := filepath.Join(home, ".gbx", "auth")
 	if err := os.Mkdir(filepath.Join(auth, "nested.json"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -293,10 +293,10 @@ func TestCollectLocalFilesRequiresConfigurationOrCredentials(t *testing.T) {
 func TestCollectLocalFilesRefusesAnOversizedConfiguration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".ccl"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".gbx"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	oversized := filepath.Join(home, ".ccl", "config.yaml")
+	oversized := filepath.Join(home, ".gbx", "config.yaml")
 	if err := os.Truncate(oversized, maxEncryptedSize+1); err != nil {
 		if err := os.WriteFile(oversized, make([]byte, maxEncryptedSize+1), 0o600); err != nil {
 			t.Fatal(err)
@@ -314,11 +314,11 @@ func TestCollectLocalFilesRefusesAnOversizedConfiguration(t *testing.T) {
 func TestCollectLocalFilesRejectsAnItselfUnusableConfigPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".ccl", "config.yaml"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".gbx", "config.yaml"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := collectLocalFiles(); err == nil ||
-		!strings.Contains(err.Error(), "read ccl config") {
+		!strings.Contains(err.Error(), "read gbx config") {
 		t.Fatalf("directory in place of config.yaml error = %v", err)
 	}
 }

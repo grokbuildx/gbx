@@ -14,8 +14,8 @@ func processAlive(_ int, path string) bool {
 	return err == nil && time.Since(info.ModTime()) < tempSettingsAge
 }
 
-// On Windows only Ctrl+C reaches ccl; Grok Build receives it from the console
-// itself, so it is caught (keeping ccl alive to clean up) but not forwarded.
+// On Windows only Ctrl+C reaches gbx; Grok Build receives it from the console
+// itself, so it is caught (keeping gbx alive to clean up) but not forwarded.
 var launchSignals = []os.Signal{os.Interrupt}
 
 func forwardLaunchSignal(os.Signal) bool { return false }

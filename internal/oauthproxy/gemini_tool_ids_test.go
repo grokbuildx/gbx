@@ -30,7 +30,7 @@ func TestGeminiSignedReplayKeepsNativeCallIDs(t *testing.T) {
 				"tools": []any{map[string]any{"type": "function", "name": "exec", "parameters": map[string]any{"type": "object"}}},
 				"input": []any{
 					map[string]any{"role": "user", "content": "run"},
-					map[string]any{"id": "rs_ccl_1", "type": "reasoning", "encrypted_content": signature},
+					map[string]any{"id": "rs_gbx_1", "type": "reasoning", "encrypted_content": signature},
 					map[string]any{"type": "function_call", "call_id": "old-client-id", "name": "exec", "arguments": "{}"},
 					map[string]any{"type": "function_call_output", "call_id": "old-client-id", "output": "ok"},
 				},
@@ -202,15 +202,15 @@ func TestGeminiSignedReplayGroupedCompanionsAndTurnBoundaries(t *testing.T) {
 		},
 		"input": []any{
 			map[string]any{"role": "user", "content": "run both"},
-			map[string]any{"id": "rs_ccl_1", "type": "reasoning", "encrypted_content": sig1},
-			map[string]any{"id": "rs_ccl_2", "type": "reasoning", "encrypted_content": sig2},
+			map[string]any{"id": "rs_gbx_1", "type": "reasoning", "encrypted_content": sig1},
+			map[string]any{"id": "rs_gbx_2", "type": "reasoning", "encrypted_content": sig2},
 			map[string]any{"type": "function_call", "call_id": "client-1", "name": "exec_one", "arguments": `{"n":1}`},
 			map[string]any{"type": "function_call", "call_id": "native-2", "name": "exec_two", "arguments": `{"n":2}`},
 			map[string]any{"type": "function_call_output", "call_id": "client-1", "output": "ok-1"},
 			map[string]any{"type": "function_call_output", "call_id": "native-2", "output": "ok-2"},
 			// Truncated signed text block without its companion in the previous turn must
 			// not swallow the first text block of the next assistant turn after a user message.
-			map[string]any{"id": "rs_ccl_3", "type": "reasoning", "encrypted_content": textSig},
+			map[string]any{"id": "rs_gbx_3", "type": "reasoning", "encrypted_content": textSig},
 			map[string]any{"role": "user", "content": "next question"},
 			map[string]any{"role": "assistant", "content": "fresh answer"},
 			map[string]any{"role": "user", "content": "follow up"},
@@ -283,9 +283,9 @@ func TestGeminiClaudeStreamedThinkingSignatureRoundTrip(t *testing.T) {
 		"model": "claude-opus-4-6-thinking",
 		"input": []any{
 			map[string]any{"role": "user", "content": "think"},
-			map[string]any{"id": "rs_ccl_1", "type": "reasoning", "summary": []any{map[string]any{"type": "summary_text", "text": "recovered thought"}}, "encrypted_content": "gemini"},
-			map[string]any{"id": "rs_ccl_2", "type": "reasoning", "encrypted_content": emptyThoughtSig},
-			map[string]any{"id": "rs_ccl_3", "type": "reasoning", "encrypted_content": emptyStandaloneSig},
+			map[string]any{"id": "rs_gbx_1", "type": "reasoning", "summary": []any{map[string]any{"type": "summary_text", "text": "recovered thought"}}, "encrypted_content": "gemini"},
+			map[string]any{"id": "rs_gbx_2", "type": "reasoning", "encrypted_content": emptyThoughtSig},
+			map[string]any{"id": "rs_gbx_3", "type": "reasoning", "encrypted_content": emptyStandaloneSig},
 			map[string]any{"role": "assistant", "content": "done"},
 			map[string]any{"role": "user", "content": "next"},
 		},
@@ -311,7 +311,7 @@ func TestGeminiClaudeConcurrentToolUseAndSplitTurnNormalization(t *testing.T) {
 		},
 		"input": []any{
 			map[string]any{"role": "user", "content": "inspect project"},
-			map[string]any{"id": "rs_ccl_1", "type": "reasoning", "summary": []any{map[string]any{"type": "summary_text", "text": "plan two reads"}}, "encrypted_content": thoughtSig},
+			map[string]any{"id": "rs_gbx_1", "type": "reasoning", "summary": []any{map[string]any{"type": "summary_text", "text": "plan two reads"}}, "encrypted_content": thoughtSig},
 			map[string]any{"role": "assistant", "content": "Reading both files concurrently."},
 			map[string]any{"type": "function_call", "call_id": "toolu_read_1", "name": "Read", "arguments": `{"file_path":"a.go"}`},
 			map[string]any{"type": "function_call", "call_id": "toolu_bash_2", "name": "Bash", "arguments": `{"command":"ls"}`},
@@ -386,7 +386,7 @@ func TestGeminiThinkingOnlyResponseAndHistoryRecovery(t *testing.T) {
 			map[string]any{"role": "user", "content": "start"},
 			map[string]any{"type": "function_call", "call_id": "toolu_interrupted", "name": "Bash", "arguments": `{"command":"ls"}`},
 			map[string]any{"role": "user", "content": resumeWord},
-			map[string]any{"id": "rs_ccl_1", "type": "reasoning", "summary": []any{map[string]any{"type": "summary_text", "text": "baked only"}}, "encrypted_content": thoughtOnlySig},
+			map[string]any{"id": "rs_gbx_1", "type": "reasoning", "summary": []any{map[string]any{"type": "summary_text", "text": "baked only"}}, "encrypted_content": thoughtOnlySig},
 			map[string]any{"role": "user", "content": resumeWord},
 		},
 	})

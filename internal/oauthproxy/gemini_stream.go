@@ -17,7 +17,7 @@ import (
 const geminiStreamScannerBuffer = 16 << 20
 
 // Signed parts must retain their original boundaries and all native fields.
-const geminiPartSignaturePrefix = "ccl-gemini-part-v1:"
+const geminiPartSignaturePrefix = "gbx-gemini-part-v1:"
 
 // geminiJSONPayload extracts the JSON payload from one Gemini SSE line,
 // following the Antigravity stream format: trim, skip empty lines, `[DONE]` and

@@ -36,7 +36,7 @@ type geminiToolNames struct {
 }
 
 // Signed history keeps its native call ID (including an omitted ID), even
-// when an older CCL response exposed a separately generated client tool ID.
+// when an older GBX response exposed a separately generated client tool ID.
 // When the target model requires non-empty call IDs (such as Antigravity's
 // Claude bridge), fall back to the client tool_use ID if the native call had none.
 func (n *geminiToolNames) resultIDForModel(clientID string, requireCallID bool) string {
@@ -114,7 +114,7 @@ func buildGeminiToolNames(request *conversationRequest) (*geminiToolNames, error
 					rawPart, err := base64.StdEncoding.DecodeString(encoded)
 					part := gjson.ParseBytes(rawPart)
 					if err != nil || !gjson.ValidBytes(rawPart) || !part.IsObject() || !part.Get("thoughtSignature").Exists() {
-						return nil, fmt.Errorf("invalid CCL Gemini part signature")
+						return nil, fmt.Errorf("invalid GBX Gemini part signature")
 					}
 					if part.Get("functionCall").Exists() {
 						pending = append(pending, geminiPendingCompanion{

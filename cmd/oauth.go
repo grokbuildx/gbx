@@ -41,28 +41,28 @@ func newAuthCommand() *cobra.Command {
 
 Login:
 
-  ccl oauth gpt                 # ChatGPT / Codex subscription
-  ccl oauth gpt work            # same backend, provider name "work"
-  ccl oauth gemini|grok|qoder|kimi|kiro|workbuddy|workbuddycn|autoclaw|cursor
+  gbx oauth gpt                 # ChatGPT / Codex subscription
+  gbx oauth gpt work            # same backend, provider name "work"
+  gbx oauth gemini|grok|qoder|kimi|kiro|workbuddy|workbuddycn|autoclaw|cursor
 
 Notes:
-  - Subscription logins create providers and use ~/.ccl/auth
+  - Subscription logins create providers and use ~/.gbx/auth
   - gemini signs in to Google Antigravity; it does not use Gemini CLI credentials
   - WorkBuddy has two deployments with separate accounts and credentials:
     workbuddy is www.workbuddy.ai, workbuddycn is www.workbuddy.cn
-  - Fast mode (gpt): ccl set Review & Apply
+  - Fast mode (gpt): gbx set Review & Apply
   - Qoder uses direct browser OAuth; qodercli is neither required nor invoked
   - Kiro defaults to Portal OAuth (Google/GitHub); use --kiro-auth builder for Builder ID
-  - AutoClaw opens a CCL-owned browser login, including the provider's human
+  - AutoClaw opens a GBX-owned browser login, including the provider's human
     verification step, then stores and refreshes the resulting session without
     starting AutoClaw. To reuse the desktop app's existing login instead, run:
-    ccl oauth autoclaw --from-desktop
+    gbx oauth autoclaw --from-desktop
     (auth.json is read through the Chromium Safe Storage Keychain item on
     macOS; desktop files are never modified)
-  - Cursor signs in through cursor.com's deep-control PKCE flow; ccl speaks
+  - Cursor signs in through cursor.com's deep-control PKCE flow; gbx speaks
     Cursor's agent stream directly, so the Cursor CLI is not needed
   - Flags: --no-browser, --callback-port, --kiro-auth, --from-desktop
-  - ccl oauth prune deletes credentials no provider uses
+  - gbx oauth prune deletes credentials no provider uses
 `,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -136,7 +136,7 @@ func runAuth(ctx context.Context, out io.Writer, args []string, opts authOptions
 	fmt.Fprintf(out, "Credentials: %s\n", result.Path)
 	fmt.Fprintf(out, "Protocol: %s (fixed for this OAuth backend)\n", provider.ProtocolLabel(protocolType))
 	if supportsFastMode(target) {
-		fmt.Fprintf(out, "Fast: %s (toggle with ccl set Review & Apply)\n", providerFastSummary(p))
+		fmt.Fprintf(out, "Fast: %s (toggle with gbx set Review & Apply)\n", providerFastSummary(p))
 	}
 	_ = refreshModelsDevMetadata(ctx, out)
 	return nil
@@ -166,7 +166,7 @@ func activateProvider(target, alias string, result oauthproxy.LoginResult) (stri
 	credentialFile := filepath.Base(result.Path)
 
 	// The login can take minutes; the update re-reads the config under its lock
-	// so changes made meanwhile by another ccl survive.
+	// so changes made meanwhile by another gbx survive.
 	var p provider.Provider
 	err := config.Update(func(cfg *provider.Config) error {
 		p = cfg.Providers[providerName]

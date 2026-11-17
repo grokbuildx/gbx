@@ -41,7 +41,7 @@ func TestFetchDecodesTheCatalogOverHTTP(t *testing.T) {
 	if len(providers) != 2 {
 		t.Fatalf("decoded %d providers, want the two with an api and models: %v", len(providers), providers)
 	}
-	if gotAccept != "application/json" || gotUserAgent != "ccl" {
+	if gotAccept != "application/json" || gotUserAgent != "gbx" {
 		t.Fatalf("request headers = accept %q, user-agent %q", gotAccept, gotUserAgent)
 	}
 	// A provider that omits id/name is identified by its catalog key.

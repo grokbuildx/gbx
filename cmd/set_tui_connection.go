@@ -26,7 +26,7 @@ func (m *AdvancedConfigModel) saveWouldReplaceModelsDev() bool {
 		provider.IsModelsDevType(other.Type) && len(other.ModelProtocols) > 0
 }
 
-// configureOAuthRuntime adopts the loopback runtime ccl started for this page.
+// configureOAuthRuntime adopts the loopback runtime gbx started for this page.
 // A subscription has no connection to probe, so there is no Auto Configure row:
 // the runtime owns the catalog, and it is copied in directly rather than
 // fetched back over HTTP. This is also where the page becomes editable, so it

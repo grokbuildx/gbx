@@ -14,7 +14,7 @@ import (
 	"github.com/grokbuildx/gbx/internal/fsutil"
 )
 
-// CredentialInfo is the non-secret state doctor reads from ~/.ccl/auth.
+// CredentialInfo is the non-secret state doctor reads from ~/.gbx/auth.
 // Disabled / Unavailable / QuotaExceeded reflect persisted account health when
 // present in credential JSON (runtime may also keep these in memory only).
 type CredentialInfo struct {
@@ -36,7 +36,7 @@ func firstMetadataString(metadata map[string]any, keys ...string) string {
 	return ""
 }
 
-// ListCredentials reads supported JSON files directly inside ~/.ccl/auth.
+// ListCredentials reads supported JSON files directly inside ~/.gbx/auth.
 // Subdirectories and unrelated JSON files are ignored.
 func ListCredentials() ([]CredentialInfo, error) {
 	authDir, err := ensureAuthDir()
@@ -186,7 +186,7 @@ func credentialIdentity(metadata map[string]any, raw []byte) string {
 	return hex.EncodeToString(sum[:6])
 }
 
-// normalizeKiroCredentialMetadata accepts both ccl's snake_case credential
+// normalizeKiroCredentialMetadata accepts both gbx's snake_case credential
 // shape and the camelCase token file written by Kiro IDE under
 // ~/.aws/sso/cache/kiro-auth-token.json. The direct Kiro runtime consumes
 // snake_case metadata, so loading normalizes it first.

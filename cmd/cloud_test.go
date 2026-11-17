@@ -12,7 +12,7 @@ import (
 func TestCloudLoginICloudCreatesAProfileWithItsKey(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("CCL_ICLOUD_DRIVE_DIR", t.TempDir())
+	t.Setenv("GBX_ICLOUD_DRIVE_DIR", t.TempDir())
 	command := newCloudLoginCommand()
 	var output bytes.Buffer
 	command.SetOut(&output)
@@ -26,7 +26,7 @@ func TestCloudLoginICloudCreatesAProfileWithItsKey(t *testing.T) {
 			t.Fatalf("login output missing %q: %q", want, output.String())
 		}
 	}
-	keys, err := filepath.Glob(filepath.Join(home, ".ccl", "cloud", "profiles", "*", "key"))
+	keys, err := filepath.Glob(filepath.Join(home, ".gbx", "cloud", "profiles", "*", "key"))
 	if err != nil || len(keys) != 1 {
 		t.Fatalf("profile key glob = %v, %v", keys, err)
 	}

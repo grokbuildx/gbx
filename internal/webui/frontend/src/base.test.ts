@@ -6,7 +6,7 @@ const page = (href: string | null) => ({
 });
 
 describe("basePath", () => {
-  it("reads the prefix ccl serve filled in", () => {
+  it("reads the prefix gbx serve filled in", () => {
     expect(basePath(page("/chat/"))).toBe("/chat");
     expect(basePath(page("/a/b/"))).toBe("/a/b");
   });
@@ -56,7 +56,7 @@ describe("storedToken", () => {
     vi.stubGlobal("history", { replaceState });
 
     expect(storedToken()).toBe("secret-123");
-    expect(saved.get("ccl-web-token")).toBe("secret-123");
+    expect(saved.get("gbx-web-token")).toBe("secret-123");
     expect(replaceState).toHaveBeenCalledWith(null, "", "/chat/?x=1");
 
     vi.unstubAllGlobals();

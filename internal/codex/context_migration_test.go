@@ -94,7 +94,7 @@ func TestNativeCompactionMigrationContinuesConvertedConversation(t *testing.T) {
 		writeChatText(w, r, "continued-from-local-history")
 	}, "openai", Options{Desktop: true})
 	for _, stream := range []bool{false, true} {
-		requestBody := map[string]any{"model": "ccl/chosen/model-a", "stream": stream, "input": []any{map[string]any{"type": "compaction", "encrypted_content": "opaque-test-cipher"}, map[string]any{"role": "user", "content": "continue"}}}
+		requestBody := map[string]any{"model": "gbx/chosen/model-a", "stream": stream, "input": []any{map[string]any{"type": "compaction", "encrypted_content": "opaque-test-cipher"}, map[string]any{"role": "user", "content": "continue"}}}
 		raw, _ := json.Marshal(requestBody)
 		r, _ := http.NewRequest("POST", g.BaseURL()+"/responses", strings.NewReader(string(raw)))
 		r.Header.Set("Session_id", migrationSession)

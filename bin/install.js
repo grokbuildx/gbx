@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Postinstall for @claudecodelaunch/ccl: places the platform binary over the
-// bin/ccl.exe placeholder, so `ccl` executes natively. GUI clients such as
+// Postinstall for @grokbuildx/gbx: places the platform binary over the
+// bin/gbx.exe placeholder, so `gbx` executes natively. GUI clients such as
 // Xcode start agents without a PATH containing node, where a node launcher
 // would exit before answering. Without this step (--ignore-scripts, pnpm,
 // --omit=optional) the placeholder falls back to wrapper.js.
@@ -40,7 +40,7 @@ function install(binDir, os, arch) {
     var source;
     try { source = resolveBinary(binDir, os, arch); }
     catch (err) { return false; }
-    placeBinary(source, path.join(binDir, 'ccl.exe'));
+    placeBinary(source, path.join(binDir, 'gbx.exe'));
     return true;
 }
 
@@ -56,7 +56,7 @@ function get(url, redirects) {
     var start = new URL(url);
     return new Promise(function (resolve, reject) {
         var client = require(start.protocol === 'http:' ? 'http' : 'https');
-        var req = client.get(start, { headers: { 'user-agent': 'ccl-npm-install' } }, function (res) {
+        var req = client.get(start, { headers: { 'user-agent': 'gbx-npm-install' } }, function (res) {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                 res.resume();
                 var next = new URL(res.headers.location, start);
@@ -104,7 +104,7 @@ function download(binDir, os, arch, version, base) {
         if (!want) throw new Error('SHA256SUMS has no entry for ' + asset);
         var got = crypto.createHash('sha256').update(results[1]).digest('hex');
         if (got !== want.toLowerCase()) throw new Error(asset + ' checksum mismatch');
-        var dest = path.join(binDir, 'ccl.exe');
+        var dest = path.join(binDir, 'gbx.exe');
         var staging = dest + '.download-' + process.pid;
         try {
             fs.writeFileSync(staging, zlib.gunzipSync(results[1]));
@@ -122,7 +122,7 @@ function packageVersion(binDir) {
 
 module.exports = { install: install, placeBinary: placeBinary, download: download, releaseTag: releaseTag };
 if (require.main === module) {
-    var prefix = '[@claudecodelaunch/ccl postinstall] ';
+    var prefix = '[@grokbuildx/gbx postinstall] ';
     var placed;
     try { placed = install(__dirname, process.platform, process.arch); }
     catch (err) {
@@ -134,14 +134,14 @@ if (require.main === module) {
         Promise.resolve().then(function () {
             version = packageVersion(__dirname);
             console.error(prefix + 'Platform package not installed; downloading ' + releaseTag(version) + ' from GitHub Releases.');
-            return download(__dirname, process.platform, process.arch, version, process.env.CCL_RELEASE_DOWNLOAD_URL);
+            return download(__dirname, process.platform, process.arch, version, process.env.GBX_RELEASE_DOWNLOAD_URL);
         }).catch(function (err) {
             // A failed postinstall must fail the install: exiting 0 here leaves
-            // a ccl command that only reports a missing binary on first use.
+            // a gbx command that only reports a missing binary on first use.
             console.error(prefix + 'Download failed: ' + err.message);
             console.error('  The npm platform package normally becomes available a few minutes after a release;');
             console.error('  install again then, without uninstalling first:');
-            console.error('    npm install -g @claudecodelaunch/ccl@' + (version || 'latest'));
+            console.error('    npm install -g @grokbuildx/gbx@' + (version || 'latest'));
             process.exitCode = 1;
         });
     }

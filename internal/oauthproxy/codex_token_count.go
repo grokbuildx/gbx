@@ -15,7 +15,7 @@ var (
 // to the Codex Responses API.
 func countCodexResponsesInputTokens(body []byte) (int, error) {
 	codexTokenizerOnce.Do(func() {
-		// CCL only counts o200k_base. The generic encoding dispatcher retains
+		// GBX only counts o200k_base. The generic encoding dispatcher retains
 		// every vocabulary in release binaries; use the concrete constructor so
 		// the linker can discard the unused cl100k/p50k/r50k tables.
 		codexTokenizerCodec = codec.NewO200kBase()

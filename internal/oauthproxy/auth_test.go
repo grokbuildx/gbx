@@ -186,7 +186,7 @@ func TestEnsureAuthDirSecuresExistingDirectory(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o755); err != nil {
 		t.Fatalf("create auth dir: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestEnsureAuthDirSecuresExistingDirectory(t *testing.T) {
 func TestStartEmbeddedProxyWithStoredCredential(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatalf("create auth dir: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestStartEmbeddedProxyWithStoredCredential(t *testing.T) {
 		t.Fatal("Start() returned an empty session API key")
 	}
 	if proxyRuntime.httpServer == nil {
-		t.Fatal("GPT subscription must use the CCL-owned HTTP runtime")
+		t.Fatal("GPT subscription must use the GBX-owned HTTP runtime")
 	}
 
 	unauthorizedResp, err := http.Get(proxyRuntime.Endpoint() + "/models")
@@ -266,7 +266,7 @@ func TestStartEmbeddedProxyWithStoredCredential(t *testing.T) {
 	}
 }
 
-func TestStartOpenAIResponsesAPIUsesCCLOwnedCodexIdentity(t *testing.T) {
+func TestStartOpenAIResponsesAPIUsesGBXOwnedCodexIdentity(t *testing.T) {
 	type capture struct {
 		header http.Header
 		body   map[string]any
@@ -314,7 +314,7 @@ func TestStartOpenAIResponsesAPIUsesCCLOwnedCodexIdentity(t *testing.T) {
 		t.Fatalf("upstream authorization = %q", got.header.Get("Authorization"))
 	}
 	if !strings.HasPrefix(strings.ToLower(got.header.Get("User-Agent")), "codex_cli_rs/") {
-		t.Fatalf("Responses gateway did not receive CCL's Codex User-Agent: %q", got.header.Get("User-Agent"))
+		t.Fatalf("Responses gateway did not receive GBX's Codex User-Agent: %q", got.header.Get("User-Agent"))
 	}
 	if got.header.Get("Originator") != codexidentity.Originator {
 		t.Fatalf("Responses gateway Originator = %q, want %s", got.header.Get("Originator"), codexidentity.Originator)
@@ -345,7 +345,7 @@ func TestStartOpenAIResponsesAPIUsesCCLOwnedCodexIdentity(t *testing.T) {
 	}
 
 	if proxyRuntime.httpServer == nil {
-		t.Fatal("Responses API key runtime is not CCL-owned")
+		t.Fatal("Responses API key runtime is not GBX-owned")
 	}
 }
 
@@ -380,7 +380,7 @@ func TestStartOpenAIChatAPIServesClaudeMessages(t *testing.T) {
 
 	responseBody := postClaudeMessage(t, ctx, proxyRuntime, "gpt-test[1m]")
 	if !strings.Contains(responseBody, "chat ok") || !strings.Contains(responseBody, `"type":"response.completed"`) {
-		t.Fatalf("CCL Chat adapter did not return Responses SSE: %s", responseBody)
+		t.Fatalf("GBX Chat adapter did not return Responses SSE: %s", responseBody)
 	}
 	got := <-captured
 	if got.path != "/v1/chat/completions" {
@@ -425,12 +425,12 @@ func TestStartOpenAIResponsesAPIServesClaudeMessages(t *testing.T) {
 	defer proxyRuntime.Stop()
 	models := runtimeModelIDs(t, ctx, proxyRuntime)
 	if !models["gpt-test"] || !models["gpt-test[1m]"] {
-		t.Fatalf("CCL runtime models = %v, want base model and 1M alias", models)
+		t.Fatalf("GBX runtime models = %v, want base model and 1M alias", models)
 	}
 
 	responseBody := postClaudeMessage(t, ctx, proxyRuntime, "gpt-test[1m]")
 	if !strings.Contains(responseBody, "responses ok") || !strings.Contains(responseBody, `"type":"response.completed"`) {
-		t.Fatalf("CCL Responses runtime did not return Responses SSE: %s", responseBody)
+		t.Fatalf("GBX Responses runtime did not return Responses SSE: %s", responseBody)
 	}
 	got := <-captured
 	if got.path != "/v1/responses" {
@@ -499,7 +499,7 @@ func postClaudeMessage(t *testing.T, ctx context.Context, proxyRuntime *Runtime,
 func TestStopClosesDirectCodexRuntime(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatalf("create auth dir: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestStopClosesDirectCodexRuntime(t *testing.T) {
 	}
 	if proxyRuntime.httpServer == nil {
 		proxyRuntime.Stop()
-		t.Fatal("Codex subscription did not use the CCL runtime")
+		t.Fatal("Codex subscription did not use the GBX runtime")
 	}
 
 	endpoint := proxyRuntime.Endpoint()
@@ -535,7 +535,7 @@ func TestStopClosesDirectCodexRuntime(t *testing.T) {
 func TestStartEmbeddedProxyExposesOnlyRequestedProviderModels(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatalf("create auth dir: %v", err)
 	}
@@ -596,7 +596,7 @@ func TestStartRequiresMatchingCredential(t *testing.T) {
 	}
 }
 
-func TestStartOpenAIResponsesAPIUsesCCLDataPlane(t *testing.T) {
+func TestStartOpenAIResponsesAPIUsesGBXDataPlane(t *testing.T) {
 	type capture struct {
 		path   string
 		header http.Header
@@ -641,7 +641,7 @@ func TestStartOpenAIResponsesAPIUsesCCLDataPlane(t *testing.T) {
 		t.Fatalf("upstream model = %v, want gpt-test", got.body["model"])
 	}
 	if proxyRuntime.httpServer == nil {
-		t.Fatal("Responses request was not served by CCL's direct data plane")
+		t.Fatal("Responses request was not served by GBX's direct data plane")
 	}
 }
 
@@ -684,7 +684,7 @@ func TestAPIKeyResponsesPreservesRetryAfterWithoutFastRetry(t *testing.T) {
 	}
 }
 
-func TestStartProviderResponsesUsesCCLOwnedCodexIdentity(t *testing.T) {
+func TestStartProviderResponsesUsesGBXOwnedCodexIdentity(t *testing.T) {
 	type capture struct {
 		header http.Header
 		body   map[string]any
@@ -718,7 +718,7 @@ func TestStartProviderResponsesUsesCCLOwnedCodexIdentity(t *testing.T) {
 	got := <-captured
 	if got.header.Get("Originator") != codexidentity.Originator || got.header.Get("Version") != codexidentity.ClientVersion ||
 		!strings.HasPrefix(got.header.Get("User-Agent"), codexidentity.Originator+"/") {
-		t.Fatalf("StartProvider Responses missing CCL Codex identity: headers=%v body=%v", got.header, got.body)
+		t.Fatalf("StartProvider Responses missing GBX Codex identity: headers=%v body=%v", got.header, got.body)
 	}
 }
 

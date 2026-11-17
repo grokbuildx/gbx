@@ -53,7 +53,7 @@ const (
 	cursorMTDInputSchema        = 3
 	cursorMTDProviderIdentifier = 4
 	cursorMTDToolName           = 5
-	cursorMCPProviderIdentifier = "ccl"
+	cursorMCPProviderIdentifier = "gbx"
 
 	cursorIUTextDelta         = 1
 	cursorIUThinkingDelta     = 4

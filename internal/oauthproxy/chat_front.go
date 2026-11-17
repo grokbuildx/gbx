@@ -66,7 +66,7 @@ func chatToResponsesRequest(raw []byte) ([]byte, *chatFrontRequest, error) {
 		case "assistant":
 			if reasoning, _ := message["reasoning_content"].(string); reasoning != "" {
 				input = append(input, map[string]any{
-					"type": "reasoning", "id": assemblerItemID(cclReasoningIDPrefix),
+					"type": "reasoning", "id": assemblerItemID(gbxReasoningIDPrefix),
 					"summary": []any{map[string]any{"type": "summary_text", "text": reasoning}},
 				})
 			}
@@ -306,7 +306,7 @@ func (w *chatFrontWriter) Write(data []byte) (int, error) {
 	}
 	if !w.streaming {
 		if int64(w.body.Len()+len(data)) > chatFrontMaxBodyBytes {
-			return 0, fmt.Errorf("response exceeds the CCL Chat Completions limit")
+			return 0, fmt.Errorf("response exceeds the GBX Chat Completions limit")
 		}
 		return w.body.Write(data)
 	}

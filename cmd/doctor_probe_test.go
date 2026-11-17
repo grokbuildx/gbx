@@ -45,7 +45,7 @@ func TestDoctorOnlyProbesModelsOnRequest(t *testing.T) {
 	if _, err := config.Load(); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(home, ".ccl", "config.yaml")
+	path := filepath.Join(home, ".gbx", "config.yaml")
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

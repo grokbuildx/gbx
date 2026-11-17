@@ -10,7 +10,7 @@ import (
 
 // Session logs accumulate one file per runtime session. PruneSessionLogs keeps
 // the newest maxFiles that are younger than maxAge, deleting the rest. It only
-// touches ccl's own log files in its log directory and never fails a launch.
+// touches gbx's own log files in its log directory and never fails a launch.
 const (
 	DefaultLogMaxAge   = 30 * 24 * time.Hour
 	DefaultLogMaxFiles = 200

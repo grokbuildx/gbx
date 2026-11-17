@@ -42,7 +42,7 @@ func CachePath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".ccl", "cache", "modelsdev.json"), nil
+	return filepath.Join(home, ".gbx", "cache", "modelsdev.json"), nil
 }
 
 // CacheStamp lets an explicitly requested proxy start notice a metadata
@@ -60,7 +60,7 @@ func CacheStamp() string {
 }
 
 // Refresh updates the on-disk snapshot, or returns the last valid offline copy.
-// Call from OAuth / ccl set, never from a model request.
+// Call from OAuth / gbx set, never from a model request.
 func Refresh(ctx context.Context) (*Snapshot, error) {
 	path, err := CachePath()
 	if err != nil {
@@ -70,7 +70,7 @@ func Refresh(ctx context.Context) (*Snapshot, error) {
 }
 
 // CachedIndex is read-only and performs no network access. A cached immutable
-// index is reused until the snapshot file changes (for example via ccl set).
+// index is reused until the snapshot file changes (for example via gbx set).
 func CachedIndex() (*Index, error) {
 	path, err := CachePath()
 	if err != nil {
@@ -149,7 +149,7 @@ func (c *Cache) Refresh(ctx context.Context) (*Snapshot, error) {
 		return c.offline(err)
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "ccl")
+	request.Header.Set("User-Agent", "gbx")
 	if len(cached) > 0 && metadata.ETag != "" {
 		request.Header.Set("If-None-Match", metadata.ETag)
 	}

@@ -12,7 +12,7 @@ import (
 )
 
 func TestNpmUpdateArgsPinVersionAndIncludeOptional(t *testing.T) {
-	want := []string{"install", "-g", "@claudecodelaunch/ccl@1.6.7", "--include=optional", "--prefer-online"}
+	want := []string{"install", "-g", "@grokbuildx/gbx@1.6.7", "--include=optional", "--prefer-online"}
 	if got := npmUpdateArgs("v1.6.7"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("args = %v, want %v", got, want)
 	}
@@ -24,13 +24,13 @@ func TestNpmGlobalPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if paths.binary != filepath.Join(root, "@claudecodelaunch", "ccl", "bin", "ccl.exe") ||
-		paths.command != filepath.Join(filepath.Dir(filepath.Dir(root)), "bin", "ccl") {
+	if paths.binary != filepath.Join(root, "@grokbuildx", "gbx", "bin", "gbx.exe") ||
+		paths.command != filepath.Join(filepath.Dir(filepath.Dir(root)), "bin", "gbx") {
 		t.Fatalf("unexpected paths: %+v", paths)
 	}
 	root = filepath.Join(t.TempDir(), "prefix", "node_modules")
 	paths, err = npmGlobalPaths(root, "windows")
-	if err != nil || paths.command != filepath.Join(filepath.Dir(root), "ccl.cmd") {
+	if err != nil || paths.command != filepath.Join(filepath.Dir(root), "gbx.cmd") {
 		t.Fatalf("Windows paths = %+v, %v", paths, err)
 	}
 	for _, root := range []string{"", "node_modules", t.TempDir()} {
@@ -86,12 +86,12 @@ func TestCompleteNpmUpdateHandlesSilentAndPostinstallFailures(t *testing.T) {
 }
 
 // Build a native fixture rather than a Unix shell script: these checks also run
-// on Windows, and must never execute the developer's actual ccl from PATH.
+// on Windows, and must never execute the developer's actual gbx from PATH.
 func TestVerifyNpmInstallChecksOnlyNpmDestination(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "main.go")
-	binary := filepath.Join(dir, "ccl.exe")
-	if err := os.WriteFile(source, []byte("package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"ccl version v1.6.7\") }\n"), 0o600); err != nil {
+	binary := filepath.Join(dir, "gbx.exe")
+	if err := os.WriteFile(source, []byte("package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"gbx version v1.6.7\") }\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command("go", "build", "-o", binary, source).CombinedOutput(); err != nil {
@@ -103,7 +103,7 @@ func TestVerifyNpmInstallChecksOnlyNpmDestination(t *testing.T) {
 	if err := verifyNpmInstall(binary, "v1.6.8"); err == nil || !strings.Contains(err.Error(), "expected") {
 		t.Fatalf("old version accepted: %v", err)
 	}
-	// Another working ccl on PATH cannot mask a missing npm target.
+	// Another working gbx on PATH cannot mask a missing npm target.
 	t.Setenv("PATH", dir)
 	if err := verifyNpmInstall(filepath.Join(dir, "missing.exe"), "v1.6.7"); err == nil {
 		t.Fatal("missing npm binary was accepted")
@@ -139,19 +139,19 @@ func TestRunUpdateNpmRepairsPackageWhenBinaryIsAlreadyCurrent(t *testing.T) {
 		}
 		return binary
 	}
-	native := build("native", "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"ccl version v1.6.7\") }\n")
+	native := build("native", "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"gbx version v1.6.7\") }\n")
 	build("npm", `package main
 import ("fmt"; "os"; "path/filepath"; "runtime"; "strings")
 func main() {
     if len(os.Args) == 3 && os.Args[1] == "root" && os.Args[2] == "-g" {
-        fmt.Println(os.Getenv("CCL_TEST_NPM_ROOT")); return
+        fmt.Println(os.Getenv("GBX_TEST_NPM_ROOT")); return
     }
-    if err := os.WriteFile(os.Getenv("CCL_TEST_NPM_ARGS"), []byte(strings.Join(os.Args[1:], "\n")), 0600); err != nil { panic(err) }
-    data, err := os.ReadFile(os.Getenv("CCL_TEST_NPM_NATIVE")); if err != nil { panic(err) }
-    target := os.Getenv("CCL_TEST_NPM_TARGET")
+    if err := os.WriteFile(os.Getenv("GBX_TEST_NPM_ARGS"), []byte(strings.Join(os.Args[1:], "\n")), 0600); err != nil { panic(err) }
+    data, err := os.ReadFile(os.Getenv("GBX_TEST_NPM_NATIVE")); if err != nil { panic(err) }
+    target := os.Getenv("GBX_TEST_NPM_TARGET")
     if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil { panic(err) }
     if err := os.WriteFile(target, data, 0755); err != nil { panic(err) }
-    command := os.Getenv("CCL_TEST_NPM_COMMAND")
+    command := os.Getenv("GBX_TEST_NPM_COMMAND")
     if err := os.MkdirAll(filepath.Dir(command), 0755); err != nil { panic(err) }
     if runtime.GOOS == "windows" {
         if err := os.WriteFile(command, []byte("npm shim fixture"), 0755); err != nil { panic(err) }
@@ -159,12 +159,12 @@ func main() {
 }
 `)
 	t.Setenv("PATH", dir)
-	t.Setenv("CCL_TEST_NPM_ROOT", root)
-	t.Setenv("CCL_TEST_NPM_NATIVE", native)
-	t.Setenv("CCL_TEST_NPM_TARGET", paths.binary)
-	t.Setenv("CCL_TEST_NPM_COMMAND", paths.command)
+	t.Setenv("GBX_TEST_NPM_ROOT", root)
+	t.Setenv("GBX_TEST_NPM_NATIVE", native)
+	t.Setenv("GBX_TEST_NPM_TARGET", paths.binary)
+	t.Setenv("GBX_TEST_NPM_COMMAND", paths.command)
 	argsPath := filepath.Join(dir, "npm-args")
-	t.Setenv("CCL_TEST_NPM_ARGS", argsPath)
+	t.Setenv("GBX_TEST_NPM_ARGS", argsPath)
 	if err := runUpdate("npm"); err != nil {
 		t.Fatal(err)
 	}

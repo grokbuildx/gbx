@@ -26,7 +26,7 @@ func nativeHistory(body []byte) []byte {
 		_ = json.Unmarshal(item["type"], &kind)
 		_ = json.Unmarshal(item["id"], &id)
 		_ = json.Unmarshal(item["encrypted_content"], &encrypted)
-		if kind == "reasoning" && (strings.HasPrefix(id, "rs_ccl_") || encrypted == "" && stateless) {
+		if kind == "reasoning" && (strings.HasPrefix(id, "rs_gbx_") || encrypted == "" && stateless) {
 			changed = true
 			continue
 		}

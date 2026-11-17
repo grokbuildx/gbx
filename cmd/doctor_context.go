@@ -86,7 +86,7 @@ func advertisedContextWindows(endpoint, apiKey string) (map[string]int, string) 
 	}
 	// Probe both shapes at once: sequentially this costs two request timeouts on
 	// every gateway that serves only one of them, which is a visible stall in
-	// `ccl doctor` and in the config TUI.
+	// `gbx doctor` and in the config TUI.
 	type result struct {
 		windows map[string]int
 		label   string

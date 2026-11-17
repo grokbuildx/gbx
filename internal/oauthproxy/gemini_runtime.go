@@ -35,7 +35,7 @@ const (
 	antigravityGeneratePath = "/v1internal:generateContent"
 
 	// antigravityOAuthClientID/Secret are the Google OAuth client identifiers used
-	// by CCL for the Antigravity control-plane refresh flow.
+	// by GBX for the Antigravity control-plane refresh flow.
 	antigravityOAuthClientID     = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 	antigravityOAuthClientSecret = "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"
 
@@ -46,7 +46,7 @@ const (
 	antigravityMaxResponseBytes = int64(64 << 20)
 
 	// antigravityRequestUserAgent is the Antigravity Hub family UA sent when no
-	// configured override is present (the version updater is not run by CCL).
+	// configured override is present (the version updater is not run by GBX).
 )
 
 var (
@@ -93,7 +93,7 @@ func resolveAntigravityHost(base string) string {
 }
 
 // antigravityOAuthAuthorizer resolves and refreshes a Gemini/Antigravity OAuth
-// credential persisted by CCL during `ccl oauth gemini`. It reads the required
+// credential persisted by GBX during `gbx oauth gemini`. It reads the required
 // fields and refreshes against Google's OAuth endpoint with the Antigravity client credentials (form-encoded, unlike the
 // Claude subscription's JSON body).
 type antigravityOAuthAuthorizer struct {
@@ -162,7 +162,7 @@ func (a *antigravityOAuthAuthorizer) load() (*antigravityOAuthCredential, error)
 	raw, err := os.ReadFile(a.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no Gemini credentials found; run `ccl oauth gemini` first")
+			return nil, fmt.Errorf("no Gemini credentials found; run `gbx oauth gemini` first")
 		}
 		return nil, fmt.Errorf("read Gemini credential %s: %w", filepath.Base(a.path), err)
 	}
@@ -242,7 +242,7 @@ func (a *antigravityOAuthAuthorizer) refresh(ctx context.Context, credential *an
 	return credential, nil
 }
 
-// geminiService is the CCL-owned data plane for the Gemini subscription. It
+// geminiService is the GBX-owned data plane for the Gemini subscription. It
 // converts OpenAI Responses requests to the Antigravity generateContent
 // envelope and streams the Gemini response back as OpenAI Responses SSE.
 type geminiService struct {
@@ -659,7 +659,7 @@ func geminiStableSessionID(geminiBody []byte) string {
 	return "-" + strconv.FormatInt(rand.Int63n(9_000_000_000_000_000_000), 10)
 }
 
-// startAntigravityOAuth starts the CCL-owned Gemini subscription data plane. It
+// startAntigravityOAuth starts the GBX-owned Gemini subscription data plane. It
 // reuses the chat authorizer abstraction for credential resolution and replaces
 // the upstream wire protocol with the Antigravity Gemini converter/stream
 // pipeline.

@@ -21,9 +21,9 @@ import (
 )
 
 func TestProxyReloadKeepsCodexEndpoint(t *testing.T) {
-	binary := os.Getenv("CCL_TEST_BINARY")
+	binary := os.Getenv("GBX_TEST_BINARY")
 	if binary == "" {
-		t.Skip("set CCL_TEST_BINARY to a built native ccl binary")
+		t.Skip("set GBX_TEST_BINARY to a built native gbx binary")
 	}
 	binary, err := filepath.Abs(binary)
 	if err != nil {
@@ -31,7 +31,7 @@ func TestProxyReloadKeepsCodexEndpoint(t *testing.T) {
 	}
 	home := t.TempDir()
 	codexHome := filepath.Join(home, ".codex")
-	for key, value := range map[string]string{"HOME": home, "USERPROFILE": home, "CODEX_HOME": codexHome, "CLAUDE_CONFIG_DIR": filepath.Join(home, ".claude"), "CCL_PROXY_NO_MENUBAR": "1", "CCL_LANG": "en"} {
+	for key, value := range map[string]string{"HOME": home, "USERPROFILE": home, "CODEX_HOME": codexHome, "CLAUDE_CONFIG_DIR": filepath.Join(home, ".claude"), "GBX_PROXY_NO_MENUBAR": "1", "GBX_LANG": "en"} {
 		t.Setenv(key, value)
 	}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -74,11 +74,11 @@ func TestProxyReloadKeepsCodexEndpoint(t *testing.T) {
 		command := exec.CommandContext(ctx, binary, args...)
 		command.Dir = home
 		if output, err := command.CombinedOutput(); err != nil {
-			t.Fatalf("ccl %v: %v\n%s", args, err, output)
+			t.Fatalf("gbx %v: %v\n%s", args, err, output)
 		}
 	}
 	t.Cleanup(func() { run("codex", "stop") })
-	m := &proxymanager.Manager{Dir: filepath.Join(home, ".ccl", "proxy")}
+	m := &proxymanager.Manager{Dir: filepath.Join(home, ".gbx", "proxy")}
 	state := func() *proxymanager.State {
 		t.Helper()
 		s, err := m.Read()
@@ -97,7 +97,7 @@ func TestProxyReloadKeepsCodexEndpoint(t *testing.T) {
 		if current.Codex.BaseURL != first.Codex.BaseURL {
 			t.Fatalf("cached client endpoint lost: %s -> %s", first.Codex.BaseURL, current.Codex.BaseURL)
 		}
-		for model, want := range map[string]string{"native-fixture": "native-ok", "ccl/" + providerName + "/model-a": "converted-ok"} {
+		for model, want := range map[string]string{"native-fixture": "native-ok", "gbx/" + providerName + "/model-a": "converted-ok"} {
 			// Deliberately keep the first URL, as an already-open Codex does.
 			body, _ := json.Marshal(map[string]any{"model": model, "input": "fixture"})
 			request, _ := http.NewRequest(http.MethodPost, first.Codex.BaseURL+"/responses", strings.NewReader(string(body)))
@@ -131,7 +131,7 @@ func TestProxyReloadKeepsCodexEndpoint(t *testing.T) {
 			}
 			if err == nil && json.Unmarshal(raw, &catalog) == nil && current.MetadataStamp == modelsdev.CacheStamp() {
 				for _, model := range catalog.Models {
-					if model.Slug == "ccl/"+providerName+"/model-a" && model.Window == window && model.Compact == window*85/100 && (levelCount < 0 || len(model.Levels) == levelCount) {
+					if model.Slug == "gbx/"+providerName+"/model-a" && model.Window == window && model.Compact == window*85/100 && (levelCount < 0 || len(model.Levels) == levelCount) {
 						return current
 					}
 				}
@@ -173,7 +173,7 @@ func TestProxyReloadKeepsCodexEndpoint(t *testing.T) {
 	}
 	matched := false
 	for _, model := range catalog.Models {
-		if model.Slug == "ccl/"+p.Name+"/model-a" {
+		if model.Slug == "gbx/"+p.Name+"/model-a" {
 			matched = len(model.Levels) == 2 && model.Levels[0].Effort == "low" && model.Levels[1].Effort == "max"
 		}
 	}
@@ -223,11 +223,11 @@ func TestProxyReloadKeepsCodexEndpoint(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	waitModels("ccl/"+p.Name+"/model-new", true)
+	waitModels("gbx/"+p.Name+"/model-new", true)
 	if state().ID != stable.ID || state().Codex.CatalogPath != stable.Codex.CatalogPath {
 		t.Fatal("adding a model replaced the daemon or catalog path")
 	}
-	request, _ := http.NewRequest(http.MethodPost, first.Codex.BaseURL+"/responses", strings.NewReader(`{"model":"ccl/first/model-new","input":"new route"}`))
+	request, _ := http.NewRequest(http.MethodPost, first.Codex.BaseURL+"/responses", strings.NewReader(`{"model":"gbx/first/model-new","input":"new route"}`))
 	request.Header.Set("Authorization", "Bearer fake-native-key")
 	response, err := client.Do(request)
 	if err != nil {
@@ -246,14 +246,14 @@ func TestProxyReloadKeepsCodexEndpoint(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	waitModels("ccl/"+p.Name+"/model-new", false)
+	waitModels("gbx/"+p.Name+"/model-new", false)
 	run("codex", "start", p.Name, "--with-provider", other.Name)
-	waitModels("ccl/"+other.Name+"/model-a", true)
+	waitModels("gbx/"+other.Name+"/model-a", true)
 	if state().ID != stable.ID || len(state().AdditionalProviders) != 1 {
 		t.Fatal("multi-provider attachment replaced the daemon or was not journaled")
 	}
 	run("codex", "start", p.Name, "--with-provider", "")
-	waitModels("ccl/"+other.Name+"/model-a", false)
+	waitModels("gbx/"+other.Name+"/model-a", false)
 	run("codex", "start", p.Name, "--refresh")
 	if state().ID != stable.ID {
 		t.Fatal("explicit account refresh replaced the daemon")
@@ -283,7 +283,7 @@ func TestProxyReloadKeepsCodexEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(configBytes), `model_provider = "ccl_proxy"`) || !strings.Contains(string(configBytes), "requires_openai_auth = false") {
+	if !strings.Contains(string(configBytes), `model_provider = "gbx_proxy"`) || !strings.Contains(string(configBytes), "requires_openai_auth = false") {
 		t.Fatal("independent provider is not active")
 	}
 	run("codex", "start", other.Name)
@@ -322,7 +322,7 @@ func TestProxyReloadKeepsCodexEndpoint(t *testing.T) {
 	}
 	check(other.Name)
 	configBytes, _ = os.ReadFile(filepath.Join(codexHome, "config.toml"))
-	if strings.Contains(string(configBytes), "[model_providers.ccl_proxy]") {
+	if strings.Contains(string(configBytes), "[model_providers.gbx_proxy]") {
 		t.Fatal("temporary provider credentials survived switching back")
 	}
 	shared := state()

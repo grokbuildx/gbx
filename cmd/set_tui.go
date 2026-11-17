@@ -759,7 +759,7 @@ func NewAdvancedConfigModel(p *provider.Provider) *AdvancedConfigModel {
 		case m.usesOAuth():
 			// A subscription has no probe to run — connectionReady is true from
 			// the start — so the persisted pool is the whole catalog: AutoClaw's
-			// built-in list, or whatever `ccl oauth` discovered.
+			// built-in list, or whatever `gbx oauth` discovered.
 			// configureOAuthRuntime refreshes it from the live runtime.
 		default:
 			m.live().autoDetectOnOpen = true

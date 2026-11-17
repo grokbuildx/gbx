@@ -91,7 +91,7 @@ func testServerFrom(t *testing.T, server *Server) string {
 }
 
 func TestOAuthLoginRelaysTheURL(t *testing.T) {
-	bin := writeScript(t, t.TempDir(), "ccl", `echo "Authenticating $2..."
+	bin := writeScript(t, t.TempDir(), "gbx", `echo "Authenticating $2..."
 echo "Open https://auth.example/authorize?state=abc to authorize"
 echo "Waiting for callback..."
 exit 0
@@ -224,7 +224,7 @@ func TestTerminalRunsAShellOnlyWhenEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if status, body := doJSON(t, "POST", on.URL+"/api/terminal/"+term.ID+"/input", "secret", `{"data":"echo ccl-$((40+2))\n"}`); status != http.StatusNoContent {
+	if status, body := doJSON(t, "POST", on.URL+"/api/terminal/"+term.ID+"/input", "secret", `{"data":"echo gbx-$((40+2))\n"}`); status != http.StatusNoContent {
 		t.Fatalf("input = %d: %s", status, body)
 	}
 	found := make(chan bool, 1)
@@ -242,7 +242,7 @@ func TestTerminalRunsAShellOnlyWhenEnabled(t *testing.T) {
 			decoded, _ := base64.StdEncoding.DecodeString(chunk.Data)
 			seen.Write(decoded)
 			// The shell computed it: the output is not just the echoed input.
-			if strings.Contains(seen.String(), "ccl-42") {
+			if strings.Contains(seen.String(), "gbx-42") {
 				found <- true
 				return
 			}

@@ -164,7 +164,7 @@ func convertResponsesToGeminiWithSchema(raw []byte, canonicalModel string, sanit
 					rawPart, err := base64.StdEncoding.DecodeString(encoded)
 					part := gjson.ParseBytes(rawPart)
 					if err != nil || !gjson.ValidBytes(rawPart) || !part.IsObject() || !part.Get("thoughtSignature").Exists() {
-						replayErr = fmt.Errorf("invalid CCL Gemini part signature")
+						replayErr = fmt.Errorf("invalid GBX Gemini part signature")
 						break
 					}
 					fallbackThinking := block.Text

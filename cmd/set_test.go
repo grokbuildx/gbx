@@ -136,7 +136,7 @@ func TestOAuthAdvancedConfigUsesRuntimeCredentialsWithoutPersistingThem(t *testi
 	m := NewAdvancedConfigModel(&p)
 	// A subscription has no Auto Configure row, so the runtime catalog arrives
 	// with the runtime itself instead of through a probe.
-	m.configureOAuthRuntime("http://127.0.0.1:54321/v1", "ccl-session-secret", []string{"gpt-5.6-sol", "gpt-5.6-codex"}, false)
+	m.configureOAuthRuntime("http://127.0.0.1:54321/v1", "gbx-session-secret", []string{"gpt-5.6-sol", "gpt-5.6-codex"}, false)
 
 	view := renderView(t, m)
 	for _, want := range []string{"Provider Configuration", "oauth/gpt", "Ready (this session only)"} {
@@ -144,7 +144,7 @@ func TestOAuthAdvancedConfigUsesRuntimeCredentialsWithoutPersistingThem(t *testi
 			t.Fatalf("OAuth credential page should contain %q, got %q", want, view)
 		}
 	}
-	for _, secret := range []string{"http://127.0.0.1:54321/v1", "ccl-session-secret", "Endpoint URL"} {
+	for _, secret := range []string{"http://127.0.0.1:54321/v1", "gbx-session-secret", "Endpoint URL"} {
 		if strings.Contains(view, secret) {
 			t.Fatalf("OAuth credential page exposed %q: %q", secret, view)
 		}

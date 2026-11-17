@@ -34,7 +34,7 @@ func TestRealCodexIndependentAccountReadIgnoresCachedChatGPTLogin(t *testing.T) 
 	applyClientFixture(t, g, home)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, os.Getenv("CCL_TEST_CODEX"), "app-server")
+	command := exec.CommandContext(ctx, os.Getenv("GBX_TEST_CODEX"), "app-server")
 	command.Dir = home
 	process.ConfigureGroup(command)
 	stdin, err := command.StdinPipe()
@@ -51,7 +51,7 @@ func TestRealCodexIndependentAccountReadIgnoresCachedChatGPTLogin(t *testing.T) 
 	defer func() { process.KillTree(command); _ = command.Wait() }()
 	encoder := json.NewEncoder(stdin)
 	for _, request := range []map[string]any{
-		{"id": 0, "method": "initialize", "params": map[string]any{"clientInfo": map[string]any{"name": "ccl-fixture", "version": "1"}, "capabilities": map[string]any{"experimentalApi": true}}},
+		{"id": 0, "method": "initialize", "params": map[string]any{"clientInfo": map[string]any{"name": "gbx-fixture", "version": "1"}, "capabilities": map[string]any{"experimentalApi": true}}},
 		{"method": "initialized"},
 		{"id": 1, "method": "account/read", "params": map[string]any{"refreshToken": false}},
 	} {

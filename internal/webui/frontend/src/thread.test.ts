@@ -161,8 +161,8 @@ describe("format helpers", () => {
 
   it("sizes and paths", () => {
     expect(fileSize(2048)).toBe("2.0 KB");
-    expect(basename("/Users/me/Space/ccl/")).toBe("ccl");
-    expect(shortPath("/Users/me/Space/GitHub/ccl")).toBe("…/GitHub/ccl");
+    expect(basename("/Users/me/Space/gbx/")).toBe("gbx");
+    expect(shortPath("/Users/me/Space/GitHub/gbx")).toBe("…/GitHub/gbx");
   });
 });
 

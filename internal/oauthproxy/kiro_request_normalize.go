@@ -717,7 +717,7 @@ func truncateKiroText(value string, limit int) (string, int) {
 	dropped := len(value) - limit
 	var result string
 	for range 2 {
-		marker := fmt.Sprintf("\n\n...[ccl truncated %d bytes for Kiro content limit]...\n\n", dropped)
+		marker := fmt.Sprintf("\n\n...[gbx truncated %d bytes for Kiro content limit]...\n\n", dropped)
 		if len(marker) >= limit {
 			return truncateKiroUTF8Prefix(marker, limit), len(value)
 		}

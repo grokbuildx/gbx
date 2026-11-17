@@ -97,9 +97,9 @@ body {
   content: "▌";
   margin-left: 2px;
   color: var(--clay);
-  animation: ccl-blink 1s steps(2) infinite;
+  animation: gbx-blink 1s steps(2) infinite;
 }
-@keyframes ccl-blink {
+@keyframes gbx-blink {
   50% {
     opacity: 0;
   }

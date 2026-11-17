@@ -61,7 +61,7 @@ func TestChatOutputBudgetAndTruncationSurviveResponsesBridge(t *testing.T) {
 				}
 				writeChatFixture(w, r, map[string]any{"content": "fixture"}, reason, 3)
 			}, "openai", Options{})
-			payload := map[string]any{"model": "ccl/chosen/model-a", "input": "fixture", "reasoning": map[string]any{"effort": "max"}}
+			payload := map[string]any{"model": "gbx/chosen/model-a", "input": "fixture", "reasoning": map[string]any{"effort": "max"}}
 			if requested > 0 {
 				payload["max_output_tokens"] = requested
 			}

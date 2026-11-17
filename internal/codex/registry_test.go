@@ -63,7 +63,7 @@ func TestRegistrySwapDrainsRequestsAndKeepsAccountsSeparate(t *testing.T) {
 	initialBase, initialToken := g.BaseURL(), g.Token()
 	received := make(chan *http.Response, 1)
 	go func() {
-		req, _ := http.NewRequest(http.MethodPost, g.BaseURL()+"/responses", strings.NewReader(`{"model":"ccl/chosen/model-a","input":"hold old generation","stream":true}`))
+		req, _ := http.NewRequest(http.MethodPost, g.BaseURL()+"/responses", strings.NewReader(`{"model":"gbx/chosen/model-a","input":"hold old generation","stream":true}`))
 		req.Header.Set("Authorization", "Bearer native-key")
 		response, _ := http.DefaultClient.Do(req)
 		received <- response
@@ -88,13 +88,13 @@ func TestRegistrySwapDrainsRequestsAndKeepsAccountsSeparate(t *testing.T) {
 		t.Fatal("swap interrupted an active lease or changed the endpoint")
 	}
 	for _, name := range []string{"chosen", "other"} {
-		response := responseObject(t, postResponses(t, g, map[string]any{"model": "ccl/" + name + "/model-b", "input": "new generation"}))
+		response := responseObject(t, postResponses(t, g, map[string]any{"model": "gbx/" + name + "/model-b", "input": "new generation"}))
 		raw, _ := json.Marshal(response)
 		if !strings.Contains(string(raw), name+":model-b") {
 			t.Fatalf("wrong provider: %s", raw)
 		}
 	}
-	if response := postResponses(t, g, map[string]any{"model": "ccl/chosen/model-a", "input": "removed"}); response.StatusCode != 404 {
+	if response := postResponses(t, g, map[string]any{"model": "gbx/chosen/model-a", "input": "removed"}); response.StatusCode != 404 {
 		t.Fatal("removed route still available")
 	}
 	close(finish)
@@ -119,14 +119,14 @@ func TestRegistrySwapDrainsRequestsAndKeepsAccountsSeparate(t *testing.T) {
 		t.Fatal("retired runtime did not close after its last lease")
 	}
 	saved, _ := os.ReadFile(path)
-	if strings.Contains(string(saved), "ccl/chosen/model-a") || !strings.Contains(string(saved), "retain") || !strings.Contains(string(saved), "ccl/other/model-b") {
+	if strings.Contains(string(saved), "gbx/chosen/model-a") || !strings.Contains(string(saved), "retain") || !strings.Contains(string(saved), "gbx/other/model-b") {
 		t.Fatalf("catalog replacement = %s", saved)
 	}
 	failed := registryBinding(t, "chosen", "model-c", "unused-key")
 	if err := g.ReplaceProviders([]RuntimeBinding{failed}, func([]Model) error { return errors.New("disk unavailable") }); err == nil {
 		t.Fatal("failed persistence accepted")
 	}
-	if g.Models()[0]["slug"] != "ccl/chosen/model-b" {
+	if g.Models()[0]["slug"] != "gbx/chosen/model-b" {
 		t.Fatal("failed update replaced the last registry")
 	}
 }
@@ -147,7 +147,7 @@ func TestRemoteCatalogMergedETagAndAuthentication(t *testing.T) {
 	}
 	first := get("")
 	raw, _ := io.ReadAll(first.Body)
-	if first.StatusCode != 200 || !strings.Contains(string(raw), "native-only") || !strings.Contains(string(raw), "ccl/chosen/model-a") || first.Header.Get("Cache-Control") != "private, no-cache" {
+	if first.StatusCode != 200 || !strings.Contains(string(raw), "native-only") || !strings.Contains(string(raw), "gbx/chosen/model-a") || first.Header.Get("Cache-Control") != "private, no-cache" {
 		t.Fatalf("remote catalog = %d %s", first.StatusCode, raw)
 	}
 	if get(first.Header.Get("ETag")).StatusCode != 304 {

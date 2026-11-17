@@ -8,7 +8,7 @@ import { useI18n } from "../i18n";
 const control =
   "rounded-lg border border-line bg-surface px-3 py-1.5 text-[14px] text-ink outline-none focus:border-line-strong [&>option]:bg-surface";
 
-// SubscriptionLogin runs `ccl oauth <name>` on the server and shows the link it
+// SubscriptionLogin runs `gbx oauth <name>` on the server and shows the link it
 // prints. The login finishes in the browser tab it opens, as in a terminal.
 export function SubscriptionLogin({ api, onDone }: { api: Api; onDone: () => void }) {
   const { t } = useI18n();

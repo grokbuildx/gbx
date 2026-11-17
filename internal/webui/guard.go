@@ -8,9 +8,9 @@ import (
 	"strings"
 )
 
-// guard stops other web pages from driving ccl serve through the user's browser.
+// guard stops other web pages from driving gbx serve through the user's browser.
 //
-// ccl serve binds loopback TCP (127.0.0.1) or a local 0600 Unix socket:
+// gbx serve binds loopback TCP (127.0.0.1) or a local 0600 Unix socket:
 //   - Host must name the loopback interface. A DNS-rebinding page reaches
 //     127.0.0.1 under its own host name, which this refuses.
 //   - A request that changes state must not come from another site's page.
@@ -25,7 +25,7 @@ func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !overUnixSocket(r) {
 			if !loopbackName(hostOnly(r.Host)) {
-				writeError(w, http.StatusForbidden, "ccl serve only answers to 127.0.0.1, localhost or [::1]")
+				writeError(w, http.StatusForbidden, "gbx serve only answers to 127.0.0.1, localhost or [::1]")
 				return
 			}
 			if changesState(r.Method) && !sameMachineOrigin(r.Header.Get("Origin")) {

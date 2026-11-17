@@ -21,9 +21,9 @@ import (
 
 func isolatedCodexClient(t *testing.T) (string, func(...string) string) {
 	t.Helper()
-	executable := os.Getenv("CCL_TEST_CODEX")
+	executable := os.Getenv("GBX_TEST_CODEX")
 	if executable == "" {
-		t.Skip("set CCL_TEST_CODEX to the official Codex client")
+		t.Skip("set GBX_TEST_CODEX to the official Codex client")
 	}
 	executable, err := filepath.Abs(executable)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestRealCodexRetriesProviderCapacity(t *testing.T) {
 		writeChatText(w, r, "capacity-recovered")
 	}, "openai", Options{Desktop: true})
 	applyClientFixture(t, g, home)
-	output := run("-m", "ccl/chosen/model-a", "-c", `web_search="disabled"`, "exec", "--json", "--skip-git-repo-check", "Reply to the fixture.")
+	output := run("-m", "gbx/chosen/model-a", "-c", `web_search="disabled"`, "exec", "--json", "--skip-git-repo-check", "Reply to the fixture.")
 	if calls.Load() != 2 || !strings.Contains(output, "capacity-recovered") {
 		t.Fatalf("capacity rejection did not recover through the real client: calls=%d\n%s", calls.Load(), output)
 	}
@@ -124,10 +124,10 @@ func TestRealCodexReadsScreenshotThroughConvertedProvider(t *testing.T) {
 		writeChatText(w, r, "image-roundtrip-done")
 	}, "openai", Options{Desktop: true})
 	editFixtureModels(g, func([]Model) []Model {
-		return []Model{newModel("ccl/chosen/model-a", "model-a", map[string]protocol.ModelInfo{"model-a": {InputModalities: []string{"text", "image"}}}, nil)}
+		return []Model{newModel("gbx/chosen/model-a", "model-a", map[string]protocol.ModelInfo{"model-a": {InputModalities: []string{"text", "image"}}}, nil)}
 	})
 	applyClientFixture(t, g, home)
-	output := run("-m", "ccl/chosen/model-a", "-c", `web_search="disabled"`, "exec", "--json", "--skip-git-repo-check", "Read the fixture screenshot with view_image.")
+	output := run("-m", "gbx/chosen/model-a", "-c", `web_search="disabled"`, "exec", "--json", "--skip-git-repo-check", "Read the fixture screenshot with view_image.")
 	if calls.Load() != 2 || !sawImage.Load() || !strings.Contains(output, "image-roundtrip-done") {
 		t.Fatalf("screenshot lost: calls=%d image=%v\n%s", calls.Load(), sawImage.Load(), output)
 	}
@@ -173,11 +173,11 @@ func TestRealCodexResumesAcrossNativeAndConvertedModels(t *testing.T) {
 			runTurn := func(args ...string) string {
 				if mode == "independent-provider" {
 					base, _ := json.Marshal(g.BaseURL())
-					args = append([]string{"-c", `model_provider="ccl"`, "-c", `model_providers.ccl.name="CCL"`, "-c", "model_providers.ccl.base_url=" + string(base), "-c", `model_providers.ccl.wire_api="responses"`, "-c", "model_providers.ccl.requires_openai_auth=false", "-c", `model_providers.ccl.experimental_bearer_token="fake-native-key"`}, args...)
+					args = append([]string{"-c", `model_provider="gbx"`, "-c", `model_providers.gbx.name="GBX"`, "-c", "model_providers.gbx.base_url=" + string(base), "-c", `model_providers.gbx.wire_api="responses"`, "-c", "model_providers.gbx.requires_openai_auth=false", "-c", `model_providers.gbx.experimental_bearer_token="fake-native-key"`}, args...)
 				}
 				return run(args...)
 			}
-			output := runTurn("-m", "ccl/chosen/model-a", "-c", `web_search="disabled"`, "exec", "--json", "--skip-git-repo-check", "Remember keep-this-goal.")
+			output := runTurn("-m", "gbx/chosen/model-a", "-c", `web_search="disabled"`, "exec", "--json", "--skip-git-repo-check", "Remember keep-this-goal.")
 			var session string
 			for _, line := range strings.Split(output, "\n") {
 				var event struct {
@@ -196,7 +196,7 @@ func TestRealCodexResumesAcrossNativeAndConvertedModels(t *testing.T) {
 			if !strings.Contains(output, "native-continued") {
 				t.Fatalf("native turn failed: %s", output)
 			}
-			output = runTurn("-m", "ccl/chosen/model-a", "-c", `web_search="disabled"`, "exec", "resume", "--json", "--skip-git-repo-check", session, "Continue again.")
+			output = runTurn("-m", "gbx/chosen/model-a", "-c", `web_search="disabled"`, "exec", "resume", "--json", "--skip-git-repo-check", session, "Continue again.")
 			assertCodexThreadID(t, output, session)
 			if !strings.Contains(output, "converted-continued") || convertedCalls.Load() != 2 || nativeCalls.Load() != 1 {
 				t.Fatalf("model switching failed: converted=%d native=%d\n%s", convertedCalls.Load(), nativeCalls.Load(), output)

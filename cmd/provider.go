@@ -17,7 +17,7 @@ import (
 var providerCmd = &cobra.Command{
 	Use:   "provider",
 	Short: "Manage providers",
-	Long: `Manage LLM providers stored in ~/.ccl/config.yaml.
+	Long: `Manage LLM providers stored in ~/.gbx/config.yaml.
 
 Subcommands:
   set [name]     Interactive add/update (TUI)
@@ -27,7 +27,7 @@ Subcommands:
   models         Availability check for the model pool
   preview [name] Show the Grok Build model overlay
 
-Root shortcuts: ccl set / ccl ls / ccl use / ccl preview.
+Root shortcuts: gbx set / gbx ls / gbx use / gbx preview.
 `,
 }
 
@@ -78,8 +78,8 @@ func newProviderRemoveCommand(use string) *cobra.Command {
 		Long: `Delete a provider configuration.
 
 Deleting the provider a mode is using clears that selection; pick another
-with ccl use. If the provider's OAuth credential is used by no other provider,
-ccl offers to delete it too (--purge does so without asking).`,
+with gbx use. If the provider's OAuth credential is used by no other provider,
+gbx offers to delete it too (--purge does so without asking).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runProviderRemove(args[0], yes, purge)
@@ -123,8 +123,8 @@ func runProviderUse(name string) error {
 			p, exists := c.Providers[target]
 			if !exists {
 				return fmt.Errorf(locale.T(
-					"未找到 Provider %q。请先用 'ccl set' 添加，或用 'ccl ls' 检查拼写",
-					"provider %q not found in configuration. Add it using 'ccl set' or check spelling with 'ccl ls'",
+					"未找到 Provider %q。请先用 'gbx set' 添加，或用 'gbx ls' 检查拼写",
+					"provider %q not found in configuration. Add it using 'gbx set' or check spelling with 'gbx ls'",
 				), target)
 			}
 			if err := provider.ValidateRuntime(p); err != nil {
@@ -149,8 +149,8 @@ func runProviderUse(name string) error {
 }
 
 // selectProviderToUse runs the filter selector over the configured providers so
-// `ccl use` without arguments can switch interactively, mirroring the selection
-// list `ccl set` shows (but without the create-new entry — use only switches
+// `gbx use` without arguments can switch interactively, mirroring the selection
+// list `gbx set` shows (but without the create-new entry — use only switches
 // between existing providers). It returns "" when the user cancels.
 func selectProviderToUse(cfg *provider.Config) (string, error) {
 	names := make([]string, 0, len(cfg.Providers)+1)
@@ -161,8 +161,8 @@ func selectProviderToUse(cfg *provider.Config) (string, error) {
 	}
 	if len(names) == 0 {
 		return "", fmt.Errorf("%s", locale.T(
-			"没有可用的 Provider。请用 'ccl set' 添加，或运行 ccl use default",
-			"no providers available. Add one with 'ccl set' or run ccl use default",
+			"没有可用的 Provider。请用 'gbx set' 添加，或运行 gbx use default",
+			"no providers available. Add one with 'gbx set' or run gbx use default",
 		))
 	}
 	sort.Strings(names)
@@ -216,7 +216,7 @@ func runProviderCopy(sourceName, targetName string, force bool) error {
 	target := strings.TrimSpace(targetName)
 
 	if source == "" || target == "" {
-		return fmt.Errorf("%s", locale.T("请提供源和目标名称，例如: ccl provider cp <source> <target>", "please provide both source and target names, e.g.: ccl provider cp <source> <target>"))
+		return fmt.Errorf("%s", locale.T("请提供源和目标名称，例如: gbx provider cp <source> <target>", "please provide both source and target names, e.g.: gbx provider cp <source> <target>"))
 	}
 	if provider.IsDefaultProvider(target) {
 		return fmt.Errorf(locale.T(
@@ -259,7 +259,7 @@ func runProviderRemove(name string, force, purge bool) error {
 
 	targetName := strings.TrimSpace(name)
 	if targetName == "" {
-		return fmt.Errorf("%s", locale.T("请指定要删除的 Provider 名称，例如: ccl provider rm <name>", "please specify the provider name to delete, e.g.: ccl provider rm <name>"))
+		return fmt.Errorf("%s", locale.T("请指定要删除的 Provider 名称，例如: gbx provider rm <name>", "please specify the provider name to delete, e.g.: gbx provider rm <name>"))
 	}
 
 	if _, exists := cfg.Providers[targetName]; !exists {
@@ -291,7 +291,7 @@ func runProviderRemove(name string, force, purge bool) error {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 	if clearedActive {
-		fmt.Println(locale.T("当前 Provider 已清空，用 ccl use <name> 选择新的。", "Active provider cleared; choose one with ccl use <name>."))
+		fmt.Println(locale.T("当前 Provider 已清空，用 gbx use <name> 选择新的。", "Active provider cleared; choose one with gbx use <name>."))
 	}
 
 	fmt.Printf("✅ %s %q\n", locale.T("已删除 Provider", "Successfully deleted provider"), targetName)
@@ -320,7 +320,7 @@ func offerCredentialRemoval(cfg *provider.Config, removed provider.Provider, for
 	}
 	if !purge {
 		if force {
-			fmt.Printf(locale.T("凭据 %s 已无 Provider 使用，已保留（ccl oauth prune 可清理）\n", "Credential %s is no longer used and was kept (ccl oauth prune removes it)\n"), name)
+			fmt.Printf(locale.T("凭据 %s 已无 Provider 使用，已保留（gbx oauth prune 可清理）\n", "Credential %s is no longer used and was kept (gbx oauth prune removes it)\n"), name)
 			return
 		}
 		if !confirmed(locale.Tf("同时删除不再使用的凭据 %s？(y/N): ", "Also delete the now-unused credential %s? (y/N): ", name), false) {
@@ -344,7 +344,7 @@ func runProviderMove(sourceName, targetName string, force bool) error {
 	target := strings.TrimSpace(targetName)
 
 	if source == "" || target == "" {
-		return fmt.Errorf("%s", locale.T("请提供旧名称和新名称，例如: ccl provider mv <source> <target>", "please provide both source and target names, e.g.: ccl provider mv <source> <target>"))
+		return fmt.Errorf("%s", locale.T("请提供旧名称和新名称，例如: gbx provider mv <source> <target>", "please provide both source and target names, e.g.: gbx provider mv <source> <target>"))
 	}
 	if provider.IsDefaultProvider(target) {
 		return fmt.Errorf(locale.T(

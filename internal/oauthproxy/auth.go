@@ -20,13 +20,13 @@ const (
 	// ProviderWorkBuddyCN is the mainland-China WorkBuddy deployment
 	// (www.workbuddy.cn). It runs the same plugin API and chat protocol as
 	// ProviderWorkBuddy, so both share one implementation and differ only in
-	// origin and in the credential `type` ccl persists.
+	// origin and in the credential `type` gbx persists.
 	ProviderWorkBuddyCN = "workbuddycn"
-	// ProviderAutoClaw is the AutoClaw Code (ZCode coding plan) backend. CCL
+	// ProviderAutoClaw is the AutoClaw Code (ZCode coding plan) backend. GBX
 	// performs browser OAuth, refreshes the resulting session locally, and owns
 	// the Responses-to-OpenAI Chat adapter used to reach the managed proxy.
 	ProviderAutoClaw = "autoclaw"
-	// ProviderCursor is the Cursor subscription backend. CCL owns the PKCE
+	// ProviderCursor is the Cursor subscription backend. GBX owns the PKCE
 	// browser sign-in, its poll loop, token refresh, and the Connect-RPC
 	// AgentService adapter that speaks OpenAI Responses to the client.
 	ProviderCursor = "cursor"
@@ -51,7 +51,7 @@ func AuthDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".ccl", "auth"), nil
+	return filepath.Join(home, ".gbx", "auth"), nil
 }
 
 func ensureAuthDir() (string, error) {
@@ -105,7 +105,7 @@ func Login(ctx context.Context, providerName string, opts LoginOptions) (LoginRe
 // ImportCredential is the non-browser import path for backends whose official
 // CLI or desktop app already stores a long-lived key instead of offering a
 // third-party OAuth flow. Browser OAuth stays on Login; imports stay here so
-// `ccl oauth` never advertises a backend that cannot do OAuth.
+// `gbx oauth` never advertises a backend that cannot do OAuth.
 func ImportCredential(ctx context.Context, providerName string) (LoginResult, error) {
 	target := strings.ToLower(strings.TrimSpace(providerName))
 	switch target {

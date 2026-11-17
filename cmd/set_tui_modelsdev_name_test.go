@@ -9,7 +9,7 @@ import (
 	"github.com/grokbuildx/gbx/internal/provider"
 )
 
-// TestModelsDevPickKeepsTheNameTheUserGave pins `ccl set oc`: picking a
+// TestModelsDevPickKeepsTheNameTheUserGave pins `gbx set oc`: picking a
 // models.dev provider must not rename the draft to the catalog ID, or the save
 // lands under a name the user never typed.
 func TestModelsDevPickKeepsTheNameTheUserGave(t *testing.T) {
@@ -28,7 +28,7 @@ func TestModelsDevPickKeepsTheNameTheUserGave(t *testing.T) {
 }
 
 // TestModelsDevPickReplacesAGeneratedName keeps the old behavior where it is an
-// improvement: `ccl set` with no name gets a provider-xxxxxx placeholder, and
+// improvement: `gbx set` with no name gets a provider-xxxxxx placeholder, and
 // the catalog ID is the better name.
 func TestModelsDevPickReplacesAGeneratedName(t *testing.T) {
 	m := NewAdvancedConfigModel(&provider.Provider{Name: "provider-abc234"})

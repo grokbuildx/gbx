@@ -39,7 +39,7 @@ func TestCodexCatalogUsesProviderContextAndCompactionPolicy(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			// Metadata from a backend is a capability, not the user's budget.
 			for _, advertised := range []int{0, 32_768, 1_000_000} {
-				model := newModel("ccl/chosen/"+test.id, test.id, map[string]protocol.ModelInfo{test.id: {ContextWindow: advertised}}, nil)
+				model := newModel("gbx/chosen/"+test.id, test.id, map[string]protocol.ModelInfo{test.id: {ContextWindow: advertised}}, nil)
 				applyProviderContext(model, test.id, test.provider)
 				if model["context_window"] != test.window || model["max_context_window"] != test.window || model["auto_compact_token_limit"] != test.window*85/100 {
 					t.Fatalf("advertised=%d model=%+v", advertised, model)

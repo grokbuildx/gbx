@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Claude Code env vars that ccl manages through Provider.Env. They live here so
+// Claude Code env vars that gbx manages through Provider.Env. They live here so
 // the launcher, the config TUI and the diagnostics all agree on the spelling.
 const (
 	// EnvMaxContextTokens is the fallback context size Claude Code assumes for a
@@ -21,7 +21,7 @@ const (
 
 	// EnvAutoCompactPct is Claude Code's percentage-based auto-compact threshold.
 	// It only ever lowers the trigger point, and Claude Code has repeatedly
-	// ignored it when it arrives through the settings file, so ccl also exports it
+	// ignored it when it arrives through the settings file, so gbx also exports it
 	// to the child process environment.
 	EnvAutoCompactPct = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
 
@@ -39,7 +39,7 @@ const (
 	BalancedAutoCompactPct    = Balanced500KAutoCompactPct
 )
 
-// ContextPreset identifies a provider-wide context configuration managed by ccl.
+// ContextPreset identifies a provider-wide context configuration managed by gbx.
 type ContextPreset uint8
 
 const (
@@ -48,7 +48,7 @@ const (
 	ContextPresetBalanced800K
 )
 
-// ManagedContextEnvKeys are the context-sizing variables ccl forwards. They are
+// ManagedContextEnvKeys are the context-sizing variables gbx forwards. They are
 // exported to the Claude Code process as well as written to the settings file,
 // because the settings-file channel has proven unreliable for them.
 func ManagedContextEnvKeys() []string {
@@ -56,7 +56,7 @@ func ManagedContextEnvKeys() []string {
 }
 
 // ContextPresetFromEnv recognizes the exact provider-wide context triplets that
-// ccl supports. Missing, partial, and hand-written combinations resolve
+// gbx supports. Missing, partial, and hand-written combinations resolve
 // to Default; HasManagedContextEnv distinguishes those unsupported overrides
 // from a genuinely empty Default configuration.
 func ContextPresetFromEnv(env map[string]string) ContextPreset {
@@ -91,7 +91,7 @@ func ContextPresetValues(preset ContextPreset) (maxContext, compactWindow, compa
 }
 
 // IsBalancedContextPreset reports whether env contains either exact Balanced
-// tier managed by ccl.
+// tier managed by gbx.
 func IsBalancedContextPreset(env map[string]string) bool {
 	return ContextPresetFromEnv(env) != ContextPresetDefault
 }
@@ -131,7 +131,7 @@ type Provider struct {
 	// also accepted.
 	OAuthProvider string `yaml:"oauthProvider,omitempty"`
 	// OAuthAccountCredential binds this provider to a single credential file
-	// (basename of the JSON under ~/.ccl/auth). Subscription runtimes require
+	// (basename of the JSON under ~/.gbx/auth). Subscription runtimes require
 	// this binding and load only that account.
 	OAuthAccountCredential string `yaml:"oauthAccountCredential,omitempty"`
 
@@ -192,7 +192,7 @@ type Config struct {
 	// ConfigVersion is the schema the file was last written with; see
 	// config.CurrentVersion.
 	ConfigVersion int `yaml:"config_version,omitempty"`
-	// LogLevel is the threshold for ccl's per-session slog files: debug, info,
+	// LogLevel is the threshold for gbx's per-session slog files: debug, info,
 	// warn, error, or off. Config loading normalizes an omitted value to off.
 	LogLevel  string              `yaml:"log_level,omitempty"`
 	Providers map[string]Provider `yaml:"providers"`
@@ -202,7 +202,7 @@ type Config struct {
 // or treating their credentials as belonging to another backend.
 func ValidateRuntime(p Provider) error {
 	if IsDefaultProvider(p.Name) {
-		return fmt.Errorf("select a configured CCL provider for the Responses runtime")
+		return fmt.Errorf("select a configured GBX provider for the Responses runtime")
 	}
 	if backend := strings.ToLower(strings.TrimSpace(p.OAuthProvider)); backend != "" {
 		if _, ok := OAuthRuntimeType(backend); ok {
@@ -210,7 +210,7 @@ func ValidateRuntime(p Provider) error {
 		}
 		switch backend {
 		case "claude", "zed":
-			return fmt.Errorf("OAuth provider %q has been retired; select another provider with ccl use", backend)
+			return fmt.Errorf("OAuth provider %q has been retired; select another provider with gbx use", backend)
 		default:
 			return fmt.Errorf("unsupported OAuth provider %q", backend)
 		}
@@ -219,7 +219,7 @@ func ValidateRuntime(p Provider) error {
 	case IsOpenAICompatibleType(p.Type), IsModelsDevType(p.Type):
 		return nil
 	case IsAnthropicType(p.Type):
-		return fmt.Errorf("provider %q uses the retired Anthropic Messages protocol; configure a Responses or Chat Completions endpoint with ccl set", p.Name)
+		return fmt.Errorf("provider %q uses the retired Anthropic Messages protocol; configure a Responses or Chat Completions endpoint with gbx set", p.Name)
 	default:
 		return fmt.Errorf("unsupported provider protocol %q", p.Type)
 	}
@@ -272,13 +272,13 @@ func IsModelsDevType(providerType string) bool {
 }
 
 // IsAutoClawType reports whether the provider is AutoClaw Code (ZCode coding
-// plan). Its credential is resolved from ~/.ccl/auth and kept inside a local
+// plan). Its credential is resolved from ~/.gbx/auth and kept inside a local
 // runtime that adds the managed proxy's desktop-compatible headers.
 func IsAutoClawType(providerType string) bool {
 	return strings.EqualFold(strings.TrimSpace(providerType), "autoclaw")
 }
 
-// ProtocolForAISdkNPM maps a models.dev AI SDK package to ccl's provider Type
+// ProtocolForAISdkNPM maps a models.dev AI SDK package to gbx's provider Type
 // protocol. ok is false for an unknown package, in which case the model should
 // be skipped by the caller.
 func ProtocolForAISdkNPM(npm string) (string, bool) {

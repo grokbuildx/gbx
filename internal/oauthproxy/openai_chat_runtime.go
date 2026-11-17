@@ -35,7 +35,7 @@ type chatStaticAuthorizer struct{ token string }
 func (a *chatStaticAuthorizer) authorize(context.Context, bool) (string, error) { return a.token, nil }
 func (*chatStaticAuthorizer) isOAuth() bool                                     { return false }
 
-// chatCompletionsService is the CCL-owned data plane for an OpenAI Chat
+// chatCompletionsService is the GBX-owned data plane for an OpenAI Chat
 // Completions upstream. Request conversion, SSE conversion, error mapping, and
 // usage accounting all live here, independent of external runtime upgrades;
 // these details define how openai(chat) behaves.
@@ -48,7 +48,7 @@ type chatCompletionsService struct {
 	modelRoute   map[string]string
 	client       *http.Client
 	usage        *UsageTracker
-	// fastRetry controls CCL's hidden 429/5xx replay loop. It defaults to true
+	// fastRetry controls GBX's hidden 429/5xx replay loop. It defaults to true
 	// for ordinary OpenAI-compatible gateways. Subscription brokers that charge
 	// per invocation can turn it off so an ambiguous 5xx is never submitted a
 	// second time behind the user's back.
@@ -90,7 +90,7 @@ func (e *chatCompletionsUpstreamError) Error() string {
 func (e *chatCompletionsUpstreamError) upstreamStatus() int        { return e.status }
 func (e *chatCompletionsUpstreamError) upstreamRetryAfter() string { return e.retryAfter }
 
-// startOpenAIChatRuntime starts a CCL-owned Responses entrypoint that
+// startOpenAIChatRuntime starts a GBX-owned Responses entrypoint that
 // translates requests to OpenAI Chat Completions upstream. It mirrors
 // startCodexResponsesRuntime's loopback/server lifecycle with no OAuth and no
 // compaction, since neither applies to a static-key Chat gateway.

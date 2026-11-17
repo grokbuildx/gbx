@@ -24,9 +24,9 @@ import (
 const googleDriveScope = "https://www.googleapis.com/auth/drive.appdata"
 
 var (
-	// The Desktop OAuth client of ccl's Google Cloud project. Release builds
+	// The Desktop OAuth client of gbx's Google Cloud project. Release builds
 	// inject it with -ldflags (GOOGLE_OAUTH_CLIENT_ID/_SECRET); local
-	// development may set CCL_GOOGLE_OAUTH_CLIENT_ID/_SECRET. Installed-app
+	// development may set GBX_GOOGLE_OAUTH_CLIENT_ID/_SECRET. Installed-app
 	// clients are public: Google still requires the secret on token requests,
 	// but PKCE protects the authorization code. appDataFolder belongs to the
 	// Cloud project, so every machine must use a client of the same project.
@@ -40,8 +40,8 @@ var (
 )
 
 func googleDesktopClient() (string, string) {
-	id := strings.TrimSpace(os.Getenv("CCL_GOOGLE_OAUTH_CLIENT_ID"))
-	secret := strings.TrimSpace(os.Getenv("CCL_GOOGLE_OAUTH_CLIENT_SECRET"))
+	id := strings.TrimSpace(os.Getenv("GBX_GOOGLE_OAUTH_CLIENT_ID"))
+	secret := strings.TrimSpace(os.Getenv("GBX_GOOGLE_OAUTH_CLIENT_SECRET"))
 	if id == "" {
 		id = strings.TrimSpace(googleOAuthClientID)
 	}
@@ -53,7 +53,7 @@ func googleDesktopClient() (string, string) {
 
 func requireGoogleDesktopClient() error {
 	if id, _ := googleDesktopClient(); id == "" {
-		return fmt.Errorf("this ccl build has no Google OAuth client; use a release build or set CCL_GOOGLE_OAUTH_CLIENT_ID and CCL_GOOGLE_OAUTH_CLIENT_SECRET")
+		return fmt.Errorf("this gbx build has no Google OAuth client; use a release build or set GBX_GOOGLE_OAUTH_CLIENT_ID and GBX_GOOGLE_OAUTH_CLIENT_SECRET")
 	}
 	return nil
 }
@@ -75,7 +75,7 @@ type pastedRedirectKey struct{}
 // URL instead of opening a browser, and read the address the browser was
 // redirected to from in. Hosts without a browser (SSH, Cloud Shell) need this:
 // Google's device flow rejects the drive.appdata scope, and the 127.0.0.1
-// redirect only reaches ccl from a browser on the same machine.
+// redirect only reaches gbx from a browser on the same machine.
 func WithPastedRedirect(ctx context.Context, in io.Reader) context.Context {
 	return context.WithValue(ctx, pastedRedirectKey{}, in)
 }
@@ -176,9 +176,9 @@ func authorizeGoogleDriveAt(ctx context.Context, authPath string, notice io.Writ
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			if result.err == nil {
-				_, _ = fmt.Fprint(w, "<!doctype html><title>CCL connected</title><h1>Google Drive connected</h1><p>You can close this tab and return to CCL.</p>")
+				_, _ = fmt.Fprint(w, "<!doctype html><title>GBX connected</title><h1>Google Drive connected</h1><p>You can close this tab and return to GBX.</p>")
 			} else {
-				_, _ = fmt.Fprintf(w, "<!doctype html><title>CCL authorization failed</title><h1>Authorization failed</h1><p>%s</p>", html.EscapeString(result.err.Error()))
+				_, _ = fmt.Fprintf(w, "<!doctype html><title>GBX authorization failed</title><h1>Authorization failed</h1><p>%s</p>", html.EscapeString(result.err.Error()))
 			}
 		}),
 	}
@@ -239,7 +239,7 @@ func authorizeGoogleDriveAt(ctx context.Context, authPath string, notice io.Writ
 		return nil, fmt.Errorf("exchange Google authorization code: %w", err)
 	}
 	if token.RefreshToken == "" {
-		return nil, fmt.Errorf("Google did not return an offline refresh token; revoke CCL access in your Google account and try again")
+		return nil, fmt.Errorf("Google did not return an offline refresh token; revoke GBX access in your Google account and try again")
 	}
 	if err := saveGoogleToken(authPath, token); err != nil {
 		return nil, err
@@ -252,9 +252,9 @@ func loadAuthorizedGoogleDriveAt(ctx context.Context, authPath, alias string) (*
 	if err != nil {
 		if os.IsNotExist(err) {
 			if alias != "" {
-				return nil, fmt.Errorf("not logged in to Google Drive remote %q; run `ccl cloud login google-drive %s` first", alias, alias)
+				return nil, fmt.Errorf("not logged in to Google Drive remote %q; run `gbx cloud login google-drive %s` first", alias, alias)
 			}
-			return nil, fmt.Errorf("not logged in to Google Drive; run `ccl cloud login google-drive` first")
+			return nil, fmt.Errorf("not logged in to Google Drive; run `gbx cloud login google-drive` first")
 		}
 		return nil, err
 	}
@@ -284,7 +284,7 @@ func loadGoogleToken(path string) (*oauth2.Token, error) {
 	}
 	if stored.Version != formatVersion || stored.Token == nil ||
 		stored.Token.RefreshToken == "" {
-		return nil, fmt.Errorf("invalid Google Drive authorization; remove %s and run `ccl cloud login google-drive` again", path)
+		return nil, fmt.Errorf("invalid Google Drive authorization; remove %s and run `gbx cloud login google-drive` again", path)
 	}
 	return stored.Token, nil
 }

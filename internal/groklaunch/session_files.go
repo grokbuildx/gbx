@@ -12,14 +12,14 @@ import (
 )
 
 // Per-session auth files live
-// in ~/.ccl/run (0700) rather than the shared temp directory, and each name
-// carries the owning ccl process ID. A session killed before it could clean up
+// in ~/.gbx/run (0700) rather than the shared temp directory, and each name
+// carries the owning gbx process ID. A session killed before it could clean up
 // leaves its file behind; the next launch removes every file whose process is
 // gone.
 const (
 	settingsFileSuffix = "_settings.json"
 	// tempSettingsAge is how old a settings file in the system temp
-	// directory (the fallback when ~/.ccl/run is unusable) must be before it
+	// directory (the fallback when ~/.gbx/run is unusable) must be before it
 	// is swept.
 	tempSettingsAge = 24 * time.Hour
 )
@@ -30,11 +30,11 @@ var runDirectory = func() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".ccl", "run"), nil
+	return filepath.Join(home, ".gbx", "run"), nil
 }
 
 // sessionSettingsPath returns where this process writes a session's settings,
-// creating ~/.ccl/run if needed. It falls back to the temp directory when the
+// creating ~/.gbx/run if needed. It falls back to the temp directory when the
 // home directory cannot be used.
 func sessionSettingsPath(session string) string {
 	name := fmt.Sprintf("%s-%d%s", session, os.Getpid(), settingsFileSuffix)
@@ -49,7 +49,7 @@ func sessionSettingsPath(session string) string {
 	return filepath.Join(os.TempDir(), name)
 }
 
-// sweepStaleSessionFiles removes settings files left by ccl processes that no
+// sweepStaleSessionFiles removes settings files left by gbx processes that no
 // longer run, plus old ones in the temp directory fallback. Best effort: it never
 // fails a launch.
 func sweepStaleSessionFiles() {

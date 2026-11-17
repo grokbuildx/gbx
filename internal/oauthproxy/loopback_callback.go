@@ -12,10 +12,10 @@ import (
 
 func writeOAuthCallbackPage(writer http.ResponseWriter, provider string, success bool) {
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-	status, message := "complete", "You can close this tab and return to CCL."
+	status, message := "complete", "You can close this tab and return to GBX."
 	if !success {
 		writer.WriteHeader(http.StatusBadRequest)
-		status, message = "failed", "Return to CCL for details."
+		status, message = "failed", "Return to GBX for details."
 	}
 	title := html.EscapeString(provider) + " login " + status
 	_, _ = fmt.Fprintf(writer, "<!doctype html><meta charset=\"utf-8\"><title>%s</title><h2>%s</h2><p>%s</p>", title, title, message)

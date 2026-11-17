@@ -56,7 +56,7 @@ type WorktreeFile struct {
 
 var (
 	// ErrWorktreeMissing refuses a turn of a conversation whose worktree was
-	// removed outside ccl serve.
+	// removed outside gbx serve.
 	ErrWorktreeMissing = errors.New("this conversation's git worktree no longer exists")
 	errNotARepository  = errors.New("the project is not a git repository")
 	errNoCommits       = errors.New("the repository has no commits yet")
@@ -88,7 +88,7 @@ var worktreeLocalDirs = []string{
 	filepath.Join(".agents", "skills"),
 }
 
-const worktreeSandboxProfile = "ccl_worktree"
+const worktreeSandboxProfile = "gbx_worktree"
 
 func (s *Server) worktreeDir(ws Workspace, name string) string {
 	return filepath.Join(s.store.Root(), ".worktrees", ws.ID, name)
@@ -127,7 +127,7 @@ func (s *Server) gitText(ctx context.Context, ws Workspace, args ...string) (str
 	return strings.TrimSpace(string(result.stdout)), nil
 }
 
-// createWorktree checks out a new branch ccl/<name> at the project's HEAD.
+// createWorktree checks out a new branch gbx/<name> at the project's HEAD.
 func (s *Server) createWorktree(ctx context.Context, ws Workspace, name string) (SessionWorktree, error) {
 	if inside, err := s.gitText(ctx, ws, "rev-parse", "--is-inside-work-tree"); err != nil || inside != "true" {
 		return SessionWorktree{}, errNotARepository
@@ -137,7 +137,7 @@ func (s *Server) createWorktree(ctx context.Context, ws Workspace, name string) 
 		return SessionWorktree{}, errNoCommits
 	}
 	base, _ := s.gitText(ctx, ws, "symbolic-ref", "--quiet", "--short", "HEAD")
-	info := SessionWorktree{Name: name, Branch: "ccl/" + name, Base: base, BaseCommit: commit}
+	info := SessionWorktree{Name: name, Branch: "gbx/" + name, Base: base, BaseCommit: commit}
 	dir := s.worktreeDir(ws, name)
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		return SessionWorktree{}, err
@@ -310,7 +310,7 @@ func (s *Server) worktreeOverlayManifestPath(ctx context.Context, tree Workspace
 	if !filepath.IsAbs(gitDir) {
 		gitDir = filepath.Join(tree.Path, gitDir)
 	}
-	return filepath.Join(gitDir, "ccl-overlays")
+	return filepath.Join(gitDir, "gbx-overlays")
 }
 
 func (s *Server) writeWorktreeOverlays(ctx context.Context, tree Workspace, overlays []string) {

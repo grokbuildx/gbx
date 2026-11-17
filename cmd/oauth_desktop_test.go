@@ -27,7 +27,7 @@ func isolateAutoClawDesktopAuth(t *testing.T) string {
 }
 
 // writeAutoClawDesktopAuth seeds the AutoClaw desktop auth.json that
-// `ccl import autoclaw` reads, inside the isolated HOME of a test. The location
+// `gbx import autoclaw` reads, inside the isolated HOME of a test. The location
 // comes from the same resolver the import uses, so the two cannot disagree.
 func writeAutoClawDesktopAuth(t *testing.T, home, accessToken string) {
 	t.Helper()
@@ -64,7 +64,7 @@ func writeAutoClawDesktopAuth(t *testing.T, home, accessToken string) {
 
 func readAuthCredential(t *testing.T, home, name string) map[string]any {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(home, ".ccl", "auth", name))
+	raw, err := os.ReadFile(filepath.Join(home, ".gbx", "auth", name))
 	if err != nil {
 		t.Fatalf("read credential %s: %v", name, err)
 	}
@@ -128,7 +128,7 @@ func TestOAuthFromDesktopCreatesAutoClawProvider(t *testing.T) {
 	if credential["source_file"] != "auth.json" || credential["device_id"] != "device-import-1" {
 		t.Fatalf("desktop auth metadata = %+v", credential)
 	}
-	info, err := os.Stat(filepath.Join(home, ".ccl", "auth", p.OAuthAccountCredential))
+	info, err := os.Stat(filepath.Join(home, ".gbx", "auth", p.OAuthAccountCredential))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -72,22 +72,22 @@ jobs:
         include:
           - goos: darwin
             goarch: amd64
-            asset: ccl-darwin-amd64
+            asset: gbx-darwin-amd64
           - goos: darwin
             goarch: arm64
-            asset: ccl-darwin-arm64
+            asset: gbx-darwin-arm64
           - goos: linux
             goarch: amd64
-            asset: ccl-linux-amd64
+            asset: gbx-linux-amd64
           - goos: linux
             goarch: arm64
-            asset: ccl-linux-arm64
+            asset: gbx-linux-arm64
           - goos: windows
             goarch: amd64
-            asset: ccl-win32-x64.exe
+            asset: gbx-win32-x64.exe
           - goos: windows
             goarch: arm64
-            asset: ccl-win32-arm64.exe
+            asset: gbx-win32-arm64.exe
     steps:
       - uses: actions/checkout@v5
       - name: Set up Go
@@ -102,9 +102,9 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: ccl-release-v2-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum', 'scripts/build-release.sh') }}
+          key: gbx-release-v2-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum', 'scripts/build-release.sh') }}
           restore-keys: |
-            ccl-release-v2-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.go.outputs.go-version }}-
+            gbx-release-v2-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.go.outputs.go-version }}-
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
@@ -122,7 +122,7 @@ jobs:
           fi
           bash scripts/build-release.sh
       # GitHub releases ship each binary gzip-compressed (~28 MB -> ~10 MB);
-      # `ccl update` downloads <asset>.gz. -n drops the name and timestamp so
+      # `gbx update` downloads <asset>.gz. -n drops the name and timestamp so
       # the archive depends only on the binary.
       - name: Compress binary
         if: github.ref_type == 'tag'
@@ -149,15 +149,15 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@v8
         with:
-          pattern: ccl-*
+          pattern: gbx-*
           path: dist
           merge-multiple: true
       - name: Verify asset set and create checksums
         run: |
-          for asset in ccl-darwin-amd64 ccl-darwin-arm64 ccl-linux-amd64 ccl-linux-arm64 ccl-win32-x64.exe ccl-win32-arm64.exe; do
+          for asset in gbx-darwin-amd64 gbx-darwin-arm64 gbx-linux-amd64 gbx-linux-arm64 gbx-win32-x64.exe gbx-win32-arm64.exe; do
             gzip -t "dist/$asset.gz"
           done
-          (cd dist && sha256sum ccl-*.gz > SHA256SUMS)
+          (cd dist && sha256sum gbx-*.gz > SHA256SUMS)
           ls -lh dist
       # gh uploads the assets concurrently (softprops uploaded them one at a
       # time). With assets it creates a draft, uploads, then publishes, so a
@@ -196,7 +196,7 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@v8
         with:
-          pattern: ccl-*
+          pattern: gbx-*
           path: dist
           merge-multiple: true
       - name: Setup Node.js

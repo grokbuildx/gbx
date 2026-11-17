@@ -19,16 +19,16 @@ func TestMacMenuBarNativeActions(t *testing.T) {
 		t.Skip("no macOS GUI bootstrap session; CI still compiles the JXA script")
 	}
 	dir := t.TempDir()
-	executable := filepath.Join(dir, "fake ccl")
+	executable := filepath.Join(dir, "fake gbx")
 	log := filepath.Join(dir, "menu actions")
 	chosen := "second config \"quoted\" $(not-a-command)"
 	config, _ := json.Marshal(map[string]any{"current": "first", "providers": []string{"first", chosen}})
 	quoted := "'" + strings.ReplaceAll(string(config), "'", "'\"'\"'") + "'"
-	script := "#!/bin/sh\n[ \"$1\" = codex ] || exit 2\ncase \"$2\" in\nmenu-configs) printf '%s' " + quoted + ";;\nmenu-switch) printf '%s' \"$4\" > \"$CCL_MENU_TEST_LOG.switch\";;\nstop) printf stop > \"$CCL_MENU_TEST_LOG.stop\";;\nesac\n"
+	script := "#!/bin/sh\n[ \"$1\" = codex ] || exit 2\ncase \"$2\" in\nmenu-configs) printf '%s' " + quoted + ";;\nmenu-switch) printf '%s' \"$4\" > \"$GBX_MENU_TEST_LOG.switch\";;\nstop) printf stop > \"$GBX_MENU_TEST_LOG.stop\";;\nesac\n"
 	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CCL_MENU_TEST_LOG", log)
+	t.Setenv("GBX_MENU_TEST_LOG", log)
 	probe := strings.Replace(menuBarScript, "  app.run;", `  if (menu.itemAtIndex(2).state !== $.NSControlStateValueOn) throw new Error('current configuration is not checked');
   menu.performActionForItemAtIndex(3);
   menu.performActionForItemAtIndex(menu.numberOfItems - 1);

@@ -1,6 +1,6 @@
-// Package codex connects Codex clients to CCL providers without moving native
+// Package codex connects Codex clients to GBX providers without moving native
 // Codex credentials. The desktop picker and routing allow-list are
-// deliberately separate: only names owned by CCL can reach a CCL runtime.
+// deliberately separate: only names owned by GBX can reach a GBX runtime.
 package codex
 
 import (
@@ -99,7 +99,7 @@ func New(ctx context.Context, runtime *oauthproxy.Runtime, configured provider.P
 	}
 	options.CatalogMode = options.CatalogMode.Effective()
 	if options.CatalogMode == CatalogRemote && !options.Independent {
-		return nil, fmt.Errorf("remote CCL catalogs require independent mode; shared mode uses local JSON")
+		return nil, fmt.Errorf("remote GBX catalogs require independent mode; shared mode uses local JSON")
 	}
 	if err := provider.ValidateRuntime(configured); err != nil {
 		return nil, err
@@ -120,7 +120,7 @@ func New(ctx context.Context, runtime *oauthproxy.Runtime, configured provider.P
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil // A local credential must never go through a shell proxy.
-	g := &Gateway{runtime: runtime, listener: listener, options: options, token: randomID("ccl_"),
+	g := &Gateway{runtime: runtime, listener: listener, options: options, token: randomID("gbx_"),
 		routes: make(map[string]Route), client: &http.Client{Transport: transport,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	if err := g.buildModels(runtime, configured); err != nil {
@@ -158,7 +158,7 @@ func (g *Gateway) buildModels(runtime *oauthproxy.Runtime, configured provider.P
 		return err
 	}
 	for _, model := range models {
-		alias := "ccl/" + url.PathEscape(p.Name) + "/" + model
+		alias := "gbx/" + url.PathEscape(p.Name) + "/" + model
 		_, info, _ := lookupModelInfo(details, model)
 		modelProtocol := p.ModelProtocols[strings.ToLower(model)]
 		if modelProtocol == "" {
@@ -230,11 +230,11 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !g.options.Desktop && subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+g.token)) != 1 {
-		writeError(w, http.StatusUnauthorized, "authentication_error", "invalid local CCL key", "")
+		writeError(w, http.StatusUnauthorized, "authentication_error", "invalid local GBX key", "")
 		return
 	}
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		writeError(w, http.StatusUpgradeRequired, "invalid_request_error", "CCL uses HTTP Responses; retry over HTTP", "")
+		writeError(w, http.StatusUpgradeRequired, "invalid_request_error", "GBX uses HTTP Responses; retry over HTTP", "")
 		return
 	}
 	snapshot, release := g.acquireSnapshot()
@@ -287,12 +287,12 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !ok {
-		if !g.options.Desktop || strings.HasPrefix(strings.ToLower(request.Model), "ccl/") {
+		if !g.options.Desktop || strings.HasPrefix(strings.ToLower(request.Model), "gbx/") {
 			name := request.Model
 			if len(name) > 128 {
 				name = name[:128] + "..."
 			}
-			writeError(w, http.StatusNotFound, "invalid_request_error", fmt.Sprintf("model is not in the CCL routing catalog: %q; select a model from the active CCL provider or switch Codex back to the chat's provider", name), "model_not_found")
+			writeError(w, http.StatusNotFound, "invalid_request_error", fmt.Sprintf("model is not in the GBX routing catalog: %q; select a model from the active GBX provider or switch Codex back to the chat's provider", name), "model_not_found")
 			return
 		}
 		g.serveNative(w, r, nativeHistory(body), path)
@@ -335,7 +335,7 @@ func (g *Gateway) forwardResponses(w http.ResponseWriter, r *http.Request, body 
 	body, _ = json.Marshal(fields)
 	response, err := g.callRuntime(r, body, path)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "api_error", "CCL provider connection failed", "")
+		writeError(w, http.StatusBadGateway, "api_error", "GBX provider connection failed", "")
 		return
 	}
 	defer response.Body.Close()

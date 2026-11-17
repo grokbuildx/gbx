@@ -25,21 +25,21 @@ func npmGlobalPaths(root, goos string) (npmInstallPaths, error) {
 		return npmInstallPaths{}, fmt.Errorf("unexpected npm global root %q", root)
 	}
 	prefix := filepath.Dir(root)
-	command := filepath.Join(prefix, "ccl.cmd")
+	command := filepath.Join(prefix, "gbx.cmd")
 	if goos != "windows" {
 		if filepath.Base(prefix) != "lib" {
 			return npmInstallPaths{}, fmt.Errorf("unexpected npm global root %q", root)
 		}
-		command = filepath.Join(filepath.Dir(prefix), "bin", "ccl")
+		command = filepath.Join(filepath.Dir(prefix), "bin", "gbx")
 	}
 	return npmInstallPaths{
-		binary:  filepath.Join(root, "@claudecodelaunch", "ccl", "bin", "ccl.exe"),
+		binary:  filepath.Join(root, "@grokbuildx", "gbx", "bin", "gbx.exe"),
 		command: command,
 	}, nil
 }
 
 func npmUpdateArgs(version string) []string {
-	return []string{"install", "-g", "@claudecodelaunch/ccl@" + strings.TrimPrefix(canonicalReleaseTag(version), "v"), "--include=optional", "--prefer-online"}
+	return []string{"install", "-g", "@grokbuildx/gbx@" + strings.TrimPrefix(canonicalReleaseTag(version), "v"), "--include=optional", "--prefer-online"}
 }
 
 func updateViaNpm(version string) error {
@@ -78,10 +78,10 @@ func updateViaNpm(version string) error {
 		return fmt.Errorf("npm update failed: %w; retry with npm %s", err, strings.Join(args, " "))
 	}
 	if recovered {
-		fmt.Printf("\nRecovered ccl %s with the release binary; npm installation did not complete.\n", canonicalReleaseTag(version))
+		fmt.Printf("\nRecovered gbx %s with the release binary; npm installation did not complete.\n", canonicalReleaseTag(version))
 		fmt.Println("To repair the npm package later: npm " + strings.Join(args, " "))
 	} else {
-		fmt.Printf("\n🎉 Successfully updated ccl to %s via npm!\n", canonicalReleaseTag(version))
+		fmt.Printf("\n🎉 Successfully updated gbx to %s via npm!\n", canonicalReleaseTag(version))
 	}
 	return nil
 }
@@ -139,8 +139,8 @@ func verifyNpmInstall(binary, want string) error {
 		return fmt.Errorf("npm-installed %s does not run: %w", binary, err)
 	}
 	got := strings.TrimSpace(string(out))
-	if !strings.HasPrefix(got, "ccl version ") || canonicalReleaseTag(strings.TrimPrefix(got, "ccl version ")) != canonicalReleaseTag(want) {
-		return fmt.Errorf("npm-installed %s reports %q, expected ccl version %s", binary, got, canonicalReleaseTag(want))
+	if !strings.HasPrefix(got, "gbx version ") || canonicalReleaseTag(strings.TrimPrefix(got, "gbx version ")) != canonicalReleaseTag(want) {
+		return fmt.Errorf("npm-installed %s reports %q, expected gbx version %s", binary, got, canonicalReleaseTag(want))
 	}
 	return nil
 }

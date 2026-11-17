@@ -294,7 +294,7 @@ func (g *Gateway) serveBridge(w http.ResponseWriter, r *http.Request, body []byt
 	}
 	response, err := g.callRuntime(r, upstreamBody, "/responses")
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "api_error", "CCL provider connection failed", "")
+		writeError(w, http.StatusBadGateway, "api_error", "GBX provider connection failed", "")
 		return
 	}
 	defer response.Body.Close()
@@ -305,7 +305,7 @@ func (g *Gateway) serveBridge(w http.ResponseWriter, r *http.Request, body []byt
 
 	var notice string
 	if pendingNotice && !compactionRequest {
-		notice = "CCL context migration: resumed from a bounded local transcript excerpt. The encrypted summary was not decrypted; older details may be missing.\n\n"
+		notice = "GBX context migration: resumed from a bounded local transcript excerpt. The encrypted summary was not decrypted; older details may be missing.\n\n"
 	}
 	record := func(result map[string]any) {
 		if result["status"] != "completed" && result["status"] != "incomplete" {
@@ -391,7 +391,7 @@ func readBridgeJSON(body io.Reader, model string) (map[string]any, error) {
 	}
 	var result map[string]any
 	if err := decodeBridgeJSON(raw, &result); err != nil || result["object"] != "response" {
-		return nil, fmt.Errorf("invalid Responses payload from CCL runtime")
+		return nil, fmt.Errorf("invalid Responses payload from GBX runtime")
 	}
 	result["model"] = model
 	return result, nil

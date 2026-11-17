@@ -636,7 +636,7 @@ func TestMessageRightAfterResultWaitsForTheExit(t *testing.T) {
 	}
 	launch := func(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), error) {
 		cmd := exec.Command(executable, "-test.run=TestHelperProcess")
-		cmd.Env = append(os.Environ(), "CCL_WEBUI_HELPER=1", "CCL_WEBUI_HELPER_LINGER=1", "CCL_WEBUI_HELPER_TEXT=done")
+		cmd.Env = append(os.Environ(), "GBX_WEBUI_HELPER=1", "GBX_WEBUI_HELPER_LINGER=1", "GBX_WEBUI_HELPER_TEXT=done")
 		return cmd, func() {}, nil
 	}
 	base := testServer(t, Config{Token: "secret", Launch: launch}).URL

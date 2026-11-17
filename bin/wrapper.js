@@ -13,11 +13,11 @@ function resolveBinary(binDir, os, arch) {
     try {
         return require.resolve(platform.packageName + '/bin/' + platform.binary, { paths: [path.dirname(binDir)] });
     } catch (err) {
-        throw new Error('ccl binary for ' + os + ' ' + arch + ' is not installed.\n' +
+        throw new Error('gbx binary for ' + os + ' ' + arch + ' is not installed.\n' +
             'npm lists a package before it can be downloaded, so an install that ran\n' +
             'right after a release can miss the platform package. Installing again\n' +
             'fetches it; there is no need to uninstall first:\n' +
-            '  npm install -g @claudecodelaunch/ccl@' + packageVersion(binDir));
+            '  npm install -g @grokbuildx/gbx@' + packageVersion(binDir));
     }
 }
 
@@ -37,7 +37,7 @@ function run() {
     catch (err) { console.error(err.message); process.exit(1); }
     var child = spawn(binaryPath, process.argv.slice(2), { stdio: 'inherit' });
     child.on('error', function (err) {
-        console.error('Failed to launch ccl: ' + err.message);
+        console.error('Failed to launch gbx: ' + err.message);
         process.exit(1);
     });
     child.on('close', function (code, signal) {

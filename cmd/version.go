@@ -11,9 +11,9 @@ var Version = "dev"
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Print the version of ccl",
+	Short: "Print the version of gbx",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("ccl version %s\n", Version)
+		fmt.Printf("gbx version %s\n", Version)
 	},
 }
 
@@ -24,5 +24,5 @@ func init() {
 	// is unknown, and because FParseErrWhitelist.UnknownFlags is enabled it
 	// would be dropped silently and the root RunE would launch a session.
 	rootCmd.Version = Version
-	rootCmd.SetVersionTemplate("ccl version {{.Version}}\n")
+	rootCmd.SetVersionTemplate("gbx version {{.Version}}\n")
 }

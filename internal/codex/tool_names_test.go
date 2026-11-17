@@ -13,7 +13,7 @@ func TestCodexMalformedToolNameDoesNotExposeReasoning(t *testing.T) {
 		writeChatTool(w, r, "bad-call", malformed, map[string]any{"input": "private-arguments"})
 	}, "openai", Options{})
 	response := postResponses(t, g, map[string]any{
-		"model": "ccl/chosen/model-a", "stream": true, "input": "fixture",
+		"model": "gbx/chosen/model-a", "stream": true, "input": "fixture",
 		"tools": []any{map[string]any{"type": "custom", "name": "exec"}},
 	})
 	defer response.Body.Close()

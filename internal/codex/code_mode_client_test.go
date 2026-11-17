@@ -80,7 +80,7 @@ for await (const line of readline.createInterface({input:process.stdin})) {
 	if err := classic.Apply(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	output := run("-m", "ccl/chosen/model-a", "-c", `web_search="disabled"`, "--dangerously-bypass-approvals-and-sandbox", "exec", "--json", "--skip-git-repo-check", "Use the computer fixture to read app state.")
+	output := run("-m", "gbx/chosen/model-a", "-c", `web_search="disabled"`, "--dangerously-bypass-approvals-and-sandbox", "exec", "--json", "--skip-git-repo-check", "Use the computer fixture to read app state.")
 	var session string
 	for _, line := range strings.Split(output, "\n") {
 		var event struct {
@@ -97,7 +97,7 @@ for await (const line of readline.createInterface({input:process.stdin})) {
 	if err := classic.Restore(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	// The same catalog field that enables desktop code mode must reach CCL
+	// The same catalog field that enables desktop code mode must reach GBX
 	// through Plan; changing the test gateway directly would miss this bug.
 	native := newModel("native-fixture", "native-fixture", nil, nil)
 	native["tool_mode"] = "code_mode_only"
@@ -111,7 +111,7 @@ for await (const line of readline.createInterface({input:process.stdin})) {
 	if g.Models()[0]["tool_mode"] != "code_mode_only" || g.Models()[0]["node_repl_auto_review_required"] != true {
 		t.Fatal("native client tool mode or review requirement was lost")
 	}
-	output = run("-m", "ccl/chosen/model-a", "-c", `web_search="disabled"`, "--dangerously-bypass-approvals-and-sandbox", "exec", "resume", "--json", "--skip-git-repo-check", session, "Read app state again using the current code-mode tools.")
+	output = run("-m", "gbx/chosen/model-a", "-c", `web_search="disabled"`, "--dangerously-bypass-approvals-and-sandbox", "exec", "resume", "--json", "--skip-git-repo-check", session, "Read app state again using the current code-mode tools.")
 	if calls.Load() != 4 || !sawResult.Load() || !strings.Contains(output, "code-mode-computer-done") {
 		t.Fatalf("code mode did not call client MCP: calls=%d result=%v\n%s", calls.Load(), sawResult.Load(), output)
 	}

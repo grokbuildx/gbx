@@ -16,8 +16,8 @@ import (
 )
 
 // Cursor's desktop CLI sign-in is a browser approval keyed by a PKCE challenge
-// pair: ccl opens the login page, the user approves in the browser, and ccl
-// polls until the tokens appear. CCL owns this authenticator, its poll loop and
+// pair: gbx opens the login page, the user approves in the browser, and gbx
+// polls until the tokens appear. GBX owns this authenticator, its poll loop and
 // its persisted credential format.
 
 const (
@@ -84,7 +84,7 @@ func cursorLoginParamsFor() (cursorLoginParams, error) {
 }
 
 // loginCursor runs Cursor's PKCE browser login and persists the credential the
-// cursorOAuthAuthorizer reads. Metadata is snake_case like every other ccl
+// cursorOAuthAuthorizer reads. Metadata is snake_case like every other gbx
 // credential even though Cursor's poll body is camelCase.
 func loginCursor(ctx context.Context, authDir string, opts LoginOptions) (LoginResult, error) {
 	if ctx == nil {
@@ -180,7 +180,7 @@ func pollCursorTokens(ctx context.Context, client *http.Client, params cursorLog
 		}
 		delay = cursorNextPollDelay(delay)
 	}
-	return cursorTokenPair{}, fmt.Errorf("Cursor authorization timed out; run `ccl oauth cursor` again")
+	return cursorTokenPair{}, fmt.Errorf("Cursor authorization timed out; run `gbx oauth cursor` again")
 }
 
 func cursorNextPollDelay(delay time.Duration) time.Duration {

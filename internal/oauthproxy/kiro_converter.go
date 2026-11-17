@@ -587,7 +587,7 @@ func kiroConversationID(sessionKey string) string {
 	if parsed, err := uuid.Parse(sessionKey); err == nil {
 		return parsed.String()
 	}
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("ccl-kiro-session:"+sessionKey)).String()
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("gbx-kiro-session:"+sessionKey)).String()
 }
 
 func kiroWorkingDirectory() string {

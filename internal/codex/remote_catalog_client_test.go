@@ -12,7 +12,7 @@ import (
 	"github.com/grokbuildx/gbx/internal/provider"
 )
 
-func TestRealCodexRemoteCatalogListsCCLModels(t *testing.T) {
+func TestRealCodexRemoteCatalogListsGBXModels(t *testing.T) {
 	home, _ := isolatedCodexClient(t)
 	// Opt in explicitly; clients can disable API-key catalog discovery.
 	original := []byte("[features]\napi_key_model_discovery = true\n")
@@ -35,12 +35,12 @@ func TestRealCodexRemoteCatalogListsCCLModels(t *testing.T) {
 	models := readClientModelList(t, home)
 	found := false
 	for _, model := range models {
-		if model.Model == "ccl/chosen/model-a" {
+		if model.Model == "gbx/chosen/model-a" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("app-server did not read the remote CCL catalog: %+v", models)
+		t.Fatalf("app-server did not read the remote GBX catalog: %+v", models)
 	}
 	if err := overlay.Restore(t.Context()); err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func TestIndependentDefaultSelectionJournalRecoversBothWindows(t *testing.T) {
 			if err := overlay.Apply(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			next, err := overlay.PlanModelSelection([]Model{{"slug": "ccl/next/new-model"}})
+			next, err := overlay.PlanModelSelection([]Model{{"slug": "gbx/next/new-model"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -120,7 +120,7 @@ func TestIndependentDefaultSelectionJournalRecoversBothWindows(t *testing.T) {
 					t.Fatal(err)
 				}
 				raw, _ := os.ReadFile(path)
-				if !strings.Contains(string(raw), "ccl/next/new-model") {
+				if !strings.Contains(string(raw), "gbx/next/new-model") {
 					t.Fatal("owned default selection not rebound")
 				}
 			}
@@ -131,7 +131,7 @@ func TestIndependentDefaultSelectionJournalRecoversBothWindows(t *testing.T) {
 			}
 			raw, _ := os.ReadFile(path)
 			fields, err := configFields(raw)
-			if err != nil || fields["model"] != "native-original" || strings.Contains(string(raw), "ccl_proxy") {
+			if err != nil || fields["model"] != "native-original" || strings.Contains(string(raw), "gbx_proxy") {
 				t.Fatalf("selection recovery failed: %s %v", raw, err)
 			}
 		})

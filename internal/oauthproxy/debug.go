@@ -16,12 +16,12 @@ import (
 	"time"
 )
 
-// defaultLogName is the base name for ccl's per-session runtime logs. The full
-// base path can be overridden with CCL_LOG_FILE (CCL_DEBUG_LOG remains a
+// defaultLogName is the base name for gbx's per-session runtime logs. The full
+// base path can be overridden with GBX_LOG_FILE (GBX_DEBUG_LOG remains a
 // compatibility fallback for existing scripts).
-const defaultLogName = "ccl-debug.log"
+const defaultLogName = "gbx-debug.log"
 
-// LogLevel is ccl's persisted representation of the standard slog levels.
+// LogLevel is gbx's persisted representation of the standard slog levels.
 // "off" disables file logging entirely.
 type LogLevel string
 
@@ -44,7 +44,7 @@ var (
 
 type requestLogIDKey struct{}
 
-// ParseLogLevel accepts ccl's standard logging levels.
+// ParseLogLevel accepts gbx's standard logging levels.
 func ParseLogLevel(raw string) (LogLevel, bool) {
 	switch LogLevel(strings.ToLower(strings.TrimSpace(raw))) {
 	case LogLevelOff:
@@ -94,7 +94,7 @@ func closeLogSinkLocked() {
 	logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// SetLogLevel opens ccl's current per-session log sink. A level of "off"
+// SetLogLevel opens gbx's current per-session log sink. A level of "off"
 // disables logging; all other levels use Go's standard slog text handler.
 // File-system failures are returned instead of silently disabling diagnostics.
 func SetLogLevel(level LogLevel, path string) error {
@@ -140,22 +140,22 @@ func CloseLog() {
 	closeLogSinkLocked()
 }
 
-// LogDir is ~/.ccl/logs, where ccl keeps its diagnostics.
+// LogDir is ~/.gbx/logs, where gbx keeps its diagnostics.
 func LogDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".ccl", "logs"), nil
+	return filepath.Join(home, ".gbx", "logs"), nil
 }
 
 // ResolveLogTemplatePath returns the filename template used to derive each
-// suffixed session log. The template itself is never opened by ccl.
+// suffixed session log. The template itself is never opened by gbx.
 func ResolveLogTemplatePath() string {
-	if v := strings.TrimSpace(os.Getenv("CCL_LOG_FILE")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("GBX_LOG_FILE")); v != "" {
 		return v
 	}
-	if v := strings.TrimSpace(os.Getenv("CCL_DEBUG_LOG")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("GBX_DEBUG_LOG")); v != "" {
 		return v
 	}
 	dir, err := LogDir()
@@ -172,7 +172,7 @@ func LogConfigured() bool {
 	return logLevel != LogLevelOff
 }
 
-// LogEnabled reports whether ccl's current session file is active.
+// LogEnabled reports whether gbx's current session file is active.
 func LogEnabled() bool {
 	logStateMu.RLock()
 	defer logStateMu.RUnlock()
@@ -264,7 +264,7 @@ func LogDebugEnabled() bool {
 	return CurrentLogLevel() == LogLevelDebug
 }
 
-// withRequestLogID gives every request handled by a ccl-owned data plane a
+// withRequestLogID gives every request handled by a gbx-owned data plane a
 // compact correlation ID. IDs only need to be unique inside one process: every
 // Claude session already owns a separate log file.
 func withRequestLogID(ctx context.Context) (context.Context, string) {
@@ -316,12 +316,12 @@ func logEvent(level slog.Level, event string, attrs ...any) {
 	l.Log(ctx, level, event, attrs...)
 }
 
-// LogInfof writes a normal runtime event. Existing ccl diagnostics use this
-// level so `ccl log on` is useful without exposing request payloads.
+// LogInfof writes a normal runtime event. Existing gbx diagnostics use this
+// level so `gbx log on` is useful without exposing request payloads.
 func LogInfof(format string, args ...any) { logf(slog.LevelInfo, format, args...) }
 
 // LogDebugf writes sensitive or high-volume detail visible only with
-// `ccl log --level debug`.
+// `gbx log --level debug`.
 func LogDebugf(format string, args ...any) { logf(slog.LevelDebug, format, args...) }
 
 // LogWarnf and LogErrorf are available for callers that can classify an event.

@@ -11,7 +11,7 @@ import (
 
 func TestSetLogLevelWritesAndDisables(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "ccl.log")
+	path := filepath.Join(dir, "gbx.log")
 	SetLogLevel(LogLevelOff, "")
 
 	SetLogLevel(LogLevelInfo, path)
@@ -43,7 +43,7 @@ func TestSetLogLevelWritesAndDisables(t *testing.T) {
 func TestConfigureLogLevelDoesNotCreateSharedFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("CCL_LOG_FILE", "")
+	t.Setenv("GBX_LOG_FILE", "")
 	ConfigureLogLevel(LogLevelInfo)
 	t.Cleanup(func() { _ = SetLogLevel(LogLevelOff, "") })
 	if !LogConfigured() || LogEnabled() {
@@ -57,14 +57,14 @@ func TestConfigureLogLevelDoesNotCreateSharedFile(t *testing.T) {
 func TestEnsureSessionLogCreatesOnlySuffixedRuntimeFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("CCL_LOG_FILE", "")
+	t.Setenv("GBX_LOG_FILE", "")
 	ConfigureLogLevel(LogLevelInfo)
 	t.Cleanup(func() { _ = SetLogLevel(LogLevelOff, "") })
 	path, owned, err := EnsureSessionLog("runtime")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !owned || !LogEnabled() || !strings.Contains(filepath.Base(path), "ccl-debug-runtime_") {
+	if !owned || !LogEnabled() || !strings.Contains(filepath.Base(path), "gbx-debug-runtime_") {
 		t.Fatalf("path=%q owned=%t enabled=%t", path, owned, LogEnabled())
 	}
 	if _, err := os.Stat(ResolveLogTemplatePath()); !os.IsNotExist(err) {
@@ -184,25 +184,25 @@ func TestResolveLogTemplatePathDefaultsAndOverrides(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv("CCL_LOG_FILE", "")
-	t.Setenv("CCL_DEBUG_LOG", "")
+	t.Setenv("GBX_LOG_FILE", "")
+	t.Setenv("GBX_DEBUG_LOG", "")
 
-	want := filepath.Join(home, ".ccl", "logs", "ccl-debug.log")
+	want := filepath.Join(home, ".gbx", "logs", "gbx-debug.log")
 	if got := ResolveLogTemplatePath(); got != want {
 		t.Fatalf("ResolveLogTemplatePath = %q, want %q", got, want)
 	}
-	t.Setenv("CCL_LOG_FILE", "/var/log/elsewhere.log")
+	t.Setenv("GBX_LOG_FILE", "/var/log/elsewhere.log")
 	if got := ResolveLogTemplatePath(); got != "/var/log/elsewhere.log" {
-		t.Fatalf("CCL_LOG_FILE override ignored: %q", got)
+		t.Fatalf("GBX_LOG_FILE override ignored: %q", got)
 	}
 }
 
 func TestSessionLogPathIsDerivedFromBase(t *testing.T) {
-	t.Setenv("CCL_LOG_FILE", "/var/log/ccl/debug.log")
-	if got, want := SessionLogPath("claude_9f2c1b7d"), "/var/log/ccl/debug-claude_9f2c1b7d.log"; got != want {
+	t.Setenv("GBX_LOG_FILE", "/var/log/gbx/debug.log")
+	if got, want := SessionLogPath("claude_9f2c1b7d"), "/var/log/gbx/debug-claude_9f2c1b7d.log"; got != want {
 		t.Fatalf("SessionLogPath = %q, want %q", got, want)
 	}
-	if got, want := SessionLogPath("../../etc/passwd"), "/var/log/ccl/debug-etcpasswd.log"; got != want {
+	if got, want := SessionLogPath("../../etc/passwd"), "/var/log/gbx/debug-etcpasswd.log"; got != want {
 		t.Fatalf("sanitized session path = %q, want %q", got, want)
 	}
 }
@@ -224,7 +224,7 @@ func TestSetLogLevelCreatesTheLogDirectory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv("CCL_LOG_FILE", "")
+	t.Setenv("GBX_LOG_FILE", "")
 	t.Cleanup(func() { SetLogLevel(LogLevelOff, "") })
 
 	path := ResolveLogTemplatePath()

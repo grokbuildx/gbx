@@ -54,7 +54,7 @@ func (g *Gateway) RefreshMetadata(configured provider.Provider, persist func([]M
 }
 
 // RefreshNativeCatalog re-reads the client's native catalog capabilities (such
-// as code_mode_only and shell_type) without inspecting CCL's temporary overlay.
+// as code_mode_only and shell_type) without inspecting GBX's temporary overlay.
 func (g *Gateway) RefreshNativeCatalog(ctx context.Context, overlay *Overlay) {
 	home, err := Home()
 	if err != nil {
@@ -74,7 +74,7 @@ func (g *Gateway) RefreshNativeCatalog(ctx context.Context, overlay *Overlay) {
 	}
 }
 
-// RefreshCatalog updates only CCL-owned metadata in the existing file. It never
+// RefreshCatalog updates only GBX-owned metadata in the existing file. It never
 // rewrites config.toml, rotates independent credentials, or reconstructs native
 // entries. The catalog path and overlay's restoration journal stay unchanged.
 func (o *Overlay) RefreshCatalog(models []Model) error {
@@ -114,7 +114,7 @@ func (o *Overlay) RefreshCatalog(models []Model) error {
 	return fsutil.WriteFileAtomic(o.CatalogPath, updated, 0o600)
 }
 
-// ReplaceCatalog changes the complete CCL model set while preserving all
+// ReplaceCatalog changes the complete GBX model set while preserving all
 // native rows and unknown native fields from the current catalog file.
 func (o *Overlay) ReplaceCatalog(models []Model) error {
 	raw, err := os.ReadFile(o.CatalogPath)
@@ -128,7 +128,7 @@ func (o *Overlay) ReplaceCatalog(models []Model) error {
 	native := Catalog{}
 	for _, model := range catalog.Models {
 		id, _ := model["slug"].(string)
-		if !strings.HasPrefix(strings.ToLower(id), "ccl/") {
+		if !strings.HasPrefix(strings.ToLower(id), "gbx/") {
 			native.Models = append(native.Models, model)
 		}
 	}

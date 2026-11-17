@@ -70,7 +70,7 @@ func TestFormatUsageSummarySingleModelHasNoTotalLine(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("expected exactly 1 line for a single model, got %d: %q", len(lines), summary)
 	}
-	if !strings.HasPrefix(lines[0], "[ccl usage] claude-opus-5: ") {
+	if !strings.HasPrefix(lines[0], "[gbx usage] claude-opus-5: ") {
 		t.Fatalf("unexpected line prefix: %q", lines[0])
 	}
 	if !strings.Contains(lines[0], "1K in") || !strings.Contains(lines[0], "200 out") || !strings.Contains(lines[0], "(3 req)") {
@@ -97,7 +97,7 @@ func TestFormatUsageSummarySortsBySizeAndAddsTotal(t *testing.T) {
 	if !strings.Contains(lines[1], "small-model") {
 		t.Fatalf("expected the smaller model second, got %q", lines[1])
 	}
-	if !strings.HasPrefix(lines[2], "[ccl usage] total: ") {
+	if !strings.HasPrefix(lines[2], "[gbx usage] total: ") {
 		t.Fatalf("expected a trailing total line, got %q", lines[2])
 	}
 	if !strings.Contains(lines[2], "(3 req)") {

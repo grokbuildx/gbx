@@ -19,7 +19,7 @@ import (
 
 func writeGeminiCredential(t *testing.T, home, name string) string {
 	t.Helper()
-	authDir := filepath.Join(home, ".ccl", "auth")
+	authDir := filepath.Join(home, ".gbx", "auth")
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatal(err)
 	}

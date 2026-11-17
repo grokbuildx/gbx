@@ -63,7 +63,7 @@ func applyXaiGrokHeaders(header http.Header, sessionID, requestID, agentID, mode
 }
 
 // xaiOAuthAuthorizer resolves and refreshes an xAI/Grok OAuth credential. The
-// credential is written by CCL during `ccl oauth grok`, and this authorizer
+// credential is written by GBX during `gbx oauth grok`, and this authorizer
 // reads the persisted access_token, refresh_token, and token_endpoint fields.
 type xaiOAuthAuthorizer struct {
 	path   string
@@ -128,7 +128,7 @@ func (a *xaiOAuthAuthorizer) load() (*xaiOAuthCredential, error) {
 	raw, err := os.ReadFile(a.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no xAI credentials found; run `ccl oauth grok` first")
+			return nil, fmt.Errorf("no xAI credentials found; run `gbx oauth grok` first")
 		}
 		return nil, fmt.Errorf("read xAI credential %s: %w", filepath.Base(a.path), err)
 	}
@@ -227,7 +227,7 @@ func (a *xaiOAuthAuthorizer) refresh(ctx context.Context, credential *xaiOAuthCr
 	return credential, nil
 }
 
-// startXaiOAuth starts the CCL-owned Grok Responses data plane. Grok speaks the
+// startXaiOAuth starts the GBX-owned Grok Responses data plane. Grok speaks the
 // OpenAI Responses protocol, so it reuses the Codex Responses converter, stream
 // pipeline, and lifecycle, swapping Codex identity for xAI/Grok identity and the
 // Codex OAuth authorizer for xAI's.
