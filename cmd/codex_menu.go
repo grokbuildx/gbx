@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/config"
-	"github.com/claude-code-launch/ccl/internal/fsutil"
-	"github.com/claude-code-launch/ccl/internal/provider"
-	"github.com/claude-code-launch/ccl/internal/proxymanager"
+	"github.com/grokbuildx/gbx/internal/config"
+	"github.com/grokbuildx/gbx/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/provider"
+	"github.com/grokbuildx/gbx/internal/proxymanager"
 	"github.com/spf13/cobra"
 )
 

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 func TestCodexCatalogPublishesReasoningControls(t *testing.T) {

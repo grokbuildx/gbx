@@ -4,9 +4,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
-	"github.com/claude-code-launch/ccl/internal/protocol"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 var grokAcceptedEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}

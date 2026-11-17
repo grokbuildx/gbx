@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/protocol"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 // Model preserves Codex's catalog fields, including fields introduced by newer

@@ -15,11 +15,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/cloudsync"
-	"github.com/claude-code-launch/ccl/internal/config"
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
-	"github.com/claude-code-launch/ccl/internal/protocol"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/cloudsync"
+	"github.com/grokbuildx/gbx/internal/config"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/provider"
 	"github.com/spf13/cobra"
 )
 

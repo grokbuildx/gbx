@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/fsutil"
 )
 
 // Workspaces are the directories conversations may run in: each --workspace,

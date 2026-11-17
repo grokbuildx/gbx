@@ -21,7 +21,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/claude-code-launch/ccl/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/fsutil"
 )
 
 // The workspace file API lets the page browse, read, edit and search the

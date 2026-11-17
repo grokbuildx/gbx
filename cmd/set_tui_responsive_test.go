@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/locale"
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
 	tui "github.com/grindlemire/go-tui"
+	"github.com/grokbuildx/gbx/internal/locale"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
 )
 
 func assertFrameFits(t *testing.T, frame string, width, height int) {

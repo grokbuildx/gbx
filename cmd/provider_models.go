@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/modelrouting"
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
-	"github.com/claude-code-launch/ccl/internal/protocol"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/modelrouting"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/provider"
 	"github.com/spf13/cobra"
 )
 

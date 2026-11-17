@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/config"
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/config"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 func TestOAuthRuntimeTypeDefaults(t *testing.T) {

@@ -7,10 +7,10 @@ import (
 
 	tui "github.com/grindlemire/go-tui"
 
-	"github.com/claude-code-launch/ccl/internal/locale"
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
-	"github.com/claude-code-launch/ccl/internal/protocol"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/locale"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 func TestTruncateMiddleASCII(t *testing.T) {

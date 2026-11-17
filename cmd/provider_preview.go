@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/groklaunch"
+	"github.com/grokbuildx/gbx/internal/groklaunch"
 	"github.com/spf13/cobra"
 )
 

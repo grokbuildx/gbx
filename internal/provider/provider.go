@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/modelrouting"
+	"github.com/grokbuildx/gbx/internal/modelrouting"
 	"gopkg.in/yaml.v3"
 )
 

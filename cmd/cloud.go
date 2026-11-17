@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/term"
-	"github.com/claude-code-launch/ccl/internal/cloudsync"
+	"github.com/grokbuildx/gbx/internal/cloudsync"
 	"github.com/spf13/cobra"
 )
 

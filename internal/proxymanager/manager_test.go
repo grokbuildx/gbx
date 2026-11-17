@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/fsutil"
-	"github.com/claude-code-launch/ccl/internal/locale"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/locale"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 func isolatedManager(t *testing.T) (*Manager, string) {

@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/process"
 	"github.com/creack/pty"
 	"github.com/google/uuid"
+	"github.com/grokbuildx/gbx/internal/process"
 )
 
 // The web terminal: a shell on a pseudo-terminal in the workspace. It is off

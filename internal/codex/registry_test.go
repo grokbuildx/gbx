@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 func registryBinding(t *testing.T, name, model, key string) RuntimeBinding {

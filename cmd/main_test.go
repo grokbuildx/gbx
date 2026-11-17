@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/locale"
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/locale"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
 )
 
 // TestMain keeps the whole package away from the developer's real ~/.ccl and

@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/codexidentity"
+	"github.com/grokbuildx/gbx/internal/codexidentity"
 )
 
 func writeTestJSON(writer http.ResponseWriter, value any) {

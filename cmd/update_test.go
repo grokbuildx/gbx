@@ -21,10 +21,10 @@ func TestReleaseAssetName(t *testing.T) {
 }
 
 func TestReleaseDownloadURL(t *testing.T) {
-	if got := releaseDownloadURL("v1.5.6", "ccl-darwin-arm64"); got != "https://github.com/claude-code-launch/ccl/releases/download/v1.5.6/ccl-darwin-arm64" {
+	if got := releaseDownloadURL("v1.5.6", "ccl-darwin-arm64"); got != "https://github.com/grokbuildx/gbx/releases/download/v1.5.6/ccl-darwin-arm64" {
 		t.Errorf("versioned URL = %q", got)
 	}
-	if got := releaseDownloadURL("unknown", "ccl-linux-amd64"); got != "https://github.com/claude-code-launch/ccl/releases/latest/download/ccl-linux-amd64" {
+	if got := releaseDownloadURL("unknown", "ccl-linux-amd64"); got != "https://github.com/grokbuildx/gbx/releases/latest/download/ccl-linux-amd64" {
 		t.Errorf("latest URL = %q", got)
 	}
 }

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
 )
 
 // Per-session auth files live

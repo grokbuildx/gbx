@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 func TestRealCodexRemoteCatalogListsCCLModels(t *testing.T) {

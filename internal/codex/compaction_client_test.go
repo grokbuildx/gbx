@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/process"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/process"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 // Exercise remote compaction with the real client's streaming decoder and

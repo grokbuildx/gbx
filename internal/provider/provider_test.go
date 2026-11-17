@@ -3,7 +3,7 @@ package provider_test
 import (
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 func TestContextPresetFromEnv(t *testing.T) {

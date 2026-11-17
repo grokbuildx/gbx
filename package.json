@@ -4,7 +4,7 @@
   "description": "Launcher and provider proxy for Grok Build and Codex. Source version is a placeholder; release workflow rewrites it from the git tag before npm publish.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/claude-code-launch/ccl.git"
+    "url": "git+https://github.com/grokbuildx/gbx.git"
   },
   "bin": {
     "ccl": "bin/ccl.exe"

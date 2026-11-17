@@ -1,4 +1,4 @@
-module github.com/claude-code-launch/ccl
+module github.com/grokbuildx/gbx
 
 go 1.26.0
 

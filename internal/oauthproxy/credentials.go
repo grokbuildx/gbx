@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/claude-code-launch/ccl/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/fsutil"
 )
 
 // CredentialInfo is the non-secret state doctor reads from ~/.ccl/auth.

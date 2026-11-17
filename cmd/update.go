@@ -18,13 +18,13 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/term"
-	"github.com/claude-code-launch/ccl/internal/locale"
+	"github.com/grokbuildx/gbx/internal/locale"
 	"github.com/spf13/cobra"
 )
 
 // cclRepoReleases is the base URL for ccl's GitHub release asset downloads. Asset
 // names are produced by .github/workflows/release.yml and consumed by bin/wrapper.js.
-const cclRepoReleases = "https://github.com/claude-code-launch/ccl/releases/download"
+const cclRepoReleases = "https://github.com/grokbuildx/gbx/releases/download"
 
 // releaseArchiveSuffix is appended to a binary's asset name on GitHub releases:
 // binaries ship gzip-compressed (about a third of their size). The npm package
@@ -38,7 +38,7 @@ var maxReleaseBinaryBytes int64 = 256 << 20
 // latestReleaseAPI is the GitHub endpoint naming the newest published release.
 // It is the version source of truth: the GitHub release and its assets exist
 // before the npm job that publishes the matching package has run.
-var latestReleaseAPI = "https://api.github.com/repos/claude-code-launch/ccl/releases/latest"
+var latestReleaseAPI = "https://api.github.com/repos/grokbuildx/gbx/releases/latest"
 
 var updateHTTPClient = &http.Client{Timeout: 5 * time.Second}
 
@@ -133,14 +133,14 @@ func runUpdate(method string) error {
 		}
 		return updateViaNpm(latestVersion)
 	case "go":
-		fmt.Println("Updating via Go... Running 'go install github.com/claude-code-launch/ccl@latest'")
-		if err := runUpdateCommand("go", "install", "github.com/claude-code-launch/ccl@latest"); err != nil {
+		fmt.Println("Updating via Go... Running 'go install github.com/grokbuildx/gbx@latest'")
+		if err := runUpdateCommand("go", "install", "github.com/grokbuildx/gbx@latest"); err != nil {
 			return fmt.Errorf("go update failed: %w", err)
 		}
 		fmt.Println("\n🎉 Successfully updated ccl to the latest version via Go!")
 	case "manual":
 		fmt.Println("\nPlease visit the following link to check alternative installation methods:")
-		fmt.Println("🔗 https://github.com/claude-code-launch/ccl#安装与编译")
+		fmt.Println("🔗 https://github.com/grokbuildx/gbx#安装与编译")
 	default:
 		fmt.Println("Update cancelled.")
 	}
@@ -401,7 +401,7 @@ func releaseDownloadURL(version, asset string) string {
 	if version != "" && version != "unknown" {
 		return fmt.Sprintf("%s/%s/%s", cclRepoReleases, canonicalReleaseTag(version), asset)
 	}
-	return fmt.Sprintf("https://github.com/claude-code-launch/ccl/releases/latest/download/%s", asset)
+	return fmt.Sprintf("https://github.com/grokbuildx/gbx/releases/latest/download/%s", asset)
 }
 
 func canonicalReleaseTag(version string) string {
@@ -511,7 +511,7 @@ func validateReleaseBinary(path string) error {
 	if err != nil {
 		return fmt.Errorf("download is not a Go executable: %w", err)
 	}
-	const module = "github.com/claude-code-launch/ccl"
+	const module = "github.com/grokbuildx/gbx"
 	ours := info.Path == module || info.Main.Path == module
 	if info.Path == "command-line-arguments" {
 		for _, dep := range info.Deps {

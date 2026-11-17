@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/config"
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
-	"github.com/claude-code-launch/ccl/internal/provider"
 	acp "github.com/coder/acp-go-sdk"
+	"github.com/grokbuildx/gbx/internal/config"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 func TestBuildArgs(t *testing.T) {

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/config"
-	"github.com/claude-code-launch/ccl/internal/locale"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/config"
+	"github.com/grokbuildx/gbx/internal/locale"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 const (

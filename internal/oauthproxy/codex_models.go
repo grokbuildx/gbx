@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/codexidentity"
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/codexidentity"
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 func discoverCodexModels(ctx context.Context, endpoint string, authorizer *codexOAuthAuthorizer) ([]string, error) {

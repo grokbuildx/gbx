@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 func writeRawConfig(t *testing.T, body string) string {

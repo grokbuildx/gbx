@@ -24,8 +24,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/provider"
 	"github.com/klauspost/compress/zstd"
 )
 

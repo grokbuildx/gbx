@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/codex"
+	"github.com/grokbuildx/gbx/internal/codex"
 )
 
 func TestCatalogCapabilityPolicyAndJournalCompatibility(t *testing.T) {

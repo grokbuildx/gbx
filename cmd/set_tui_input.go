@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
-	"github.com/claude-code-launch/ccl/internal/locale"
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
-	"github.com/claude-code-launch/ccl/internal/provider"
 	tui "github.com/grindlemire/go-tui"
+	"github.com/grokbuildx/gbx/internal/locale"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 // rowClickLabels maps a configuration row to the label prefixes a click (or

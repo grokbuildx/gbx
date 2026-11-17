@@ -7,7 +7,7 @@ import (
 
 	tui "github.com/grindlemire/go-tui"
 
-	"github.com/claude-code-launch/ccl/internal/locale"
+	"github.com/grokbuildx/gbx/internal/locale"
 )
 
 // selectViewHeight is how many list items are visible at once before the

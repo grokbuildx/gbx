@@ -22,11 +22,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/codex"
-	"github.com/claude-code-launch/ccl/internal/fsutil"
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/codex"
+	"github.com/grokbuildx/gbx/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 type State struct {

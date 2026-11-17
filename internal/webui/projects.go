@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/claude-code-launch/ccl/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/fsutil"
 )
 
 // ProjectDefaults are what a new conversation in a project starts with when

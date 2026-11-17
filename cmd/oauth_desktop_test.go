@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/config"
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/config"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
 )
 
 // isolateAutoClawDesktopAuth points the platform's desktop-login lookup at the

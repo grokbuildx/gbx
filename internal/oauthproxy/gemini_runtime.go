@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/protocol"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )

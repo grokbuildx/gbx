@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 func TestProxyCommandDoesNotFallThroughToClaude(t *testing.T) {

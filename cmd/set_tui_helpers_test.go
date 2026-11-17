@@ -7,8 +7,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/claude-code-launch/ccl/internal/provider"
 	tui "github.com/grindlemire/go-tui"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 // Test-only shorthands over the live probe and layout helpers.

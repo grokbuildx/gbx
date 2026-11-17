@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 // Cursor's agent API is a bidirectional Connect stream: CCL sends one Run

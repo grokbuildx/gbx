@@ -17,16 +17,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/config"
-	"github.com/claude-code-launch/ccl/internal/groklaunch"
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
-	"github.com/claude-code-launch/ccl/internal/process"
-	"github.com/claude-code-launch/ccl/internal/protocol"
-	"github.com/claude-code-launch/ccl/internal/provider"
-	"github.com/claude-code-launch/ccl/internal/providersession"
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/google/uuid"
+	"github.com/grokbuildx/gbx/internal/config"
+	"github.com/grokbuildx/gbx/internal/groklaunch"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/process"
+	"github.com/grokbuildx/gbx/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/provider"
+	"github.com/grokbuildx/gbx/internal/providersession"
 )
 
 // EffortLevels are the reasoning effort levels Grok Build accepts.

@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 func providerAuthLabel(p provider.Provider) string {

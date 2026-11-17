@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/locale"
-	"github.com/claude-code-launch/ccl/internal/provider"
 	tui "github.com/grindlemire/go-tui"
+	"github.com/grokbuildx/gbx/internal/locale"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 // statusSpinners is the frame cycle every in-flight status line shares, so the

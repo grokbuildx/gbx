@@ -1,6 +1,6 @@
 package main
 
-import "github.com/claude-code-launch/ccl/cmd"
+import "github.com/grokbuildx/gbx/cmd"
 
 func main() {
 	cmd.Execute()

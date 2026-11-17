@@ -11,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/claude-code-launch/ccl/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/fsutil"
 )
 
 // Changes keep only fields owned by this proxy. Restore compares the current

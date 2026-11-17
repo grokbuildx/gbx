@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/fsutil"
 )
 
 // Snapshot is a validated catalog fetched during configuration. Offline means

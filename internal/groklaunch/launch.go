@@ -15,11 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/modelrouting"
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
-	"github.com/claude-code-launch/ccl/internal/process"
-	"github.com/claude-code-launch/ccl/internal/provider"
-	"github.com/claude-code-launch/ccl/internal/providersession"
+	"github.com/grokbuildx/gbx/internal/modelrouting"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/process"
+	"github.com/grokbuildx/gbx/internal/provider"
+	"github.com/grokbuildx/gbx/internal/providersession"
 )
 
 // Launch is a prepared Grok Build process spec: its embedded loopback

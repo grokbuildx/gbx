@@ -3,7 +3,7 @@ package provider
 import (
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/modelrouting"
+	"github.com/grokbuildx/gbx/internal/modelrouting"
 )
 
 // Context preset spellings persisted in Provider.ContextPreset.

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/locale"
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
-	"github.com/claude-code-launch/ccl/internal/protocol"
 	tui "github.com/grindlemire/go-tui"
+	"github.com/grokbuildx/gbx/internal/locale"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 func TestProtocolDetectionRejectsFallbackPages(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/locale"
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/locale"
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 // keyVerifyAsync sends one minimal, authenticated inference request for the

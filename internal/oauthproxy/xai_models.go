@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 type xaiModel struct {

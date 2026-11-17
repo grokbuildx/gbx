@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/config"
-	"github.com/claude-code-launch/ccl/internal/process"
-	"github.com/claude-code-launch/ccl/internal/provider"
-	"github.com/claude-code-launch/ccl/internal/proxymanager"
+	"github.com/grokbuildx/gbx/internal/config"
+	"github.com/grokbuildx/gbx/internal/process"
+	"github.com/grokbuildx/gbx/internal/provider"
+	"github.com/grokbuildx/gbx/internal/proxymanager"
 )
 
 // The real Codex reads the exact config written by ccl codex start. The native

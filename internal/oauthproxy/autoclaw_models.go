@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 const autoClawRuntimeConfigMaxBytes = int64(8 << 20)

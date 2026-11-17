@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/modelrouting"
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/modelrouting"
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 const (

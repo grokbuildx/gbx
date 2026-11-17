@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
-	"github.com/claude-code-launch/ccl/internal/process"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/process"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 // Check the app-server API used by the desktop picker, including independent

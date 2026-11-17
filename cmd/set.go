@@ -12,13 +12,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/config"
+	"github.com/grokbuildx/gbx/internal/config"
 	// 🔥 引入 ccl 统一的国际化组件
-	"github.com/claude-code-launch/ccl/internal/locale"
-	"github.com/claude-code-launch/ccl/internal/modelrouting"
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
-	"github.com/claude-code-launch/ccl/internal/protocol"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/locale"
+	"github.com/grokbuildx/gbx/internal/modelrouting"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/provider"
 	"github.com/spf13/cobra"
 
 	// 统一使用指定的私有域 v2 包

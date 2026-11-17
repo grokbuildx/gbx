@@ -29,7 +29,7 @@ Effective date / 生效日期: 2026-10-16
 6. **Changes.** These terms may change. Changes are published in this file,
    and its history is visible in the repository. Continuing to use ccl after
    a change means you accept the updated terms.
-7. **Contact.** <https://github.com/claude-code-launch/ccl/issues>
+7. **Contact.** <https://github.com/grokbuildx/gbx/issues>
 
 ## 中文
 
@@ -39,4 +39,4 @@ Effective date / 生效日期: 2026-10-16
 4. **你的数据与凭据。** 你对自己配置的 API Key、令牌和账号，以及电脑和云账号的安全负责。云同步如何处理你的数据，见[隐私政策](privacy.md)。
 5. **免责与责任限制。** ccl 按“现状”提供，不附带任何形式的保证。在法律允许的范围内，作者不对因使用 ccl 产生的任何索赔、损害或其他责任负责，包括第三方服务产生的费用、数据丢失或凭据泄露，具体以 MIT 许可证为准。
 6. **变更。** 本条款可能更新。变更会发布在此文件中，修改历史可在仓库中查看。变更后继续使用 ccl，即表示你接受更新后的条款。
-7. **联系。** <https://github.com/claude-code-launch/ccl/issues>
+7. **联系。** <https://github.com/grokbuildx/gbx/issues>

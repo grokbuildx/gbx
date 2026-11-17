@@ -2,18 +2,18 @@
 
 Effective date / 生效日期: 2026-10-21
 
-[English](#english) · [中文](#中文) · [Home / 首页](https://claude-code-launch.github.io)
+[English](#english) · [中文](#中文) · [Home / 首页](https://grokbuildx.github.io)
 
 ## English
 
-This policy explains how **ccl** (<https://claude-code-launch.github.io>), the
+This policy explains how **ccl** (<https://grokbuildx.github.io>), the
 application shown as "ccl" on the Google sign-in screen, accesses, uses,
 stores and shares data, including data from your Google account.
 
 ### 1. About ccl
 
 ccl is a free, open-source command-line tool for software developers. It
-connects Grok Build and Codex to the model provider you choose. Source code: <https://github.com/claude-code-launch/ccl>.
+connects Grok Build and Codex to the model provider you choose. Source code: <https://github.com/grokbuildx/gbx>.
 
 ccl runs entirely on your own computer. Its developers operate **no servers,
 no user accounts, no analytics and no telemetry**, and do not receive,
@@ -107,16 +107,16 @@ ccl is a developer tool and is not directed to children under 13.
 
 Changes to this policy are published on this page with a new effective date,
 and the full history is public in
-<https://github.com/claude-code-launch/claude-code-launch.github.io>.
-Questions or requests: <https://github.com/claude-code-launch/ccl/issues>.
+<https://github.com/grokbuildx/grokbuildx.github.io>.
+Questions or requests: <https://github.com/grokbuildx/gbx/issues>.
 
 ## 中文
 
-本政策说明 **ccl**（<https://claude-code-launch.github.io>，在 Google 登录页面上显示为“ccl”的应用）如何访问、使用、存储和共享数据，包括来自你 Google 账号的数据。
+本政策说明 **ccl**（<https://grokbuildx.github.io>，在 Google 登录页面上显示为“ccl”的应用）如何访问、使用、存储和共享数据，包括来自你 Google 账号的数据。
 
 ### 1. 关于 ccl
 
-ccl 是一款免费、开源的开发者命令行工具，用来为 Grok Build 和 Codex 接入你选择的模型 provider。源代码：<https://github.com/claude-code-launch/ccl>。
+ccl 是一款免费、开源的开发者命令行工具，用来为 Grok Build 和 Codex 接入你选择的模型 provider。源代码：<https://github.com/grokbuildx/gbx>。
 
 ccl 完全在你自己的电脑上运行。其开发者**没有服务器、没有账号体系、没有分析或遥测**，不会接收、收集或存储你的任何数据。
 
@@ -170,5 +170,5 @@ ccl 是开发者工具，不面向 13 岁以下儿童。
 ### 6. 变更与联系
 
 本政策的变更会发布在本页面并更新生效日期，完整修改历史公开于
-<https://github.com/claude-code-launch/claude-code-launch.github.io>。
-如有问题或请求，请联系：<https://github.com/claude-code-launch/ccl/issues>。
+<https://github.com/grokbuildx/grokbuildx.github.io>。
+如有问题或请求，请联系：<https://github.com/grokbuildx/gbx/issues>。

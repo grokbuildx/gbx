@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/cloudsync"
+	"github.com/grokbuildx/gbx/internal/cloudsync"
 )
 
 // Cloud sync from the page. Reading (remotes and their status) goes through

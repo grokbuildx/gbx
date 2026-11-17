@@ -13,12 +13,12 @@ case "$GOOS/$GOARCH" in
 esac
 
 export CGO_ENABLED=0
-LDFLAGS="-s -w -X github.com/claude-code-launch/ccl/cmd.Version=$VERSION"
+LDFLAGS="-s -w -X github.com/grokbuildx/gbx/cmd.Version=$VERSION"
 if [[ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" ]]; then
-  LDFLAGS="$LDFLAGS -X github.com/claude-code-launch/ccl/internal/cloudsync.googleOAuthClientID=$GOOGLE_OAUTH_CLIENT_ID"
+  LDFLAGS="$LDFLAGS -X github.com/grokbuildx/gbx/internal/cloudsync.googleOAuthClientID=$GOOGLE_OAUTH_CLIENT_ID"
 fi
 if [[ -n "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then
-  LDFLAGS="$LDFLAGS -X github.com/claude-code-launch/ccl/internal/cloudsync.googleOAuthClientSecret=$GOOGLE_OAUTH_CLIENT_SECRET"
+  LDFLAGS="$LDFLAGS -X github.com/grokbuildx/gbx/internal/cloudsync.googleOAuthClientSecret=$GOOGLE_OAUTH_CLIENT_SECRET"
 fi
 mkdir -p "$(dirname "$OUTPUT")"
 go build -trimpath -ldflags="$LDFLAGS" -o "$OUTPUT" .

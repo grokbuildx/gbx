@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 func TestProbeOpenAIResponsesStatusSucceedsOn2xx(t *testing.T) {

@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/codexidentity"
-	"github.com/claude-code-launch/ccl/internal/fsutil"
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/codexidentity"
+	"github.com/grokbuildx/gbx/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/protocol"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 // startAutoClawOAuth runs a CCL-owned Responses-to-OpenAI Chat adapter. The

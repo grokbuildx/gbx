@@ -13,12 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/codex"
-	"github.com/claude-code-launch/ccl/internal/config"
-	"github.com/claude-code-launch/ccl/internal/fsutil"
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
-	"github.com/claude-code-launch/ccl/internal/provider"
-	"github.com/claude-code-launch/ccl/internal/providersession"
+	"github.com/grokbuildx/gbx/internal/codex"
+	"github.com/grokbuildx/gbx/internal/config"
+	"github.com/grokbuildx/gbx/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/provider"
+	"github.com/grokbuildx/gbx/internal/providersession"
 )
 
 type catalogRefresh struct {

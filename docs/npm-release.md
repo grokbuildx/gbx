@@ -19,7 +19,7 @@ The placeholder has no shebang, so npm's Windows shim executes the placed binary
 
 npm Trusted Publishing is configured separately for each package. Before the first release using this layout, an owner of the `@claudecodelaunch` npm scope must create/bootstrap the six packages and configure their trusted publisher for:
 
-- GitHub owner/repository: `claude-code-launch/ccl`
+- GitHub owner/repository: `grokbuildx/gbx`
 - Workflow filename: `release.yml`
 - The same publishing environment, if one is configured for the existing launcher package.
 
@@ -31,7 +31,7 @@ This bootstrap was completed on 2026-10-15: each platform package has a `0.0.0` 
 - Use npm 11.15 or newer and pass `--allow-publish`. Older npm sends no permission flag and the registry answers a bare `400`:
 
   ```bash
-  npx -y npm@latest trust github @claudecodelaunch/ccl-<platform> --file release.yml --repository claude-code-launch/ccl --allow-publish -y
+  npx -y npm@latest trust github @claudecodelaunch/ccl-<platform> --file release.yml --repository grokbuildx/gbx --allow-publish -y
   ```
 - Every publish and trust call needs its own browser 2FA confirmation, which expires after about five minutes.
 

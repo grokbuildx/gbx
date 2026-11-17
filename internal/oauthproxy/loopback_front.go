@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 // loopbackFrontMux serves Responses and adapts Chat Completions to it.

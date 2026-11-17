@@ -3,7 +3,7 @@ package cmd
 import (
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 func TestModelReportLabelUsesFriendlyCatalogMetadata(t *testing.T) {

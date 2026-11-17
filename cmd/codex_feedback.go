@@ -7,9 +7,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/codex"
-	"github.com/claude-code-launch/ccl/internal/locale"
-	"github.com/claude-code-launch/ccl/internal/proxymanager"
+	"github.com/grokbuildx/gbx/internal/codex"
+	"github.com/grokbuildx/gbx/internal/locale"
+	"github.com/grokbuildx/gbx/internal/proxymanager"
 )
 
 func codexCatalogConnectionMessage(capabilities codex.CatalogCapabilities) string {

@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/groklaunch"
 	"github.com/google/uuid"
+	"github.com/grokbuildx/gbx/internal/groklaunch"
 )
 
 // Subscription logins, MCP servers and the update check: settings the page

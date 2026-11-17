@@ -11,7 +11,7 @@ var zlib = require('zlib');
 var platformFor = require('./platforms').platformFor;
 var resolveBinary = require('./wrapper').resolveBinary;
 
-var releaseURL = 'https://github.com/claude-code-launch/ccl/releases/download/';
+var releaseURL = 'https://github.com/grokbuildx/gbx/releases/download/';
 var maxDownload = 128 * 1024 * 1024;
 
 // Link or copy beside dest, then rename over it: an interrupted install leaves

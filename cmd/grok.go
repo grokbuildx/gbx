@@ -5,11 +5,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/groklaunch"
-	"github.com/claude-code-launch/ccl/internal/locale"
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
-	"github.com/claude-code-launch/ccl/internal/process"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/groklaunch"
+	"github.com/grokbuildx/gbx/internal/locale"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/process"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 const grokAlwaysApproveFlag = "--always-approve"

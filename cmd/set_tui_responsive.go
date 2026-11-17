@@ -3,8 +3,8 @@ package cmd
 import (
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/locale"
 	tui "github.com/grindlemire/go-tui"
+	"github.com/grokbuildx/gbx/internal/locale"
 )
 
 func (m *AdvancedConfigModel) bodyWidth() int { return max(m.panelWidth()-6, 1) }

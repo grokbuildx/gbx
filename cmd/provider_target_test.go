@@ -3,7 +3,7 @@ package cmd
 import (
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 func TestProviderTargetSelectsTheRequestedProvider(t *testing.T) {

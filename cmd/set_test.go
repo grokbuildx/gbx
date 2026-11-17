@@ -13,8 +13,8 @@ import (
 
 	tui "github.com/grindlemire/go-tui"
 
-	"github.com/claude-code-launch/ccl/internal/locale"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/locale"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 func assertErr(msg string) error {

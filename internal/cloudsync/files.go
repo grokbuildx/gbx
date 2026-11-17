@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/claude-code-launch/ccl/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/fsutil"
 )
 
 var ErrNoLocalData = errors.New("no ccl configuration or OAuth credentials found to sync")

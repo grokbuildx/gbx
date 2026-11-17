@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
 )
 
 func TestModelsDevProviderToDraft(t *testing.T) {

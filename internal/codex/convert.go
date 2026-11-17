@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
 )
 
 type responseRequest struct {

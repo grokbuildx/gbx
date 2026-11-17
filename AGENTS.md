@@ -21,7 +21,7 @@ go test ./cmd -run TestRunAuthGrokWithoutAliasDerivesName
 go test ./internal/oauthproxy ./internal/codex ./cmd
 ```
 
-Release binary (matches CI): `scripts/build-release.sh` with `GOOS`/`GOARCH`/`OUTPUT`/`VERSION`; uses `-trimpath -ldflags="-s -w -X github.com/claude-code-launch/ccl/cmd.Version=..."`. `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` inject the Google Drive Desktop client (required by the release workflow; dev builds use `CCL_GOOGLE_OAUTH_CLIENT_ID/_SECRET`).
+Release binary (matches CI): `scripts/build-release.sh` with `GOOS`/`GOARCH`/`OUTPUT`/`VERSION`; uses `-trimpath -ldflags="-s -w -X github.com/grokbuildx/gbx/cmd.Version=..."`. `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` inject the Google Drive Desktop client (required by the release workflow; dev builds use `CCL_GOOGLE_OAUTH_CLIENT_ID/_SECRET`).
 
 ### Do not run the `ccl` binary as a test harness
 

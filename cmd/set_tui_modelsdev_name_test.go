@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/claude-code-launch/ccl/internal/modelsdev"
-	"github.com/claude-code-launch/ccl/internal/provider"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 // TestModelsDevPickKeepsTheNameTheUserGave pins `ccl set oc`: picking a

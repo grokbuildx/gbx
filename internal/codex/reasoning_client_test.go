@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/process"
-	"github.com/claude-code-launch/ccl/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/process"
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 // The real client must accept the reasoning catalog, honor the selected effort,

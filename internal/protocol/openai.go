@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/codexidentity"
+	"github.com/grokbuildx/gbx/internal/codexidentity"
 )
 
 // ModelInfo is one entry from an OpenAI-compatible /models response.

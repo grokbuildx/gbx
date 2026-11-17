@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/process"
+	"github.com/grokbuildx/gbx/internal/process"
 )
 
 func TestRealCodexDiscoversAndExecutesDeferredMCPTool(t *testing.T) {

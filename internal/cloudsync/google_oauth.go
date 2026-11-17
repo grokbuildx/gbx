@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-code-launch/ccl/internal/browser"
+	"github.com/grokbuildx/gbx/internal/browser"
 	"golang.org/x/oauth2"
 )
 

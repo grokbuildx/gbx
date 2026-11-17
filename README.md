@@ -6,16 +6,16 @@
 
 ## 中文
 
-`ccl` 为 Grok Build 和 Codex 接入 OpenAI 兼容网关与 GPT、Gemini、Grok 等订阅账号，通过本地代理转换协议。
+`ccl` 是围绕 [Grok Build](https://x.ai/cli) 的启动器与 provider 代理：为 Grok Build 和 Codex 接入 OpenAI 兼容网关，以及 GPT、Gemini、Grok 等订阅账号，并通过本地代理转换协议。
 
 ### 安装
 
 ```bash
 npm install -g @claudecodelaunch/ccl                 # 推荐，需 Node.js >= 22
-go install github.com/claude-code-launch/ccl@latest  # 或 Go
+go install github.com/grokbuildx/gbx@latest  # 或 Go
 ```
 
-也可从 [Releases](https://github.com/claude-code-launch/ccl/releases) 下载对应平台的 `.gz`（macOS / Linux / Windows，x64 与 arm64），解压后放入 `PATH`，`SHA256SUMS` 校验的是 `.gz`。npm 安装请勿加 `--omit=optional`，否则缺少平台二进制。
+也可从 [Releases](https://github.com/grokbuildx/gbx/releases) 下载对应平台的 `.gz`（macOS / Linux / Windows，x64 与 arm64），解压后放入 `PATH`，`SHA256SUMS` 校验的是 `.gz`。npm 安装请勿加 `--omit=optional`，否则缺少平台二进制。
 
 ```bash
 ccl version
@@ -45,14 +45,14 @@ ccl --provider deepseek -p "你好"   # 仅本次使用 deepseek，不改变默�
 
 | 命令 | 作用 |
 |---|---|
-| `ccl set [name]` | 新增 / 修改 provider（TUI） |
+| `ccl set [name]` | 新增 / 修改 provider（TUI）；`-m <model>` 直接设置默认模型 |
 | `ccl ls [-a]` / `ccl use <name>` / `ccl preview [name]` | 列出 / 切换 / 预览 Grok 配置；`ccl use default` 使用 Grok Build 自身登录 |
 | `ccl --provider <name> [Grok 参数]` | 本次启动指定 provider，不改变默认选择 |
 | `ccl oauth <name> [alias]` / `ccl oauth prune` | 订阅登录 / 清理未使用凭据 |
 | `ccl provider cp\|mv\|rm\|models\|preview` | provider 管理与模型池探测 |
 | `ccl codex start` / `-p <name>` / `status` / `stop` | Codex 模型接入：向模型选择器加入当前配置的模型 |
 | `ccl serve [-p <name>] [--workspace <dir>]` | 在本地浏览器中使用 Grok Build 会话 |
-| `ccl cloud login\|push\|pull\|status\|remote` | 加密云同步（iCloud / Google Drive） |
+| `ccl cloud login\|push\|pull\|status\|remote\|tag\|logout` | 加密云同步（iCloud / Google Drive） |
 | `ccl bypass [on\|off]` | 启动时附加 `--always-approve`，仅在可信环境使用 |
 | `ccl log [on\|off] [--level debug]` | 会话日志（默认关闭，写入 `~/.ccl/logs/`） |
 | `ccl lang [zh\|zh-TW\|en]` | 界面语言（`CCL_LANG` > 配置 > 系统） |
@@ -66,9 +66,9 @@ ccl --provider deepseek -p "你好"   # 仅本次使用 deepseek，不改变默�
 ccl serve -p deepseek --workspace .
 ```
 
-在浏览器里新建会话、查看流式回复、停止回合，或对 Grok 发出的工具审批选择允许一次或拒绝。启动时指定已配置的 Provider，省略 `-p` 时使用当前选中的 Provider。可重复指定 `--workspace`，默认用当前目录。服务仅监听本机 `127.0.0.1`，访问需使用终端打印的会话链接。`--no-open` 只打印链接，`--port` 可指定端口。
+在浏览器里新建会话、流式查看回复、停止回合，并允许或拒绝 Grok 发出的工具审批。页面还提供项目文件与 Git 面板、网页终端，以及 Provider、OAuth 登录和云同步设置。`-p` 指定新会话默认使用的 Provider，省略时使用当前选中的 Provider。`--workspace` 可重复指定项目目录（默认当前目录），`--workspace-root` 将其直接子目录都作为项目。`--model` / `--effort` 设置新会话的默认模型与推理强度。服务仅监听本机 `127.0.0.1`，访问需使用终端打印的会话链接。`--no-open` 只打印链接，`--port` 指定端口，`--socket` 改用本机 Unix socket，`--no-shell` 关闭网页终端。
 
-会话保存在 `~/.ccl/serve/grok/`，用同一 Provider 和工作目录重启服务即可继续。需要安装支持 ACP v1 会话加载的 Grok Build。
+会话历史保存在 `~/.ccl/serve/sessions/`，重启后仍在。需要安装支持 ACP v1 会话加载的 Grok Build。
 
 ### Codex 模型接入
 
@@ -86,7 +86,7 @@ ccl codex stop        # 恢复 Codex 原配置
 - Codex 会话绑定创建时的 model provider。独立模式会话使用 `ccl_proxy`，切回 shared 或停止代理后，该定义会移除，旧会话可能提示 provider 未配置或 `Model unavailable`。继续原会话需恢复 `ccl codex start --independent` 并重启 Codex；跨模式继续相同历史请分叉新会话，不要修改会话记录。参见 [OpenAI Docs](https://learn.chatgpt.com/docs/codex-sdk#resume-a-thread-without-loading-its-history)。
 - `ccl use` 只影响 `ccl` 启动，不会切换运行中的代理。
 - 先打开 Codex 一次建立配置；启动代理会更新 `~/.codex/config.toml`（支持 `CODEX_HOME`）。重启 Codex 后，同一模型选择器中同时显示原生模型和当前配置的第三方模型。列表只显示模型名称；与原生模型同名时加简短的 `CCL` 标记。WorkBuddy 的同名内部版本合并为一项。
-- Codex 的 CCL 模型沿用“上下文与压缩”设置：Default 为 200K，模型池或槽位中带 `[1m]` 的模型为 1M；Balanced 为所选的 500K / 800K，均在 85% 自动压缩。转换协议的模型由 CCL 生成可回放摘要，原生 Responses 模型保留上游压缩。
+- Codex 的 CCL 模型沿用“上下文与压缩”设置：Default 为 200K，模型池中带 `[1m]` 的模型为 1M；Balanced 为所选的 500K / 800K，均在 85% 自动压缩。转换协议的模型由 CCL 生成可回放摘要，原生 Responses 模型保留上游压缩。
 - 转换协议的模型支持 Codex 客户端工具搜索：CCL 将搜索转换为普通函数调用，由 Codex 检索本地工具并返回选中的定义，避免一次发送全部延迟加载工具。实际工具仍由 Codex 执行并检查权限；模型需要能正确使用搜索函数和返回的工具定义。
 - 支持图片的模型按上游声明开放截图读取；转换模型沿用本机原生目录提供的客户端工具模式，computer use 仍由 Codex 客户端执行并检查权限。shared 模式内，常规对话可在转换模型与原生 GPT 之间切换；GPT 的原生加密压缩内容无法解密；转换模型会校验同一会话的本地记录与压缩项，再恢复有边界的可见历史摘录，并提示旧细节可能缺失。缺少匹配记录时明确报错。
 - 转换模型的 effort 档位来自 models.dev 元数据缓存，按模型匹配，不再统一为低、中、高。OAuth 登录和 `ccl set` 保存时按需刷新；也可运行 `ccl set --refresh-models` 单独更新。网络失败使用 `~/.ccl/cache/modelsdev.json`；未匹配或尚无缓存时保留兼容设置。运行中的代理会刷新元数据，本地 JSON 模式重启 Codex 加载新目录。原生 Responses 模型保留自身元数据。
@@ -110,8 +110,6 @@ CCL 在 `127.0.0.1` 提供 Responses 和 Chat Completions。每个代理使用�
 | Kiro / Qoder | Amazon Q / COSY |
 | AutoClaw | 受管 Chat Completions 代理 |
 
-旧的 Claude Code 启动、`ccl acp` 和 Zed OAuth 入口已退役。旧 Messages 网关需要改用服务商的 Responses 或 Chat Completions 地址。旧配置若指定了默认 Claude 账号，运行 `ccl use default` 可显式切换到 Grok Build 自身登录。
-
 429 / 5xx 默认最多快速重试两次（500ms、1s）；上游提供更长的 `Retry-After` 时立即透传等待提示，不提前重试。401 由各后端刷新 OAuth 凭据，Qoder 刷新失败会保留原来的认证错误。Qoder / WorkBuddy 的认证 API、刷新和模型请求拒绝跨来源重定向；账号绑定到指定凭据文件，停用或变更类型后不继续刷新。
 
 ### 配置
@@ -119,6 +117,7 @@ CCL 在 `127.0.0.1` 提供 Responses 和 Chat Completions。每个代理使用�
 - `~/.ccl/config.yaml` 保存 provider、当前选择、语言、权限绕过和日志设置。**含明文 API Key，勿提交或外传。**
 - `~/.ccl/auth/*.json` 保存 OAuth 凭据，权限为 0600。
 - API-key provider 的 `type` 可选 `openai`（Chat Completions）或 `openai_responses`。OAuth provider 由其后端决定。
+- 每个 provider 可设置默认模型：`ccl set -m <model>`，或在 TUI 中设置「默认模型」。Grok Build 启动、Codex 与 `ccl serve` 优先使用它；未设置时取模型池中的第一个模型。
 - `ccl preview`（或 `ccl provider preview`）显示传给 Grok Build 的默认模型、辅助模型和 reasoning effort。
 - Codex 上下文预设为 Default、Balanced 500K 和 Balanced 800K。
 
@@ -148,16 +147,16 @@ MIT。第三方参考实现见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)�
 
 ## English
 
-`ccl` connects Grok Build and Codex to OpenAI-compatible gateways and subscription providers such as GPT, Gemini, and Grok through a local protocol proxy.
+`ccl` is a launcher and provider proxy built around [Grok Build](https://x.ai/cli). It connects Grok Build and Codex to OpenAI-compatible gateways and subscription accounts such as GPT, Gemini, and Grok, translating protocols through a local proxy.
 
 ### Install
 
 ```bash
 npm install -g @claudecodelaunch/ccl                 # recommended, needs Node.js >= 22
-go install github.com/claude-code-launch/ccl@latest  # or Go
+go install github.com/grokbuildx/gbx@latest  # or Go
 ```
 
-Or download the `.gz` for your platform from [Releases](https://github.com/claude-code-launch/ccl/releases) (macOS / Linux / Windows, x64 and arm64), decompress it onto your `PATH`; `SHA256SUMS` covers the `.gz` files. Do not install via npm with `--omit=optional`, or the platform binary will be missing.
+Or download the `.gz` for your platform from [Releases](https://github.com/grokbuildx/gbx/releases) (macOS / Linux / Windows, x64 and arm64), decompress it onto your `PATH`; `SHA256SUMS` covers the `.gz` files. Do not install via npm with `--omit=optional`, or the platform binary will be missing.
 
 ```bash
 ccl version
@@ -187,14 +186,14 @@ Extra arguments reach Grok Build and can start a billed session. Put `--provider
 
 | Command | Purpose |
 |---|---|
-| `ccl set [name]` | Add / edit a provider (TUI) |
+| `ccl set [name]` | Add / edit a provider (TUI); `-m <model>` sets the default model directly |
 | `ccl ls [-a]` / `ccl use <name>` / `ccl preview [name]` | List / switch / preview Grok overlay; `ccl use default` uses Grok Build's own login |
 | `ccl --provider <name> [Grok args]` | Use a provider for one launch without changing the selection |
 | `ccl oauth <name> [alias]` / `ccl oauth prune` | Subscription login / remove unused credentials |
 | `ccl provider cp\|mv\|rm\|models\|preview` | Provider management and model pool probing |
 | `ccl codex start` / `-p <name>` / `status` / `stop` | Connect the selected provider's models to Codex |
 | `ccl serve [-p <name>] [--workspace <dir>]` | Use Grok Build conversations in a local browser |
-| `ccl cloud login\|push\|pull\|status\|remote` | Encrypted sync (iCloud / Google Drive) |
+| `ccl cloud login\|push\|pull\|status\|remote\|tag\|logout` | Encrypted sync (iCloud / Google Drive) |
 | `ccl bypass [on\|off]` | Add `--always-approve` on launch; trusted environments only |
 | `ccl log [on\|off] [--level debug]` | Per-session logs (off by default, in `~/.ccl/logs/`) |
 | `ccl lang [zh\|zh-TW\|en]` | UI language (`CCL_LANG` > config > system) |
@@ -208,9 +207,9 @@ Every subcommand supports `--help`.
 ccl serve -p deepseek --workspace .
 ```
 
-Start a session, stream replies, stop a turn, and allow or deny the tool approvals that Grok requests. Select a configured provider with `-p`, or use the active one. Repeat `--workspace` to enable multiple directories. The default is the current directory. The server listens on `127.0.0.1` and requires the session link printed in the terminal. Use `--no-open` to print the link without opening it or `--port` to select a port.
+Start a session, stream replies, stop a turn, and allow or deny the tool approvals that Grok requests. The page also includes a project file and Git panel, a web terminal, and settings for providers, OAuth login and cloud sync. `-p` selects the provider for new sessions; omit it to use the active one. Repeat `--workspace` to add project directories (default: the current directory). `--workspace-root` treats each direct subdirectory as a project. `--model` and `--effort` set the default model and reasoning effort for new sessions. The server listens on `127.0.0.1` and requires the session link printed in the terminal. Use `--no-open` to print the link without opening it, `--port` to select a port, `--socket` to listen on a local Unix socket instead, or `--no-shell` to disable the web terminal.
 
-Sessions are stored in `~/.ccl/serve/grok/`. Restart with the same provider and workspace to continue them. Grok Build must support ACP v1 session loading.
+Session history is stored in `~/.ccl/serve/sessions/` and survives restarts. Grok Build must support ACP v1 session loading.
 
 ### Codex model integration
 
@@ -228,7 +227,7 @@ ccl codex stop        # restores your original Codex settings
 - Codex chats resume with their saved model provider. Independent chats use `ccl_proxy`; switching to shared or stopping removes that definition, so those chats can report an unconfigured provider or `Model unavailable`. Restore `ccl codex start --independent` and restart Codex to resume the original chat, or fork its history to use the other provider. Do not rewrite chat records. See [OpenAI Docs](https://learn.chatgpt.com/docs/codex-sdk#resume-a-thread-without-loading-its-history).
 - `ccl use` only affects `ccl` launches, not a running proxy.
 - Open Codex once to create its profile; startup updates `~/.codex/config.toml` (honors `CODEX_HOME`). Restart Codex to see native models and the selected provider's models in one picker. Labels show only model names, with a short `CCL` marker for a collision with a native name. WorkBuddy's internal revisions sharing a name appear once.
-- CCL models in Codex follow the provider's context/compaction setting: Default uses 200K, or 1M for models marked `[1m]` in the saved pool or slots; Balanced uses the selected 500K / 800K budget. All compact at 85%. CCL generates replayable summaries for translated protocols; native Responses models retain upstream compaction.
+- CCL models in Codex follow the provider's context/compaction setting: Default uses 200K, or 1M for models marked `[1m]` in the model pool; Balanced uses the selected 500K / 800K budget. All compact at 85%. CCL generates replayable summaries for translated protocols; native Responses models retain upstream compaction.
 - Translated models support Codex client tool search: CCL adapts search to an ordinary function call, Codex searches local tools, and CCL loads the returned definitions instead of sending all deferred tools up front. Codex executes actual tools and enforces permissions. The model must be able to use the search function and the discovered definitions correctly.
 - Models that advertise image input can read screenshots. Translated models follow the installed native catalog's client tool mode; Codex still executes computer use and checks permissions. Within shared mode, normal conversation history can switch between translated models and native GPT. Native GPT compaction cannot be decrypted. Converted models can validate the matching local chat/checkpoint and recover a bounded visible-history excerpt with a notice that older details may be missing. Missing or mismatched records fail explicitly.
 - Translated models use per-model effort tiers from the models.dev metadata cache. OAuth login and confirmed `ccl set` saves refresh it; `ccl set --refresh-models` updates metadata alone. Network failures use `~/.ccl/cache/modelsdev.json`; missing/unmatched metadata retains compatibility settings. The running proxy refreshes metadata; restart Codex to reload a local JSON catalog. Native Responses models retain their own metadata.
@@ -252,8 +251,6 @@ CCL serves Responses and Chat Completions on `127.0.0.1` with a random per-sessi
 | Kiro / Qoder | Amazon Q / COSY |
 | AutoClaw | Managed Chat Completions proxy |
 
-Claude Code launches, the `ccl acp` command, and Zed OAuth have been retired. A legacy Messages gateway requires a Responses or Chat Completions endpoint. If an existing configuration points to a default Claude account, use `ccl use default` to select Grok Build’s own login.
-
 429 / 5xx normally get at most two quick retries (500 ms, 1 s). A longer `Retry-After` is relayed immediately instead of retrying early. Each backend handles 401 with its OAuth refresh; Qoder preserves the original authentication error if refresh fails. Qoder / WorkBuddy refuse cross-origin redirects for credential API, refresh and model requests. Accounts stay bound to the selected credential file, and disabled or changed credential types are not refreshed.
 
 ### Configuration
@@ -261,6 +258,7 @@ Claude Code launches, the `ccl acp` command, and Zed OAuth have been retired. A 
 - `~/.ccl/config.yaml` stores provider settings, the active selection, language, bypass mode, and log level. **It contains plaintext API keys.**
 - `~/.ccl/auth/*.json` stores OAuth credentials with 0600 permissions.
 - Use `openai` for Chat Completions or `openai_responses` for a Responses API-key provider. An OAuth backend determines its own protocol.
+- Each provider can set a default model with `ccl set -m <model>` or the TUI's Default Model field. Grok Build launches, Codex and `ccl serve` use it first; if unset, the first model in the pool is used.
 - `ccl preview` (or `ccl provider preview`) displays the default and helper models and reasoning effort sent to Grok Build.
 - Codex context presets are Default, Balanced 500K, and Balanced 800K.
 
