@@ -774,6 +774,20 @@ func TestPhase2MixedCaseModelDetailsLookup(t *testing.T) {
 }
 
 func TestPhase2ModelsReasoningEffortAcrossRuntimes(t *testing.T) {
+	// Every subtest resolves efforts through the public models.dev metadata, so
+	// seed the checked-in fixture instead of reading the developer's real cache.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if cachePath, err := modelsdev.CachePath(); err != nil {
+		t.Fatal(err)
+	} else if catalogBytes, err := os.ReadFile(filepath.Join("..", "modelsdev", "modelsdev.json")); err != nil {
+		t.Fatal(err)
+	} else if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	} else if err := os.WriteFile(cachePath, catalogBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	extractEffortValues := func(entry gjson.Result) []string {
 		var out []string
 		for _, item := range entry.Get("reasoning_efforts").Array() {
@@ -902,18 +916,6 @@ func TestPhase2ModelsReasoningEffortAcrossRuntimes(t *testing.T) {
 		if wbDetails["wb-reasoner"].ReasoningKnown || len(wbDetails["wb-reasoner"].ReasoningLevels) != 3 ||
 			wbDetails["claude-opus-4-6"].ReasoningKnown || len(wbDetails["claude-opus-4-6"].ReasoningLevels) != 0 {
 			t.Fatalf("WorkBuddy discovery must keep ReasoningKnown=false and preserve SupportsReasoning fallback: %+v", wbDetails)
-		}
-		wbHome := t.TempDir()
-		t.Setenv("HOME", wbHome)
-		t.Setenv("USERPROFILE", wbHome)
-		if cachePath, err := modelsdev.CachePath(); err != nil {
-			t.Fatal(err)
-		} else if catalogBytes, err := os.ReadFile(filepath.Join("..", "modelsdev", "modelsdev.json")); err != nil {
-			t.Fatal(err)
-		} else if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
-			t.Fatal(err)
-		} else if err := os.WriteFile(cachePath, catalogBytes, 0o600); err != nil {
-			t.Fatal(err)
 		}
 		enrichWorkBuddyModelDetails(wbDetails)
 		wbReq := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
