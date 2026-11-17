@@ -176,6 +176,7 @@ func runGrokAgentWithOptions(cfg *provider.Config, name string, explicitProvider
 	args = applyGrokBypassMode(args, cfg.BypassMode)
 	if native || localOnly {
 		cmd := process.Command(grokPath, args...)
+		cmd.Env = groklaunch.WithBundledEnv(grokPath, os.Environ())
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

@@ -12,6 +12,8 @@ on:
       - go.mod
       - go.sum
       - scripts/build-release.sh
+      - scripts/build-grok.sh
+      - third_party/grok-build/REVISION
       - .github/workflows/release.yml
   workflow_dispatch:
 
@@ -64,7 +66,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
-    needs: prepare
+    needs: [prepare, build-grok]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -73,15 +75,19 @@ jobs:
           - goos: darwin
             goarch: amd64
             asset: gbx-darwin-amd64
+            grok: grok-darwin-amd64
           - goos: darwin
             goarch: arm64
             asset: gbx-darwin-arm64
+            grok: grok-darwin-arm64
           - goos: linux
             goarch: amd64
             asset: gbx-linux-amd64
+            grok: grok-linux-amd64
           - goos: linux
             goarch: arm64
             asset: gbx-linux-arm64
+            grok: grok-linux-arm64
           - goos: windows
             goarch: amd64
             asset: gbx-win32-x64.exe
@@ -102,11 +108,18 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: gbx-release-v2-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum', 'scripts/build-release.sh') }}
+          key: gbx-release-v3-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum', 'scripts/build-release.sh') }}
           restore-keys: |
-            gbx-release-v2-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.go.outputs.go-version }}-
+            gbx-release-v3-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.go.outputs.go-version }}-
+      - name: Download Grok Build
+        if: matrix.grok
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.grok }}
+          path: grok
       - name: Build binary
         env:
+          GROK_BINARY: ${{ matrix.grok && format('grok/{0}', matrix.grok) || '' }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -137,6 +150,79 @@ jobs:
           compression-level: 0
           retention-days: 3
 
+  # Grok Build is compiled from the open-source xai-org/grok-build commit
+  # pinned in third_party/grok-build/REVISION, on native runners because it
+  # links platform C libraries, and then embedded into the gbx binary. Windows
+  # is not a supported upstream build host, so Windows gbx uses a system
+  # Grok Build.
+  build-grok:
+    name: Build Grok Build ${{ matrix.asset }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            asset: grok-darwin-amd64
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            asset: grok-darwin-arm64
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: grok-linux-amd64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: grok-linux-arm64
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install build dependencies
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends protobuf-compiler pkg-config libssl-dev libasound2-dev libwayland-dev libxkbcommon-dev cmake clang
+          else
+            brew install protobuf
+          fi
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .grok-build-src/target
+          key: grok-build-${{ matrix.target }}-${{ hashFiles('third_party/grok-build/REVISION') }}
+          restore-keys: |
+            grok-build-${{ matrix.target }}-
+      - name: Build Grok Build
+        env:
+          TARGET: ${{ matrix.target }}
+          OUTPUT: dist/${{ matrix.asset }}
+          NOTICES_DIR: dist/notices
+        run: bash scripts/build-grok.sh
+      - name: Smoke test
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: dist/${{ matrix.asset }} --version
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            dist/${{ matrix.asset }}
+            dist/${{ matrix.asset }}.version
+          if-no-files-found: error
+          retention-days: 3
+      - name: Upload notices
+        if: matrix.asset == 'grok-linux-amd64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: grok-notices
+          path: dist/notices/
+          if-no-files-found: error
+          retention-days: 3
+
   github-release:
     name: GitHub release
     if: github.ref_type == 'tag'
@@ -152,6 +238,11 @@ jobs:
           pattern: gbx-*
           path: dist
           merge-multiple: true
+      - name: Download Grok Build notices
+        uses: actions/download-artifact@v8
+        with:
+          name: grok-notices
+          path: dist/notices
       - name: Verify asset set and create checksums
         run: |
           for asset in gbx-darwin-amd64 gbx-darwin-arm64 gbx-linux-amd64 gbx-linux-arm64 gbx-win32-x64.exe gbx-win32-arm64.exe; do
@@ -167,7 +258,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          assets=(dist/* THIRD_PARTY_NOTICES.md)
+          assets=(dist/*.gz dist/SHA256SUMS dist/notices/* THIRD_PARTY_NOTICES.md)
           if gh release view "$VERSION" >/dev/null 2>&1; then
             # A re-run: refresh the assets of the existing release.
             gh release upload "$VERSION" "${assets[@]}" --clobber
@@ -199,6 +290,11 @@ jobs:
           pattern: gbx-*
           path: dist
           merge-multiple: true
+      - name: Download Grok Build notices
+        uses: actions/download-artifact@v8
+        with:
+          name: grok-notices
+          path: dist/notices
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:

@@ -138,7 +138,9 @@ func verifyNpmInstall(binary, want string) error {
 	if err != nil {
 		return fmt.Errorf("npm-installed %s does not run: %w", binary, err)
 	}
-	got := strings.TrimSpace(string(out))
+	// The first line is gbx; later lines describe the bundled Grok Build.
+	got, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	got = strings.TrimSpace(got)
 	if !strings.HasPrefix(got, "gbx version ") || canonicalReleaseTag(strings.TrimPrefix(got, "gbx version ")) != canonicalReleaseTag(want) {
 		return fmt.Errorf("npm-installed %s reports %q, expected gbx version %s", binary, got, canonicalReleaseTag(want))
 	}

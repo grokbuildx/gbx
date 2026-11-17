@@ -23,6 +23,8 @@ go test ./internal/oauthproxy ./internal/codex ./cmd
 
 Release binary (matches CI): `scripts/build-release.sh` with `GOOS`/`GOARCH`/`OUTPUT`/`VERSION`; uses `-trimpath -ldflags="-s -w -X github.com/grokbuildx/gbx/cmd.Version=..."`. `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` inject the Google Drive Desktop client (required by the release workflow; dev builds use `GBX_GOOGLE_OAUTH_CLIENT_ID/_SECRET`).
 
+Bundled Grok Build: `scripts/build-grok.sh` (`OUTPUT`, optional `TARGET`) compiles the open-source xai-org/grok-build commit in `third_party/grok-build/REVISION`; pass the result as `GROK_BINARY` to `scripts/build-release.sh` to embed it (`-tags grokbundle`, package `internal/grokbundle`). Plain `go build` embeds nothing and uses a system `grok`. Never point the embedded copy at a closed-source upstream binary.
+
 ### Do not run the `gbx` binary as a test harness
 
 Unknown first args are **not** errors: `cmd/root.go` forwards them to Grok Build and can start a billed session (`gbx --resume`, `gbx -p "..."`, a quoted typo like `./gbx "provider --help"`). Prefer `go test` and `--help` with unquoted subcommand args.

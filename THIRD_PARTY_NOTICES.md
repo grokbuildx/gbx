@@ -86,6 +86,15 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Grok Build
+
+gbx release binaries for macOS and Linux embed Grok Build, compiled without
+modification from [xai-org/grok-build](https://github.com/xai-org/grok-build)
+at the commit in `third_party/grok-build/REVISION`. Grok Build is licensed
+under the Apache License 2.0 (`third_party/grok-build/LICENSE`, shipped as
+`GROK_BUILD_LICENSE`); its own third-party notices ship as
+`GROK_BUILD_THIRD_PARTY_NOTICES`.
+
 ## Coder ACP Go SDK
 
 The Grok Build browser session bridge uses [Coder ACP Go SDK](https://github.com/coder/acp-go-sdk).

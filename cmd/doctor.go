@@ -17,6 +17,8 @@ import (
 
 	"github.com/grokbuildx/gbx/internal/cloudsync"
 	"github.com/grokbuildx/gbx/internal/config"
+	"github.com/grokbuildx/gbx/internal/grokbundle"
+	"github.com/grokbuildx/gbx/internal/groklaunch"
 	"github.com/grokbuildx/gbx/internal/oauthproxy"
 	"github.com/grokbuildx/gbx/internal/protocol"
 	"github.com/grokbuildx/gbx/internal/provider"
@@ -123,7 +125,13 @@ func runDoctor(ctx context.Context, probe bool, target providerTarget) error {
 	doctorSection("Environment")
 
 	if path, err := lookGrokBinary(); err == nil {
-		doctorOK("Grok Build CLI: " + path)
+		source := "system"
+		if bundled, ok := groklaunch.BundledPath(); ok && bundled == path {
+			source = "bundled " + grokbundle.Describe()
+		} else if os.Getenv(groklaunch.BinaryEnv) != "" {
+			source = groklaunch.BinaryEnv
+		}
+		doctorOK("Grok Build CLI: " + path + " (" + source + ")")
 	} else {
 		doctorErr("Grok Build CLI: not installed")
 		doctorHint("Install Grok Build from https://x.ai/cli")

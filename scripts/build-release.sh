@@ -20,5 +20,21 @@ fi
 if [[ -n "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then
   LDFLAGS="$LDFLAGS -X github.com/grokbuildx/gbx/internal/cloudsync.googleOAuthClientSecret=$GOOGLE_OAUTH_CLIENT_SECRET"
 fi
+# GROK_BINARY: an open-source Grok Build from scripts/build-grok.sh for this
+# GOOS/GOARCH. It is compiled into gbx; without it gbx uses a system install.
+root="$(cd "$(dirname "$0")/.." && pwd)"
+TAGS=""
+bundle="$root/internal/grokbundle/grok.gz"
+rm -f "$bundle"
+if [[ -n "${GROK_BINARY:-}" ]]; then
+  revision="$(tr -d '[:space:]' < "$root/third_party/grok-build/REVISION")"
+  grok_version="$(tr -d '[:space:]' < "$GROK_BINARY.version")"
+  gzip -9 -n -c "$GROK_BINARY" > "$bundle"
+  trap 'rm -f "$bundle"' EXIT
+  TAGS="grokbundle"
+  LDFLAGS="$LDFLAGS -X github.com/grokbuildx/gbx/internal/grokbundle.Version=$grok_version"
+  LDFLAGS="$LDFLAGS -X github.com/grokbuildx/gbx/internal/grokbundle.Revision=$revision"
+fi
 mkdir -p "$(dirname "$OUTPUT")"
-go build -trimpath -ldflags="$LDFLAGS" -o "$OUTPUT" .
+OUTPUT="$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")"
+(cd "$root" && go build -trimpath -tags="$TAGS" -ldflags="$LDFLAGS" -o "$OUTPUT" .)

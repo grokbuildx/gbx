@@ -8,6 +8,30 @@
 
 `gbx` 是围绕 [Grok Build](https://x.ai/cli) 的启动器与 provider 代理：为 Grok Build 和 Codex 接入 OpenAI 兼容网关，以及 GPT、Gemini、Grok 等订阅账号，并通过本地代理转换协议。
 
+### 完全开源：你运行的 agent 就是你能读到的代码
+
+**gbx 本身和它内置的编程 agent 都是开源的，二进制里没有任何闭源组件。**
+
+| 组件 | 许可 | 源码 |
+|---|---|---|
+| gbx（启动器、代理、WebUI） | MIT | [grokbuildx/gbx](https://github.com/grokbuildx/gbx) |
+| 内置 Grok Build agent | Apache-2.0 | [xai-org/grok-build](https://github.com/xai-org/grok-build)，固定在 [`third_party/grok-build/REVISION`](third_party/grok-build/REVISION) 记录的提交 |
+
+为什么这很重要：Grok Build 的开源仓库自 2026-09-29 起停留在 **1.0.45**，而官方通过 `x.ai/cli` 分发、并会自动更新的二进制已经到了 1.0.88 —— 这些新版本**没有公开源码**，你无法审计一个能读写你代码、执行 shell 命令的 agent 到底做了什么。
+
+gbx 的做法：
+
+- **从源码编译**：发布流程在公开的 GitHub Actions 中，从固定提交编译 Grok Build，再把它编进 gbx 二进制（macOS / Linux）。同一提交、同一脚本（[`scripts/build-grok.sh`](scripts/build-grok.sh)），任何人都可以复现。
+- **不会被悄悄替换**：gbx 启动内置版本时关闭 Grok Build 的自动更新，闭源的上游版本不会覆盖它；只有升级 gbx 才会换 agent。
+- **可以随时核对**：`gbx version` 显示 gbx 版本和内置 Grok Build 的版本及源码提交，`gbx doctor` 显示当前实际运行的是哪个 Grok Build。
+
+```text
+$ gbx version
+gbx version vX.Y.Z
+Grok Build 1.0.45 (open source, built from xai-org/grok-build@2bdd1d6a6369)
+  source: https://github.com/xai-org/grok-build/tree/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8
+```
+
 ### 安装
 
 ```bash
@@ -22,7 +46,7 @@ gbx version
 gbx doctor     # 只读体检；加 --probe 才会逐个测模型（计费）
 ```
 
-普通终端启动需要安装 Grok Build。Codex 接入使用你现有的 Codex 客户端。 [Grok Build](https://x.ai/cli)
+macOS / Linux 的 npm 包与 Release 二进制已内置开源 Grok Build，无需另装；首次运行时解压到 `~/.gbx/grok/`。Windows 构建与 `go install` 不含内置版本，会依次使用 `GBX_GROK_BIN`、`PATH` 中的 `grok`、`~/.grok/bin/grok`。Codex 接入使用你现有的 Codex 客户端。
 
 ### 快速开始
 
@@ -141,13 +165,37 @@ node --test scripts/npm-packages.test.js
 
 ### 许可
 
-MIT。第三方参考实现见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+gbx 采用 MIT。内置的 Grok Build 采用 Apache-2.0（[`third_party/grok-build/LICENSE`](third_party/grok-build/LICENSE)），每个发布包都附带 `GROK_BUILD_LICENSE` 和 `GROK_BUILD_THIRD_PARTY_NOTICES`。其他第三方参考实现见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。gbx 是独立的开源项目，与 xAI 无隶属关系。
 
 ---
 
 ## English
 
 `gbx` is a launcher and provider proxy built around [Grok Build](https://x.ai/cli). It connects Grok Build and Codex to OpenAI-compatible gateways and subscription accounts such as GPT, Gemini, and Grok, translating protocols through a local proxy.
+
+### Fully open source: the agent you run is the code you can read
+
+**gbx and the coding agent it ships are both open source. There is no closed-source component in the binary.**
+
+| Component | License | Source |
+|---|---|---|
+| gbx (launcher, proxy, WebUI) | MIT | [grokbuildx/gbx](https://github.com/grokbuildx/gbx) |
+| Bundled Grok Build agent | Apache-2.0 | [xai-org/grok-build](https://github.com/xai-org/grok-build), pinned to the commit in [`third_party/grok-build/REVISION`](third_party/grok-build/REVISION) |
+
+Why it matters: the open-source Grok Build repository has stayed at **1.0.45** since 2026-09-29, while the official binary distributed through `x.ai/cli`, which updates itself, has reached 1.0.88. Those newer versions **have no published source**, so there is no way to audit what an agent that reads and writes your code and runs shell commands actually does.
+
+What gbx does about it:
+
+- **Built from source.** The release pipeline compiles Grok Build from the pinned commit in public GitHub Actions and compiles it into the gbx binary (macOS / Linux). Same commit, same script ([`scripts/build-grok.sh`](scripts/build-grok.sh)), reproducible by anyone.
+- **Never swapped silently.** gbx turns off Grok Build's self-updater when it launches the bundled copy, so a closed-source upstream build cannot replace it. The agent changes only when you upgrade gbx.
+- **Checkable at any time.** `gbx version` prints the gbx version and the bundled Grok Build version with its source commit; `gbx doctor` shows which Grok Build is actually in use.
+
+```text
+$ gbx version
+gbx version vX.Y.Z
+Grok Build 1.0.45 (open source, built from xai-org/grok-build@2bdd1d6a6369)
+  source: https://github.com/xai-org/grok-build/tree/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8
+```
 
 ### Install
 
@@ -163,7 +211,7 @@ gbx version
 gbx doctor     # read-only checks; --probe tests each model (billed)
 ```
 
-Terminal launches require Grok Build. Codex integration uses your existing Codex client. [Grok Build](https://x.ai/cli)
+On macOS and Linux, the npm packages and release binaries include the open-source Grok Build; nothing else to install. It is unpacked to `~/.gbx/grok/` on first run. Windows builds and `go install` builds do not bundle it and use, in order, `GBX_GROK_BIN`, `grok` on `PATH`, then `~/.grok/bin/grok`. Codex integration uses your existing Codex client.
 
 ### Quick start
 
@@ -282,4 +330,4 @@ node --test scripts/npm-packages.test.js
 
 ### License
 
-MIT. Third-party references: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+gbx is MIT-licensed. The bundled Grok Build is Apache-2.0 ([`third_party/grok-build/LICENSE`](third_party/grok-build/LICENSE)); every release package includes `GROK_BUILD_LICENSE` and `GROK_BUILD_THIRD_PARTY_NOTICES`. Other third-party references: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). gbx is an independent open-source project and is not affiliated with xAI.

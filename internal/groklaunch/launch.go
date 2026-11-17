@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/grokbuildx/gbx/internal/grokbundle"
 	"github.com/grokbuildx/gbx/internal/modelrouting"
 	"github.com/grokbuildx/gbx/internal/oauthproxy"
 	"github.com/grokbuildx/gbx/internal/process"
@@ -281,18 +282,67 @@ func buildGrokProcessEnv(inherited []string, p provider.Provider, configJSON, au
 	return env
 }
 
-// LookPath locates the Grok Build executable in PATH or ~/.grok/bin.
+// BinaryEnv overrides the Grok Build executable gbx launches.
+const BinaryEnv = "GBX_GROK_BIN"
+
+// grokExecutableName is the Grok Build file name on this platform.
+func grokExecutableName() string {
+	if runtime.GOOS == "windows" {
+		return "grok.exe"
+	}
+	return "grok"
+}
+
+// bundledPath is replaceable in tests.
+var bundledPath = func() (string, bool) {
+	if !grokbundle.Available() {
+		return "", false
+	}
+	path, err := grokbundle.Path()
+	return path, err == nil
+}
+
+// BundledPath returns the open-source Grok Build compiled into this gbx,
+// unpacked on first use. Development builds have none.
+func BundledPath() (string, bool) { return bundledPath() }
+
+// WithBundledEnv disables Grok Build's self-updater when path is the copy
+// bundled in gbx: it changes only with gbx releases, and the upstream updater
+// would swap the open-source build for a closed-source binary.
+func WithBundledEnv(path string, env []string) []string {
+	bundled, ok := BundledPath()
+	if !ok || bundled != path {
+		return env
+	}
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if key, _, _ := strings.Cut(entry, "="); strings.EqualFold(key, "GROK_DISABLE_AUTOUPDATER") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, "GROK_DISABLE_AUTOUPDATER=1")
+}
+
+// LookPath locates the Grok Build executable: GBX_GROK_BIN, then the copy
+// bundled in gbx, then PATH, then ~/.grok/bin.
 func LookPath() (string, error) {
+	if override := strings.TrimSpace(os.Getenv(BinaryEnv)); override != "" {
+		path, err := exec.LookPath(override)
+		if err != nil {
+			return "", fmt.Errorf("%s=%s: %w", BinaryEnv, override, err)
+		}
+		return path, nil
+	}
+	if bundled, ok := BundledPath(); ok {
+		return bundled, nil
+	}
 	path, err := exec.LookPath("grok")
 	if err == nil {
 		return path, nil
 	}
 	if home, homeErr := os.UserHomeDir(); homeErr == nil {
-		name := "grok"
-		if runtime.GOOS == "windows" {
-			name = "grok.exe"
-		}
-		if local, localErr := exec.LookPath(filepath.Join(home, ".grok", "bin", name)); localErr == nil {
+		if local, localErr := exec.LookPath(filepath.Join(home, ".grok", "bin", grokExecutableName())); localErr == nil {
 			return local, nil
 		}
 	}
@@ -395,7 +445,7 @@ func prepare(ctx context.Context, grokPath string, p provider.Provider, sessionN
 		Path:         grokPath,
 		AuthPath:     authPath,
 		DefaultModel: defaultModel,
-		Env:          buildGrokProcessEnv(env, resolved, configJSON, authPath),
+		Env:          WithBundledEnv(grokPath, buildGrokProcessEnv(env, resolved, configJSON, authPath)),
 		Session:      session,
 	}, nil
 }

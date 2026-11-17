@@ -91,7 +91,7 @@ func TestVerifyNpmInstallChecksOnlyNpmDestination(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "main.go")
 	binary := filepath.Join(dir, "gbx.exe")
-	if err := os.WriteFile(source, []byte("package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"gbx version v1.6.7\") }\n"), 0o600); err != nil {
+	if err := os.WriteFile(source, []byte("package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"gbx version v1.6.7\\nGrok Build 1.0.45\") }\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command("go", "build", "-o", binary, source).CombinedOutput(); err != nil {
@@ -139,7 +139,7 @@ func TestRunUpdateNpmRepairsPackageWhenBinaryIsAlreadyCurrent(t *testing.T) {
 		}
 		return binary
 	}
-	native := build("native", "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"gbx version v1.6.7\") }\n")
+	native := build("native", "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"gbx version v1.6.7\\nGrok Build 1.0.45\") }\n")
 	build("npm", `package main
 import ("fmt"; "os"; "path/filepath"; "runtime"; "strings")
 func main() {

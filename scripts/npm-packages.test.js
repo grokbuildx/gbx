@@ -12,7 +12,15 @@ const { spawn, spawnSync } = require('child_process');
 const { platforms } = require('../bin/platforms');
 const { resolveBinary } = require('../bin/wrapper');
 const { install } = require('../bin/install');
-const { buildPackages, releaseVersion, launcherFiles } = require('./build-npm-packages');
+const { buildPackages, releaseVersion, launcherFiles, grokNoticeFiles } = require('./build-npm-packages');
+
+// writeReleaseBinaries fakes the release assets (each containing its own name)
+// and the Grok Build notices that the release workflow collects.
+function writeReleaseBinaries(binaries) {
+  fs.mkdirSync(path.join(binaries, 'notices'), { recursive: true });
+  platforms.forEach(p => fs.writeFileSync(path.join(binaries, p.asset + '.gz'), zlib.gzipSync(Buffer.from(p.asset))));
+  grokNoticeFiles.forEach(file => fs.writeFileSync(path.join(binaries, 'notices', file), file));
+}
 
 function fixture(t) {
   // macOS exposes /var through /private/var, and require.resolve returns the
@@ -27,12 +35,13 @@ function fixture(t) {
 test('release packages contain one binary each and a small launcher', t => {
   const dir = fixture(t);
   const binaries = path.join(dir, 'binaries');
-  fs.mkdirSync(binaries);
-  platforms.forEach(p => fs.writeFileSync(path.join(binaries, p.asset + '.gz'), zlib.gzipSync(Buffer.from(p.asset))));
+  writeReleaseBinaries(binaries);
   const built = buildPackages({ version: 'v2.0.1', binaries, output: path.join(dir, 'packages') });
   const main = JSON.parse(fs.readFileSync(path.join(built.main, 'package.json')));
   assert.equal(main.version, '2.0.1');
-  assert.equal(main.description, 'Multi-provider launcher for Grok Build and Codex');
+  assert.equal(main.description, 'Open-source multi-provider launcher for Grok Build and Codex, with Grok Build built in');
+  assert.equal(main.license, 'MIT AND Apache-2.0');
+  grokNoticeFiles.forEach(file => assert.ok(main.files.includes(file) && fs.existsSync(path.join(built.main, file))));
   assert.equal(Object.keys(main.optionalDependencies).length, 6);
   assert.deepEqual(fs.readdirSync(path.join(built.main, 'bin')).sort(), [...launcherFiles].sort());
   // npm rewrites a "./"-prefixed bin target and warns on every publish, so the
@@ -50,6 +59,7 @@ test('release packages contain one binary each and a small launcher', t => {
     assert.equal(main.optionalDependencies[p.packageName], pkg.version);
     assert.deepEqual(fs.readdirSync(path.join(packageDir, 'bin')), [p.binary]);
     assert.equal(fs.readFileSync(path.join(packageDir, 'bin', p.binary), 'utf8'), p.asset);
+    grokNoticeFiles.forEach(file => assert.ok(pkg.files.includes(file) && fs.existsSync(path.join(packageDir, file))));
   });
 });
 
@@ -152,8 +162,7 @@ test('npm installs exactly one native tarball from platform optional dependencie
   for (const file of ['user.npmrc', 'global.npmrc']) fs.writeFileSync(path.join(root, file), '');
   Object.assign(env, { HOME: home, USERPROFILE: home, NPM_CONFIG_USERCONFIG: path.join(root, 'user.npmrc'), NPM_CONFIG_GLOBALCONFIG: path.join(root, 'global.npmrc') });
   const binaries = path.join(root, 'binaries');
-  fs.mkdirSync(binaries);
-  platforms.forEach(p => fs.writeFileSync(path.join(binaries, p.asset + '.gz'), zlib.gzipSync(Buffer.from(p.asset))));
+  writeReleaseBinaries(binaries);
   const built = buildPackages({ version: 'v2.0.1', binaries, output: path.join(root, 'packages') });
   const cache = path.join(root, 'npm-cache');
   const cli = npmCLI();

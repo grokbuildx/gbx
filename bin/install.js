@@ -12,7 +12,7 @@ var platformFor = require('./platforms').platformFor;
 var resolveBinary = require('./wrapper').resolveBinary;
 
 var releaseURL = 'https://github.com/grokbuildx/gbx/releases/download/';
-var maxDownload = 128 * 1024 * 1024;
+var maxDownload = 256 * 1024 * 1024;
 
 // Link or copy beside dest, then rename over it: an interrupted install leaves
 // either the placeholder or a complete binary.
