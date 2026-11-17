@@ -111,15 +111,19 @@ jobs:
           key: gbx-release-v3-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum', 'scripts/build-release.sh') }}
           restore-keys: |
             gbx-release-v3-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.go.outputs.go-version }}-
-      - name: Download Grok Build
+      - name: Download Grok Build pin
         if: matrix.grok
         uses: actions/download-artifact@v8
         with:
-          name: ${{ matrix.grok }}
+          name: pin-${{ matrix.grok }}
           path: grok
+      - name: Read Grok Build pin
+        if: matrix.grok
+        run: |
+          echo "GROK_SHA256=$(tr -d '[:space:]' < 'grok/${{ matrix.grok }}.gz.sha256')" >> "$GITHUB_ENV"
+          echo "GROK_VERSION=$(tr -d '[:space:]' < 'grok/${{ matrix.grok }}.version')" >> "$GITHUB_ENV"
       - name: Build binary
         env:
-          GROK_BINARY: ${{ matrix.grok && format('grok/{0}', matrix.grok) || '' }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -152,14 +156,20 @@ jobs:
 
   # Grok Build is compiled from the open-source xai-org/grok-build commit
   # pinned in third_party/grok-build/REVISION, on native runners because it
-  # links platform C libraries, and then embedded into the gbx binary. Windows
-  # is not a supported upstream build host, so Windows gbx uses a system
-  # Grok Build.
+  # links platform C libraries. Each commit is published once, as the release
+  # grok-build-<commit>; later releases that keep the commit reuse it without
+  # rebuilding, and gbx downloads it only when the pinned commit changes.
+  # Windows is not a supported upstream build host, so Windows gbx uses a
+  # system Grok Build.
   build-grok:
-    name: Build Grok Build ${{ matrix.asset }}
+    name: Grok Build ${{ matrix.asset }}
     needs: prepare
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
@@ -178,17 +188,22 @@ jobs:
             asset: grok-linux-arm64
     steps:
       - uses: actions/checkout@v5
-      # The finished binary is cached by upstream commit and build script, so
-      # a release that keeps the same Grok Build reuses the identical binary
-      # instead of rebuilding it. Caches warmed on main are readable by tags.
-      - name: Restore built Grok Build
-        id: built
-        uses: actions/cache@v6
-        with:
-          path: dist
-          key: grok-bin-v1-${{ matrix.target }}-${{ hashFiles('third_party/grok-build/REVISION', 'scripts/build-grok.sh') }}
+      - name: Check for a published build of the pinned commit
+        id: pin
+        run: |
+          revision="$(tr -d '[:space:]' < third_party/grok-build/REVISION)"
+          tag="grok-build-${revision:0:12}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          mkdir -p dist
+          if gh release download "$tag" -R "$GITHUB_REPOSITORY" -D dist \
+              -p '${{ matrix.asset }}.gz.sha256' -p '${{ matrix.asset }}.version' 2>/dev/null; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "Reusing ${{ matrix.asset }} from release $tag"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install build dependencies
-        if: steps.built.outputs.cache-hit != 'true'
+        if: steps.pin.outputs.published != 'true'
         run: |
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             sudo apt-get update
@@ -197,7 +212,7 @@ jobs:
             brew install protobuf
           fi
       - name: Cache Cargo
-        if: steps.built.outputs.cache-hit != 'true'
+        if: steps.pin.outputs.published != 'true'
         uses: actions/cache@v6
         with:
           path: |
@@ -208,30 +223,40 @@ jobs:
           restore-keys: |
             grok-build-${{ matrix.target }}-
       - name: Build Grok Build
-        if: steps.built.outputs.cache-hit != 'true'
+        if: steps.pin.outputs.published != 'true'
         env:
           TARGET: ${{ matrix.target }}
           OUTPUT: dist/${{ matrix.asset }}
           NOTICES_DIR: dist/notices
         run: bash scripts/build-grok.sh
       - name: Smoke test
-        if: matrix.target != 'x86_64-apple-darwin'
+        if: steps.pin.outputs.published != 'true' && matrix.target != 'x86_64-apple-darwin'
         run: dist/${{ matrix.asset }} --version
-      - name: Upload binary
+      - name: Publish to the grok-build release
+        if: steps.pin.outputs.published != 'true' && github.ref_type == 'tag'
+        env:
+          TAG: ${{ steps.pin.outputs.tag }}
+        run: |
+          revision="$(tr -d '[:space:]' < third_party/grok-build/REVISION)"
+          # The four platform jobs race to create the release; losing is fine.
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Grok Build $(cat 'dist/${{ matrix.asset }}.version') (open source, $TAG)" \
+            --notes "Grok Build compiled without modification from https://github.com/xai-org/grok-build/tree/$revision (Apache-2.0). gbx downloads these archives and verifies them against the SHA-256 compiled into gbx." 2>/dev/null \
+            || gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null
+          files=(dist/${{ matrix.asset }}.gz dist/${{ matrix.asset }}.gz.sha256 dist/${{ matrix.asset }}.version)
+          if [[ "${{ matrix.asset }}" == grok-linux-amd64 ]]; then
+            cp dist/notices/GROK_BUILD_THIRD_PARTY_NOTICES dist/GROK_BUILD_THIRD_PARTY_NOTICES
+            cp third_party/grok-build/LICENSE dist/GROK_BUILD_LICENSE
+            files+=(dist/GROK_BUILD_THIRD_PARTY_NOTICES dist/GROK_BUILD_LICENSE)
+          fi
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "${files[@]}"
+      - name: Upload pin for the gbx build
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.asset }}
+          name: pin-${{ matrix.asset }}
           path: |
-            dist/${{ matrix.asset }}
+            dist/${{ matrix.asset }}.gz.sha256
             dist/${{ matrix.asset }}.version
-          if-no-files-found: error
-          retention-days: 3
-      - name: Upload notices
-        if: matrix.asset == 'grok-linux-amd64'
-        uses: actions/upload-artifact@v7
-        with:
-          name: grok-notices
-          path: dist/notices/
           if-no-files-found: error
           retention-days: 3
 
@@ -250,11 +275,6 @@ jobs:
           pattern: gbx-*
           path: dist
           merge-multiple: true
-      - name: Download Grok Build notices
-        uses: actions/download-artifact@v8
-        with:
-          name: grok-notices
-          path: dist/notices
       - name: Verify asset set and create checksums
         run: |
           for asset in gbx-darwin-amd64 gbx-darwin-arm64 gbx-linux-amd64 gbx-linux-arm64 gbx-win32-x64.exe gbx-win32-arm64.exe; do
@@ -270,7 +290,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          assets=(dist/*.gz dist/SHA256SUMS dist/notices/* THIRD_PARTY_NOTICES.md)
+          assets=(dist/* THIRD_PARTY_NOTICES.md)
           if gh release view "$VERSION" >/dev/null 2>&1; then
             # A re-run: refresh the assets of the existing release.
             gh release upload "$VERSION" "${assets[@]}" --clobber
@@ -302,11 +322,6 @@ jobs:
           pattern: gbx-*
           path: dist
           merge-multiple: true
-      - name: Download Grok Build notices
-        uses: actions/download-artifact@v8
-        with:
-          name: grok-notices
-          path: dist/notices
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:

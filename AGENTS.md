@@ -23,7 +23,7 @@ go test ./internal/oauthproxy ./internal/codex ./cmd
 
 Release binary (matches CI): `scripts/build-release.sh` with `GOOS`/`GOARCH`/`OUTPUT`/`VERSION`; uses `-trimpath -ldflags="-s -w -X github.com/grokbuildx/gbx/cmd.Version=..."`. `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` inject the Google Drive Desktop client (required by the release workflow; dev builds use `GBX_GOOGLE_OAUTH_CLIENT_ID/_SECRET`).
 
-Bundled Grok Build: `scripts/build-grok.sh` (`OUTPUT`, optional `TARGET`) compiles the open-source xai-org/grok-build commit in `third_party/grok-build/REVISION`; pass the result as `GROK_BINARY` to `scripts/build-release.sh` to embed it (`-tags grokbundle`, package `internal/grokbundle`). Plain `go build` embeds nothing and uses a system `grok`. Never point the embedded copy at a closed-source upstream binary.
+Pinned Grok Build: `scripts/build-grok.sh` (`OUTPUT`, optional `TARGET`) compiles the open-source xai-org/grok-build commit in `third_party/grok-build/REVISION` and writes `OUTPUT.gz` plus its `.sha256` and `.version`. `scripts/build-release.sh` with `GROK_VERSION`/`GROK_SHA256` stamps that pin into `internal/grokbundle`; gbx downloads `grok-build-<commit>` release assets on first launch and only again when `REVISION` changes. Plain `go build` pins nothing and uses a system `grok`. Never pin a closed-source upstream binary.
 
 ### Do not run the `gbx` binary as a test harness
 

@@ -124,17 +124,27 @@ func runDoctor(ctx context.Context, probe bool, target providerTarget) error {
 
 	doctorSection("Environment")
 
-	if path, err := lookGrokBinary(); err == nil {
-		source := "system"
-		if bundled, ok := groklaunch.BundledPath(); ok && bundled == path {
-			source = "bundled " + grokbundle.Describe()
-		} else if os.Getenv(groklaunch.BinaryEnv) != "" {
-			source = groklaunch.BinaryEnv
+	// Report without downloading: doctor stays read-only.
+	switch {
+	case os.Getenv(groklaunch.BinaryEnv) != "":
+		if path, err := groklaunch.LookSystemPath(); err == nil {
+			doctorOK("Grok Build CLI: " + path + " (" + groklaunch.BinaryEnv + ")")
+		} else {
+			doctorErr("Grok Build CLI: " + err.Error())
 		}
-		doctorOK("Grok Build CLI: " + path + " (" + source + ")")
-	} else {
-		doctorErr("Grok Build CLI: not installed")
-		doctorHint("Install Grok Build from https://x.ai/cli")
+	case grokbundle.Available():
+		if path, ok := grokbundle.Installed(); ok {
+			doctorOK("Grok Build CLI: " + path + " (pinned " + grokbundle.Describe() + ")")
+		} else {
+			doctorOK("Grok Build CLI: pinned " + grokbundle.Describe() + "; downloaded on first launch")
+		}
+	default:
+		if path, err := groklaunch.LookSystemPath(); err == nil {
+			doctorOK("Grok Build CLI: " + path + " (system)")
+		} else {
+			doctorErr("Grok Build CLI: not installed")
+			doctorHint("Install Grok Build from https://x.ai/cli")
+		}
 	}
 
 	cfg, err := config.Load()

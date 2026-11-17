@@ -298,19 +298,31 @@ var bundledPath = func() (string, bool) {
 	if !grokbundle.Available() {
 		return "", false
 	}
-	path, err := grokbundle.Path()
-	return path, err == nil
+	path, err := grokbundle.Path(context.Background())
+	if err != nil {
+		// Fall back to a system Grok Build rather than failing the launch.
+		fmt.Fprintf(os.Stderr, "gbx: %v; trying a system Grok Build\n", err)
+		return "", false
+	}
+	return path, true
 }
 
-// BundledPath returns the open-source Grok Build compiled into this gbx,
-// unpacked on first use. Development builds have none.
+// testBundledEnvPath stands in for the installed bundle in tests.
+var testBundledEnvPath string
+
+// BundledPath returns the open-source Grok Build pinned by this gbx,
+// downloading it the first time its commit is needed. Development builds
+// pin none.
 func BundledPath() (string, bool) { return bundledPath() }
 
 // WithBundledEnv disables Grok Build's self-updater when path is the copy
-// bundled in gbx: it changes only with gbx releases, and the upstream updater
+// pinned by gbx: it changes only with gbx releases, and the upstream updater
 // would swap the open-source build for a closed-source binary.
 func WithBundledEnv(path string, env []string) []string {
-	bundled, ok := BundledPath()
+	bundled, ok := grokbundle.Installed()
+	if testBundledEnvPath != "" {
+		bundled, ok = testBundledEnvPath, true
+	}
 	if !ok || bundled != path {
 		return env
 	}
@@ -324,18 +336,27 @@ func WithBundledEnv(path string, env []string) []string {
 	return append(out, "GROK_DISABLE_AUTOUPDATER=1")
 }
 
-// LookPath locates the Grok Build executable: GBX_GROK_BIN, then the copy
-// bundled in gbx, then PATH, then ~/.grok/bin.
+// LookPath locates the Grok Build executable: GBX_GROK_BIN, then the
+// open-source Grok Build pinned by gbx (downloaded once per commit), then a
+// system install.
 func LookPath() (string, error) {
+	if strings.TrimSpace(os.Getenv(BinaryEnv)) == "" {
+		if bundled, ok := BundledPath(); ok {
+			return bundled, nil
+		}
+	}
+	return LookSystemPath()
+}
+
+// LookSystemPath locates Grok Build without the pinned copy: GBX_GROK_BIN,
+// then PATH, then ~/.grok/bin. It never downloads.
+func LookSystemPath() (string, error) {
 	if override := strings.TrimSpace(os.Getenv(BinaryEnv)); override != "" {
 		path, err := exec.LookPath(override)
 		if err != nil {
 			return "", fmt.Errorf("%s=%s: %w", BinaryEnv, override, err)
 		}
 		return path, nil
-	}
-	if bundled, ok := BundledPath(); ok {
-		return bundled, nil
 	}
 	path, err := exec.LookPath("grok")
 	if err == nil {

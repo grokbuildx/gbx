@@ -88,12 +88,13 @@ SOFTWARE.
 
 ## Grok Build
 
-gbx release binaries for macOS and Linux embed Grok Build, compiled without
-modification from [xai-org/grok-build](https://github.com/xai-org/grok-build)
-at the commit in `third_party/grok-build/REVISION`. Grok Build is licensed
-under the Apache License 2.0 (`third_party/grok-build/LICENSE`, shipped as
-`GROK_BUILD_LICENSE`); its own third-party notices ship as
-`GROK_BUILD_THIRD_PARTY_NOTICES`.
+gbx release binaries for macOS and Linux download and run Grok Build,
+compiled without modification from
+[xai-org/grok-build](https://github.com/xai-org/grok-build) at the commit in
+`third_party/grok-build/REVISION` and published as the GitHub release
+`grok-build-<commit>`. Grok Build is licensed under the Apache License 2.0
+(`third_party/grok-build/LICENSE`); that release ships it as
+`GROK_BUILD_LICENSE` together with `GROK_BUILD_THIRD_PARTY_NOTICES`.
 
 ## Coder ACP Go SDK
 

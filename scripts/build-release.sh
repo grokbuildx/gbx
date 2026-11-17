@@ -20,21 +20,19 @@ fi
 if [[ -n "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then
   LDFLAGS="$LDFLAGS -X github.com/grokbuildx/gbx/internal/cloudsync.googleOAuthClientSecret=$GOOGLE_OAUTH_CLIENT_SECRET"
 fi
-# GROK_BINARY: an open-source Grok Build from scripts/build-grok.sh for this
-# GOOS/GOARCH. It is compiled into gbx; without it gbx uses a system install.
+# GROK_VERSION / GROK_SHA256: the open-source Grok Build this gbx pins, as
+# published in the grok-build-<commit> release (see scripts/build-grok.sh).
+# gbx downloads and verifies it on first use; without them gbx uses a system
+# Grok Build.
 root="$(cd "$(dirname "$0")/.." && pwd)"
-TAGS=""
-bundle="$root/internal/grokbundle/grok.gz"
-rm -f "$bundle"
-if [[ -n "${GROK_BINARY:-}" ]]; then
+if [[ -n "${GROK_SHA256:-}" ]]; then
+  [[ "$GROK_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "GROK_SHA256 must be a sha256 hex digest" >&2; exit 1; }
+  : "${GROK_VERSION:?GROK_VERSION is required with GROK_SHA256}"
   revision="$(tr -d '[:space:]' < "$root/third_party/grok-build/REVISION")"
-  grok_version="$(tr -d '[:space:]' < "$GROK_BINARY.version")"
-  gzip -9 -n -c "$GROK_BINARY" > "$bundle"
-  trap 'rm -f "$bundle"' EXIT
-  TAGS="grokbundle"
-  LDFLAGS="$LDFLAGS -X github.com/grokbuildx/gbx/internal/grokbundle.Version=$grok_version"
+  LDFLAGS="$LDFLAGS -X github.com/grokbuildx/gbx/internal/grokbundle.Version=$GROK_VERSION"
   LDFLAGS="$LDFLAGS -X github.com/grokbuildx/gbx/internal/grokbundle.Revision=$revision"
+  LDFLAGS="$LDFLAGS -X github.com/grokbuildx/gbx/internal/grokbundle.SHA256=$GROK_SHA256"
 fi
 mkdir -p "$(dirname "$OUTPUT")"
 OUTPUT="$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")"
-(cd "$root" && go build -trimpath -tags="$TAGS" -ldflags="$LDFLAGS" -o "$OUTPUT" .)
+(cd "$root" && go build -trimpath -ldflags="$LDFLAGS" -o "$OUTPUT" .)

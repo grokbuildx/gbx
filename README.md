@@ -10,26 +10,29 @@
 
 ### 完全开源：你运行的 agent 就是你能读到的代码
 
-**gbx 本身和它内置的编程 agent 都是开源的，二进制里没有任何闭源组件。**
+**gbx 本身和它运行的编程 agent 都是开源的，没有任何闭源组件。**
 
 | 组件 | 许可 | 源码 |
 |---|---|---|
 | gbx（启动器、代理、WebUI） | MIT | [grokbuildx/gbx](https://github.com/grokbuildx/gbx) |
-| 内置 Grok Build agent | Apache-2.0 | [xai-org/grok-build](https://github.com/xai-org/grok-build)，固定在 [`third_party/grok-build/REVISION`](third_party/grok-build/REVISION) 记录的提交 |
+| Grok Build agent | Apache-2.0 | [xai-org/grok-build](https://github.com/xai-org/grok-build)，固定在 [`third_party/grok-build/REVISION`](third_party/grok-build/REVISION) 记录的提交 |
 
 为什么这很重要：Grok Build 的开源仓库自 2026-09-29 起停留在 **1.0.45**，而官方通过 `x.ai/cli` 分发、并会自动更新的二进制已经到了 1.0.88 —— 这些新版本**没有公开源码**，你无法审计一个能读写你代码、执行 shell 命令的 agent 到底做了什么。
 
 gbx 的做法：
 
-- **从源码编译**：发布流程在公开的 GitHub Actions 中，从固定提交编译 Grok Build，再把它编进 gbx 二进制（macOS / Linux）。同一提交、同一脚本（[`scripts/build-grok.sh`](scripts/build-grok.sh)），任何人都可以复现。
-- **不会被悄悄替换**：gbx 启动内置版本时关闭 Grok Build 的自动更新，闭源的上游版本不会覆盖它；只有升级 gbx 才会换 agent。固定的源码提交没变时，升级 gbx 会沿用已解压的同一个 Grok Build。
-- **可以随时核对**：`gbx version` 显示 gbx 版本和内置 Grok Build 的版本及源码提交，`gbx doctor` 显示当前实际运行的是哪个 Grok Build。
+- **从源码编译**：每个固定提交只在公开的 GitHub Actions 中编译一次（macOS / Linux），发布为 Release `grok-build-<提交>`。同一提交、同一脚本（[`scripts/build-grok.sh`](scripts/build-grok.sh)），任何人都可以复现。
+- **钉死并校验**：每个 gbx 版本都写死了它使用的 Grok Build 提交和压缩包 SHA-256。首次启动时下载到 `~/.gbx/grok/rev-<提交>/`，校验不通过就拒绝使用。
+- **没变就不更新**：升级 gbx 时，只要固定的 Grok Build 提交没变，就不会重新下载或替换；只有提交变化时才下载新版本（约 70 MB）。
+- **不会被悄悄替换**：gbx 启动它固定的 Grok Build 时关闭其自动更新，闭源的上游版本不会覆盖它。
+- **可以随时核对**：`gbx version` 显示 gbx 版本、固定的 Grok Build 版本与源码提交以及是否已下载；`gbx doctor` 显示当前实际运行的是哪个 Grok Build。
 
 ```text
 $ gbx version
 gbx version vX.Y.Z
 Grok Build 1.0.45 (open source, built from xai-org/grok-build@2bdd1d6a6369)
   source: https://github.com/xai-org/grok-build/tree/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8
+  installed: /Users/you/.gbx/grok/rev-2bdd1d6a6369/grok
 ```
 
 ### 安装
@@ -46,7 +49,7 @@ gbx version
 gbx doctor     # 只读体检；加 --probe 才会逐个测模型（计费）
 ```
 
-macOS / Linux 的 npm 包与 Release 二进制已内置开源 Grok Build，无需另装；首次运行时解压到 `~/.gbx/grok/`。Windows 构建与 `go install` 不含内置版本，会依次使用 `GBX_GROK_BIN`、`PATH` 中的 `grok`、`~/.grok/bin/grok`。Codex 接入使用你现有的 Codex 客户端。
+macOS / Linux 的 npm 包与 Release 二进制固定了一个开源 Grok Build，无需另装：首次启动时自动下载并校验，之后只有固定提交变化才会再下载。Windows 构建与 `go install` 不固定版本，会依次使用 `GBX_GROK_BIN`、`PATH` 中的 `grok`、`~/.grok/bin/grok`；设置 `GBX_GROK_BIN` 也可以覆盖固定版本。Codex 接入使用你现有的 Codex 客户端。
 
 ### 快速开始
 
@@ -165,7 +168,7 @@ node --test scripts/npm-packages.test.js
 
 ### 许可
 
-gbx 采用 MIT。内置的 Grok Build 采用 Apache-2.0（[`third_party/grok-build/LICENSE`](third_party/grok-build/LICENSE)），每个发布包都附带 `GROK_BUILD_LICENSE` 和 `GROK_BUILD_THIRD_PARTY_NOTICES`。其他第三方参考实现见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。gbx 是独立的开源项目，与 xAI 无隶属关系。
+gbx 采用 MIT。Grok Build 采用 Apache-2.0（[`third_party/grok-build/LICENSE`](third_party/grok-build/LICENSE)），每个 `grok-build-<提交>` Release 都附带 `GROK_BUILD_LICENSE` 和 `GROK_BUILD_THIRD_PARTY_NOTICES`。其他第三方参考实现见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。gbx 是独立的开源项目，与 xAI 无隶属关系。
 
 ---
 
@@ -175,26 +178,29 @@ gbx 采用 MIT。内置的 Grok Build 采用 Apache-2.0（[`third_party/grok-bui
 
 ### Fully open source: the agent you run is the code you can read
 
-**gbx and the coding agent it ships are both open source. There is no closed-source component in the binary.**
+**gbx and the coding agent it runs are both open source. There is no closed-source component.**
 
 | Component | License | Source |
 |---|---|---|
 | gbx (launcher, proxy, WebUI) | MIT | [grokbuildx/gbx](https://github.com/grokbuildx/gbx) |
-| Bundled Grok Build agent | Apache-2.0 | [xai-org/grok-build](https://github.com/xai-org/grok-build), pinned to the commit in [`third_party/grok-build/REVISION`](third_party/grok-build/REVISION) |
+| Grok Build agent | Apache-2.0 | [xai-org/grok-build](https://github.com/xai-org/grok-build), pinned to the commit in [`third_party/grok-build/REVISION`](third_party/grok-build/REVISION) |
 
 Why it matters: the open-source Grok Build repository has stayed at **1.0.45** since 2026-09-29, while the official binary distributed through `x.ai/cli`, which updates itself, has reached 1.0.88. Those newer versions **have no published source**, so there is no way to audit what an agent that reads and writes your code and runs shell commands actually does.
 
 What gbx does about it:
 
-- **Built from source.** The release pipeline compiles Grok Build from the pinned commit in public GitHub Actions and compiles it into the gbx binary (macOS / Linux). Same commit, same script ([`scripts/build-grok.sh`](scripts/build-grok.sh)), reproducible by anyone.
-- **Never swapped silently.** gbx turns off Grok Build's self-updater when it launches the bundled copy, so a closed-source upstream build cannot replace it. The agent changes only when you upgrade gbx, and only if the pinned source commit changed; otherwise the Grok Build already unpacked stays in place.
-- **Checkable at any time.** `gbx version` prints the gbx version and the bundled Grok Build version with its source commit; `gbx doctor` shows which Grok Build is actually in use.
+- **Built from source.** Each pinned commit is compiled once in public GitHub Actions (macOS / Linux) and published as the release `grok-build-<commit>`. Same commit, same script ([`scripts/build-grok.sh`](scripts/build-grok.sh)), reproducible by anyone.
+- **Pinned and verified.** Every gbx release records the Grok Build commit it uses and the archive's SHA-256. On first launch gbx downloads it to `~/.gbx/grok/rev-<commit>/` and refuses it if the checksum does not match.
+- **No update when nothing changed.** Upgrading gbx downloads and replaces nothing as long as the pinned Grok Build commit is the same; only a new commit triggers a download (about 70 MB).
+- **Never swapped silently.** gbx turns off Grok Build's self-updater when it launches the pinned copy, so a closed-source upstream build cannot replace it.
+- **Checkable at any time.** `gbx version` prints the gbx version, the pinned Grok Build version and source commit, and whether it is downloaded yet; `gbx doctor` shows which Grok Build is actually in use.
 
 ```text
 $ gbx version
 gbx version vX.Y.Z
 Grok Build 1.0.45 (open source, built from xai-org/grok-build@2bdd1d6a6369)
   source: https://github.com/xai-org/grok-build/tree/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8
+  installed: /Users/you/.gbx/grok/rev-2bdd1d6a6369/grok
 ```
 
 ### Install
@@ -211,7 +217,7 @@ gbx version
 gbx doctor     # read-only checks; --probe tests each model (billed)
 ```
 
-On macOS and Linux, the npm packages and release binaries include the open-source Grok Build; nothing else to install. It is unpacked to `~/.gbx/grok/` on first run. Windows builds and `go install` builds do not bundle it and use, in order, `GBX_GROK_BIN`, `grok` on `PATH`, then `~/.grok/bin/grok`. Codex integration uses your existing Codex client.
+On macOS and Linux, the npm packages and release binaries pin an open-source Grok Build; nothing else to install. It is downloaded and verified on first launch, and again only when the pinned commit changes. Windows builds and `go install` builds pin none and use, in order, `GBX_GROK_BIN`, `grok` on `PATH`, then `~/.grok/bin/grok`; setting `GBX_GROK_BIN` also overrides the pinned copy. Codex integration uses your existing Codex client.
 
 ### Quick start
 
@@ -330,4 +336,4 @@ node --test scripts/npm-packages.test.js
 
 ### License
 
-gbx is MIT-licensed. The bundled Grok Build is Apache-2.0 ([`third_party/grok-build/LICENSE`](third_party/grok-build/LICENSE)); every release package includes `GROK_BUILD_LICENSE` and `GROK_BUILD_THIRD_PARTY_NOTICES`. Other third-party references: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). gbx is an independent open-source project and is not affiliated with xAI.
+gbx is MIT-licensed. Grok Build is Apache-2.0 ([`third_party/grok-build/LICENSE`](third_party/grok-build/LICENSE)); every `grok-build-<commit>` release includes `GROK_BUILD_LICENSE` and `GROK_BUILD_THIRD_PARTY_NOTICES`. Other third-party references: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). gbx is an independent open-source project and is not affiliated with xAI.

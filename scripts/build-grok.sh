@@ -2,8 +2,9 @@
 # Build the open-source Grok Build CLI (xai-org/grok-build) at the revision
 # pinned in third_party/grok-build/REVISION.
 #
-#   OUTPUT        path of the produced grok binary (required); its upstream
-#                 version is written to OUTPUT.version
+#   OUTPUT        path of the produced grok binary (required). Also writes
+#                 OUTPUT.gz (the release archive), OUTPUT.gz.sha256 and
+#                 OUTPUT.version (the upstream version)
 #   NOTICES_DIR   where to copy GROK_BUILD_LICENSE and
 #                 GROK_BUILD_THIRD_PARTY_NOTICES (default: dirname OUTPUT)
 #   TARGET        optional Rust target triple
@@ -55,4 +56,10 @@ cp "$work/LICENSE" "$notices/GROK_BUILD_LICENSE"
 cp "$work/THIRD-PARTY-NOTICES" "$notices/GROK_BUILD_THIRD_PARTY_NOTICES"
 sed -n 's/^version *= *"\(.*\)"/\1/p' "$work/crates/codegen/xai-grok-version/Cargo.toml" | head -1 > "$OUTPUT.version"
 [[ -s "$OUTPUT.version" ]] || { echo "cannot read Grok Build version" >&2; exit 1; }
-echo "built Grok Build $(cat "$OUTPUT.version") ($revision) -> $OUTPUT"
+gzip -9 -n -c "$OUTPUT" > "$OUTPUT.gz"
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum "$OUTPUT.gz" | cut -d' ' -f1 > "$OUTPUT.gz.sha256"
+else
+  shasum -a 256 "$OUTPUT.gz" | cut -d' ' -f1 > "$OUTPUT.gz.sha256"
+fi
+echo "built Grok Build $(cat "$OUTPUT.version") ($revision) -> $OUTPUT.gz sha256 $(cat "$OUTPUT.gz.sha256")"

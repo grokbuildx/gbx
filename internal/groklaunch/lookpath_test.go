@@ -17,9 +17,10 @@ func writeExecutable(t *testing.T, path string) {
 // withBundle stands in for the Grok Build compiled into release builds.
 func withBundle(t *testing.T, path string) {
 	t.Helper()
-	old := bundledPath
+	old, oldEnv := bundledPath, testBundledEnvPath
 	bundledPath = func() (string, bool) { return path, path != "" }
-	t.Cleanup(func() { bundledPath = old })
+	testBundledEnvPath = path
+	t.Cleanup(func() { bundledPath, testBundledEnvPath = old, oldEnv })
 }
 
 func TestLookPathPrefersBundledGrokOverPath(t *testing.T) {
