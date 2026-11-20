@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -132,7 +133,9 @@ func detectType(path, name string) string {
 // sanitizeFileName keeps a recognizable name that is safe as one path
 // element on every platform.
 func sanitizeFileName(name string) string {
-	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+	// path.Base, not filepath.Base: on Windows filepath.Base also drops a
+	// drive-like prefix, turning "a:b.png" into "b.png".
+	name = path.Base(strings.ReplaceAll(name, "\\", "/"))
 	var b strings.Builder
 	for _, r := range name {
 		switch {

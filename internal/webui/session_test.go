@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -204,7 +205,9 @@ func TestSessionFilesArePrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
+	// Windows has no Unix mode bits: a writable file always reports 0666, and
+	// privacy comes from the per-user profile directory's ACL instead.
+	if mode := info.Mode().Perm(); runtime.GOOS != "windows" && mode != 0o600 {
 		t.Fatalf("events.jsonl mode = %v, want 0600", mode)
 	}
 }

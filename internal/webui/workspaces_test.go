@@ -57,7 +57,9 @@ func TestWorkspaceRootsOfferTheirSubdirectories(t *testing.T) {
 	}
 	// /health lists them too, with the default one for older clients.
 	_, body := doJSON(t, "GET", httpServer.URL+"/health", "", "")
-	if !strings.Contains(string(body), `"workspaces":[`) || !strings.Contains(string(body), `"workspace":"`+fixed+`"`) {
+	// JSON escapes the backslashes of a Windows path.
+	quoted, _ := json.Marshal(fixed)
+	if !strings.Contains(string(body), `"workspaces":[`) || !strings.Contains(string(body), `"workspace":`+string(quoted)) {
 		t.Fatalf("health = %s", body)
 	}
 }

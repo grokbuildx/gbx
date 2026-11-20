@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -878,7 +879,12 @@ func TestDefaultLauncherDefaultProviderUsesGrok(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("GROK_SANDBOX", "off")
 	bin := t.TempDir()
-	script := filepath.Join(bin, "grok")
+	// Windows resolves commands only with a PATHEXT extension.
+	name := "grok"
+	if runtime.GOOS == "windows" {
+		name = "grok.exe"
+	}
+	script := filepath.Join(bin, name)
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Skipf("cannot write a shell script here: %v", err)
 	}
