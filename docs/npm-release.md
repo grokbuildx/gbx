@@ -39,7 +39,7 @@ then drop `NODE_AUTH_TOKEN` from the workflow and delete the secret. `npm trust`
 
 ## Release workflow
 
-`node scripts/build-npm-packages.js vMAJOR.MINOR.PATCH` validates all six compressed release assets under `dist/` and stages seven packages under `dist/npm/`. Legacy four-component tags become npm prerelease versions, matching the previous workflow.
+`node scripts/build-npm-packages.js vMAJOR.MINOR.PATCH` validates all six compressed release assets under `dist/` and stages seven packages under `dist/npm/`. A release tag is the npm version with a leading `v`: `v1.0.0` publishes `1.0.0`, and `v1.0.0-0` publishes the prerelease `1.0.0-0` under the `latest` dist-tag (npm 11 requires an explicit tag for prereleases).
 
 `node scripts/publish-npm-packages.js dist/npm` skips versions that already exist, publishes the six platform packages in parallel, and publishes the launcher once npm has accepted all six. It does not wait for npm to serve them: npm can take from about one to more than thirteen minutes per package, and an install in that window skips the unresolved optional dependency without failing. `bin/install.js` then downloads the same `.gz` asset from the GitHub release (`GBX_RELEASE_DOWNLOAD_URL` overrides the base URL), verifies it against `SHA256SUMS`, and places it; the npm job runs after the GitHub release job for that reason. A failed download fails the install. Reruns safely continue from already-published versions.
 

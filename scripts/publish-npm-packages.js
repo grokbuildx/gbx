@@ -61,10 +61,9 @@ function npm(args, options = {}) {
 // differs per package. The launcher no longer waits for it: when npm skips a
 // platform package it cannot resolve yet, bin/install.js downloads the same
 // binary from the GitHub release, which the workflow creates first.
-// A four-component release tag (vMAJOR.MINOR.PATCH.BUILD) is published as the
-// npm prerelease MAJOR.MINOR.PATCH-BUILD. npm 11 refuses a prerelease without
-// an explicit dist-tag; these releases are the current version, so tag them
-// latest like any other release.
+// A vMAJOR.MINOR.PATCH-N tag is the npm prerelease MAJOR.MINOR.PATCH-N. npm 11
+// refuses a prerelease without an explicit dist-tag; these releases are the
+// current version, so tag them latest like any other release.
 function publishArgs(version) {
   const args = ['publish', '--provenance', '--access', 'public'];
   if (String(version).includes('-')) args.push('--tag', 'latest');

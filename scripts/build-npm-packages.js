@@ -9,9 +9,10 @@ const { platforms } = require('../bin/platforms');
 const launcherFiles = ['gbx.exe', 'install.js', 'wrapper.js', 'platforms.js'];
 
 function releaseVersion(value) {
-  const match = /^v?(\d+\.\d+\.\d+)(?:\.(\d+))?$/.exec(value || '');
-  if (!match) throw new Error('Expected vMAJOR.MINOR.PATCH (or a legacy fourth component)');
-  return match[1] + (match[2] ? '-' + match[2] : '');
+  // A release tag is the npm version with a leading v: v1.0.0 or v1.0.0-0.
+  const match = /^v?(\d+\.\d+\.\d+(?:-\d+)?)$/.exec(value || '');
+  if (!match) throw new Error('Expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-N');
+  return match[1];
 }
 
 function buildPackages(options) {

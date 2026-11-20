@@ -44,12 +44,11 @@ function install(binDir, os, arch) {
     return true;
 }
 
-// releaseTag inverts build-npm-packages.js releaseVersion: 1.6.10 -> v1.6.10,
-// and the legacy prerelease form 1.2.3-4 -> v1.2.3.4.
+// releaseTag inverts build-npm-packages.js releaseVersion: a release tag is
+// the npm version with a leading v (1.6.10 -> v1.6.10, 1.0.0-0 -> v1.0.0-0).
 function releaseTag(version) {
-    var match = /^(\d+\.\d+\.\d+)(?:-(\d+))?$/.exec(version || '');
-    if (!match) throw new Error('cannot derive a release tag from version ' + version);
-    return 'v' + match[1] + (match[2] ? '.' + match[2] : '');
+    if (!/^\d+\.\d+\.\d+(?:-\d+)?$/.test(version || '')) throw new Error('cannot derive a release tag from version ' + version);
+    return 'v' + version;
 }
 
 function get(url, redirects) {

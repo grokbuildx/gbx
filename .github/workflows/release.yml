@@ -39,10 +39,10 @@ jobs:
         run: |
           if [[ "$REF_TYPE" != tag ]]; then
             echo 'version=dev' >> "$GITHUB_OUTPUT"
-          elif [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+          elif [[ "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9]+)?$ ]]; then
             echo "version=$TAG_NAME" >> "$GITHUB_OUTPUT"
           else
-            echo "Release tags must use vMAJOR.MINOR.PATCH (or legacy vMAJOR.MINOR.PATCH.BUILD): $TAG_NAME"
+            echo "Release tags must use vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-N (the npm version with a v): $TAG_NAME"
             exit 1
           fi
 

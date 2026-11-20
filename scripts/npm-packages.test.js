@@ -125,9 +125,11 @@ test('wrapper forwards arguments and nonzero exit status to the native child', t
   assert.equal(result.stdout.trim(), 'argument with spaces');
 });
 
-test('rejects invalid release versions and preserves legacy npm semver', () => {
-  assert.equal(releaseVersion('v1.2.3.4'), '1.2.3-4');
+test('release tags are the npm version with a v', () => {
+  assert.equal(releaseVersion('v1.0.0-0'), '1.0.0-0');
+  assert.equal(releaseVersion('v2.0.1'), '2.0.1');
   assert.throws(() => releaseVersion('dev'), /Expected/);
+  assert.throws(() => releaseVersion('v1.2.3.4'), /Expected/);
 });
 
 function npmCLI() {
@@ -236,7 +238,7 @@ test('npm installs exactly one native tarball from platform optional dependencie
 
 test('release tags round-trip npm versions', () => {
   const { releaseTag } = require('../bin/install');
-  for (const tag of ['v2.0.1', 'v1.2.3.4']) assert.equal(releaseTag(releaseVersion(tag)), tag);
+  for (const tag of ['v2.0.1', 'v1.0.0-0']) assert.equal(releaseTag(releaseVersion(tag)), tag);
 });
 
 test('launcher is published only after every platform upload is accepted', async t => {
@@ -269,8 +271,8 @@ test('launcher is published only after every platform upload is accepted', async
   assert.ok(!published.includes('darwin-x64'));
 });
 
-test('four-component releases publish as the latest npm prerelease', () => {
+test('prerelease tags publish as the latest npm version', () => {
   const { publishArgs } = require('./publish-npm-packages');
-  assert.deepEqual(publishArgs(releaseVersion('v1.0.0.0')), ['publish', '--provenance', '--access', 'public', '--tag', 'latest']);
+  assert.deepEqual(publishArgs(releaseVersion('v1.0.0-0')), ['publish', '--provenance', '--access', 'public', '--tag', 'latest']);
   assert.deepEqual(publishArgs(releaseVersion('v2.1.3')), ['publish', '--provenance', '--access', 'public']);
 });
