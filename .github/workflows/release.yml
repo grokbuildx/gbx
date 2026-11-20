@@ -111,12 +111,13 @@ jobs:
           key: gbx-release-v3-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod', 'go.sum', 'scripts/build-release.sh') }}
           restore-keys: |
             gbx-release-v3-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.go.outputs.go-version }}-
-      - name: Download Grok Build pin
+      - name: Download Grok Build pins
         if: matrix.grok
         uses: actions/download-artifact@v8
         with:
-          name: pin-${{ matrix.grok }}
+          pattern: pin-*
           path: grok
+          merge-multiple: true
       - name: Read Grok Build pin
         if: matrix.grok
         run: |
@@ -162,48 +163,53 @@ jobs:
   # Windows is not a supported upstream build host, so Windows gbx uses a
   # system Grok Build.
   build-grok:
-    name: Grok Build ${{ matrix.asset }}
+    name: Grok Build ${{ matrix.name }}
     needs: prepare
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: 180
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Space-separated target=asset pairs built on this runner. Both macOS
+      # targets share one runner: macOS capacity is scarce, and one job that
+      # gets a machine beats two that may each wait for one.
+      BUILDS: ${{ matrix.builds }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-latest
-            target: x86_64-apple-darwin
-            asset: grok-darwin-amd64
-          - runner: macos-latest
-            target: aarch64-apple-darwin
-            asset: grok-darwin-arm64
-          - runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            asset: grok-linux-amd64
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            asset: grok-linux-arm64
+          - name: darwin
+            runner: macos-latest
+            builds: aarch64-apple-darwin=grok-darwin-arm64 x86_64-apple-darwin=grok-darwin-amd64
+          - name: linux-amd64
+            runner: ubuntu-latest
+            builds: x86_64-unknown-linux-gnu=grok-linux-amd64
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            builds: aarch64-unknown-linux-gnu=grok-linux-arm64
     steps:
       - uses: actions/checkout@v5
-      - name: Check for a published build of the pinned commit
+      - name: Check for published builds of the pinned commit
         id: pin
         run: |
           revision="$(tr -d '[:space:]' < third_party/grok-build/REVISION)"
           tag="grok-build-${revision:0:12}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           mkdir -p dist
-          if gh release download "$tag" -R "$GITHUB_REPOSITORY" -D dist \
-              -p '${{ matrix.asset }}.gz.sha256' -p '${{ matrix.asset }}.version' 2>/dev/null; then
-            echo "published=true" >> "$GITHUB_OUTPUT"
-            echo "Reusing ${{ matrix.asset }} from release $tag"
-          else
-            echo "published=false" >> "$GITHUB_OUTPUT"
-          fi
+          missing=()
+          for build in $BUILDS; do
+            asset="${build#*=}"
+            if gh release download "$tag" -R "$GITHUB_REPOSITORY" -D dist \
+                -p "$asset.gz.sha256" -p "$asset.version" 2>/dev/null; then
+              echo "Reusing $asset from release $tag"
+            else
+              missing+=("$build")
+            fi
+          done
+          echo "missing=${missing[*]}" >> "$GITHUB_OUTPUT"
       - name: Install build dependencies
-        if: steps.pin.outputs.published != 'true'
+        if: steps.pin.outputs.missing != ''
         run: |
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             sudo apt-get update
@@ -212,51 +218,73 @@ jobs:
             brew install protobuf
           fi
       - name: Cache Cargo
-        if: steps.pin.outputs.published != 'true'
+        if: steps.pin.outputs.missing != ''
         uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             .grok-build-src/target
-          key: grok-build-${{ matrix.target }}-${{ hashFiles('third_party/grok-build/REVISION') }}
+          key: grok-build-${{ matrix.name }}-${{ hashFiles('third_party/grok-build/REVISION') }}
           restore-keys: |
-            grok-build-${{ matrix.target }}-
+            grok-build-${{ matrix.name }}-
       - name: Build Grok Build
-        if: steps.pin.outputs.published != 'true'
+        if: steps.pin.outputs.missing != ''
         env:
-          TARGET: ${{ matrix.target }}
-          OUTPUT: dist/${{ matrix.asset }}
+          MISSING: ${{ steps.pin.outputs.missing }}
           NOTICES_DIR: dist/notices
-        run: bash scripts/build-grok.sh
+        run: |
+          for build in $MISSING; do
+            TARGET="${build%%=*}" OUTPUT="dist/${build#*=}" bash scripts/build-grok.sh
+          done
       - name: Smoke test
-        if: steps.pin.outputs.published != 'true' && matrix.target != 'x86_64-apple-darwin'
-        run: dist/${{ matrix.asset }} --version
+        if: steps.pin.outputs.missing != ''
+        env:
+          MISSING: ${{ steps.pin.outputs.missing }}
+        run: |
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          for build in $MISSING; do
+            # Only a binary for this runner's own architecture can run here.
+            if [[ "${build%%=*}" == "$host" ]]; then
+              "dist/${build#*=}" --version
+            fi
+          done
       - name: Publish to the grok-build release
-        if: steps.pin.outputs.published != 'true' && github.ref_type == 'tag'
+        if: steps.pin.outputs.missing != '' && github.ref_type == 'tag'
         env:
           TAG: ${{ steps.pin.outputs.tag }}
+          MISSING: ${{ steps.pin.outputs.missing }}
         run: |
           revision="$(tr -d '[:space:]' < third_party/grok-build/REVISION)"
-          # The four platform jobs race to create the release; losing is fine.
+          first="${MISSING%% *}"
+          # The platform jobs race to create the release; losing is fine.
           gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
-            --title "Grok Build $(cat 'dist/${{ matrix.asset }}.version') (open source, $TAG)" \
+            --title "Grok Build $(cat "dist/${first#*=}.version") (open source, $TAG)" \
             --notes "Grok Build compiled without modification from https://github.com/xai-org/grok-build/tree/$revision (Apache-2.0). gbx downloads these archives and verifies them against the SHA-256 compiled into gbx." 2>/dev/null \
             || gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null
-          files=(dist/${{ matrix.asset }}.gz dist/${{ matrix.asset }}.gz.sha256 dist/${{ matrix.asset }}.version)
-          if [[ "${{ matrix.asset }}" == grok-linux-amd64 ]]; then
-            cp dist/notices/GROK_BUILD_THIRD_PARTY_NOTICES dist/GROK_BUILD_THIRD_PARTY_NOTICES
-            cp third_party/grok-build/LICENSE dist/GROK_BUILD_LICENSE
-            files+=(dist/GROK_BUILD_THIRD_PARTY_NOTICES dist/GROK_BUILD_LICENSE)
-          fi
+          files=()
+          for build in $MISSING; do
+            asset="${build#*=}"
+            files+=("dist/$asset.gz" "dist/$asset.gz.sha256" "dist/$asset.version")
+            if [[ "$asset" == grok-linux-amd64 ]]; then
+              cp dist/notices/GROK_BUILD_THIRD_PARTY_NOTICES dist/GROK_BUILD_THIRD_PARTY_NOTICES
+              cp third_party/grok-build/LICENSE dist/GROK_BUILD_LICENSE
+              files+=(dist/GROK_BUILD_THIRD_PARTY_NOTICES dist/GROK_BUILD_LICENSE)
+            fi
+          done
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "${files[@]}"
-      - name: Upload pin for the gbx build
+      - name: Collect pins for the gbx build
+        run: |
+          mkdir -p pins
+          for build in $BUILDS; do
+            asset="${build#*=}"
+            cp "dist/$asset.gz.sha256" "dist/$asset.version" pins/
+          done
+      - name: Upload pins for the gbx build
         uses: actions/upload-artifact@v7
         with:
-          name: pin-${{ matrix.asset }}
-          path: |
-            dist/${{ matrix.asset }}.gz.sha256
-            dist/${{ matrix.asset }}.version
+          name: pin-${{ matrix.name }}
+          path: pins/
           if-no-files-found: error
           retention-days: 3
 
