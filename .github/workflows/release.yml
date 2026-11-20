@@ -190,7 +190,20 @@ jobs:
             builds: aarch64-unknown-linux-gnu=grok-linux-arm64
     steps:
       - uses: actions/checkout@v5
-      - name: Check for published builds of the pinned commit
+      # A pinned commit is compiled once. Its finished binaries are cached by
+      # REVISION, so later runs on main or tags restore them instead of
+      # rebuilding; tags then only publish them.
+      - name: Restore built Grok Build
+        id: built
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            dist/*.gz
+            dist/*.gz.sha256
+            dist/*.version
+            dist/notices
+          key: grok-bin-v2-${{ matrix.name }}-${{ hashFiles('third_party/grok-build/REVISION', 'scripts/build-grok.sh') }}
+      - name: Check for published or cached builds of the pinned commit
         id: pin
         run: |
           revision="$(tr -d '[:space:]' < third_party/grok-build/REVISION)"
@@ -198,16 +211,22 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           mkdir -p dist
           missing=()
+          unpublished=()
           for build in $BUILDS; do
             asset="${build#*=}"
-            if gh release download "$tag" -R "$GITHUB_REPOSITORY" -D dist \
+            if gh release download "$tag" -R "$GITHUB_REPOSITORY" -D dist --clobber \
                 -p "$asset.gz.sha256" -p "$asset.version" 2>/dev/null; then
               echo "Reusing $asset from release $tag"
+            elif [[ -s "dist/$asset.gz" && -s "dist/$asset.gz.sha256" && -s "dist/$asset.version" ]]; then
+              echo "Reusing cached $asset"
+              unpublished+=("$build")
             else
               missing+=("$build")
+              unpublished+=("$build")
             fi
           done
           echo "missing=${missing[*]}" >> "$GITHUB_OUTPUT"
+          echo "unpublished=${unpublished[*]}" >> "$GITHUB_OUTPUT"
       - name: Install build dependencies
         if: steps.pin.outputs.missing != ''
         run: |
@@ -221,10 +240,11 @@ jobs:
         if: steps.pin.outputs.missing != ''
         uses: actions/cache@v6
         with:
+          # Only downloaded crates: a release target/ is several GB per target
+          # and would evict the built-binary cache from the 10 GB repo quota.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            .grok-build-src/target
           key: grok-build-${{ matrix.name }}-${{ hashFiles('third_party/grok-build/REVISION') }}
           restore-keys: |
             grok-build-${{ matrix.name }}-
@@ -233,10 +253,23 @@ jobs:
         env:
           MISSING: ${{ steps.pin.outputs.missing }}
           NOTICES_DIR: dist/notices
+          # Upstream's release profile enables incremental compilation, which
+          # only slows a one-shot CI build and bloats the Cargo cache.
+          CARGO_INCREMENTAL: "0"
         run: |
           for build in $MISSING; do
             TARGET="${build%%=*}" OUTPUT="dist/${build#*=}" bash scripts/build-grok.sh
           done
+      - name: Save built Grok Build
+        if: steps.pin.outputs.missing != ''
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            dist/*.gz
+            dist/*.gz.sha256
+            dist/*.version
+            dist/notices
+          key: ${{ steps.built.outputs.cache-primary-key }}
       - name: Smoke test
         if: steps.pin.outputs.missing != ''
         env:
@@ -250,10 +283,10 @@ jobs:
             fi
           done
       - name: Publish to the grok-build release
-        if: steps.pin.outputs.missing != '' && github.ref_type == 'tag'
+        if: steps.pin.outputs.unpublished != '' && github.ref_type == 'tag'
         env:
           TAG: ${{ steps.pin.outputs.tag }}
-          MISSING: ${{ steps.pin.outputs.missing }}
+          MISSING: ${{ steps.pin.outputs.unpublished }}
         run: |
           revision="$(tr -d '[:space:]' < third_party/grok-build/REVISION)"
           first="${MISSING%% *}"
