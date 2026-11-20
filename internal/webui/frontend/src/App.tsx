@@ -1,13 +1,14 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Folders, Moon, PanelRight, PanelRightClose, Paperclip, Plus, Settings, SquareTerminal, Sun, X } from "lucide-react";
 import { Api, HttpError, Unauthorized, storeToken, storedToken } from "./api";
-import type { Attachment, Capabilities, ConfigView, GitStatus, Health, PermissionDecision, ProjectDefaults, ProviderView, Schedule, Session, StoredEvent, Workspace } from "./types";
+import type { Attachment, Capabilities, ConfigView, GitStatus, Health, PermissionDecision, ProjectDefaults, ProviderView, Schedule, Session, Workspace } from "./types";
 import { agentsOf, agentThread, buildThread, latestCapabilities, pendingPermissions, toolActive } from "./thread";
 import { AgentBanner, AgentsPanel } from "./components/AgentsPanel";
 import { diffSection, download, safeFileName, transcriptHTML, transcriptMarkdown } from "./export";
 import { CommandPalette } from "./components/CommandPalette";
 import { useConversation } from "./useConversation";
-import type { Queued } from "./queue";
+import { contextOf } from "./context";
+import { useMessageQueue } from "./useMessageQueue";
 import { I18n, resolveLang, translator } from "./i18n";
 import { Sidebar, SidebarIcon } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
@@ -111,25 +112,6 @@ function parseAgentTab(key: string): [string, string] {
 const narrow = () => window.matchMedia("(max-width: 767px)").matches;
 const NO_CAPABILITIES: Capabilities = { slashCommands: [], mcpServers: [] };
 
-// contextOf is the size of the newest model call against the model's window:
-// a provider's Balanced preset caps every slot to its own window (presetWindow);
-// otherwise a model id marked [1m] runs with the 1M window.
-function contextOf(events: StoredEvent[], session: Session | null, presetWindow?: number): { tokens: number; window: number } | undefined {
-  let tokens = 0;
-  let model = session?.model || "";
-  for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i];
-    if (!tokens && event.type === "context") tokens = Number((event.payload as { tokens?: number }).tokens) || 0;
-    if (event.type === "init") {
-      model = String((event.payload as { model?: string }).model || model);
-      break;
-    }
-  }
-  if (!tokens) return undefined;
-  if (presetWindow) return { tokens, window: presetWindow };
-  return { tokens, window: /\[1m\]|-1m\b/i.test(model) ? 1_000_000 : 200_000 };
-}
-
 export function App() {
   const [token, setToken] = useState(storedToken);
   const api = useMemo(() => new Api(token), [token]);
@@ -161,7 +143,6 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [git, setGit] = useState<GitStatus | null>(null);
-  const [queues, setQueues] = useState<Record<string, Queued[]>>({});
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [update, setUpdate] = useState("");
   // The avatar's dot: the primary cloud remote is in sync, or not.
@@ -274,7 +255,9 @@ export function App() {
   const loadConfig = useCallback(async () => {
     fetchedProviderModels.current.clear();
     try {
-      setConfig(await api.config());
+      const next = await api.config();
+      setConfig(next);
+      setServerCapabilities((current) => ({ ...current, defaultSandbox: next.serveSandbox ?? "workspace" }));
       setConfigError("");
     } catch (error) {
       if (error instanceof Unauthorized) fail(error);
@@ -392,6 +375,7 @@ export function App() {
           ...serverCapabilities,
           ...own,
           defaultPermissionMode: serverCapabilities.defaultPermissionMode,
+          defaultSandbox: serverCapabilities.defaultSandbox,
           defaultProvider: serverCapabilities.defaultProvider,
           defaultModel: serverCapabilities.defaultModel,
           defaultEffort: serverCapabilities.defaultEffort,
@@ -445,6 +429,14 @@ export function App() {
       );
     }).catch(() => {});
   }, [phase, config, current?.provider, capabilities.defaultProvider, api]);
+  const contextRoute = current || draftRoute;
+  const contextProvider = config?.providers[contextRoute?.provider || capabilities.defaultProvider || "default"];
+  const context = contextOf(
+    current ? conversation.events : [],
+    contextRoute?.model,
+    contextProvider?.contextWindow,
+    contextProvider?.defaultModel || (contextProvider ? contextProvider.models?.split(",")[0]?.trim() : capabilities.defaultModel),
+  );
   const workspace = activeWorkspace?.path || health?.workspace || "";
 
   // Another workspace has other files and git history.
@@ -562,14 +554,18 @@ export function App() {
     return api.upload(id, files);
   };
 
+  const messageQueue = useMessageQueue(api, phase === "ready" ? currentId : null, conversation, scheduleRefresh, fail);
+  const queue = messageQueue.items;
+
   const send = async (text: string, attachments: string[]): Promise<boolean> => {
     const id = await ensureSession();
     if (!id) return false;
     // Notifications need the user's permission, asked on a click.
     if (typeof Notification !== "undefined" && Notification.permission === "default") void Notification.requestPermission();
-    if (conversation.running && id === currentId) {
+    const queued = messageQueue.queue.get(id);
+    if ((conversation.running && id === currentId) || queued.items.length || queued.sending || queued.waiting) {
       const item = { key: `${Date.now()}-${Math.random().toString(36).slice(2)}`, text, attachments };
-      setQueues((all) => ({ ...all, [id]: [...(all[id] || []), item] }));
+      messageQueue.queue.add(id, item);
       return true;
     }
     try {
@@ -582,27 +578,6 @@ export function App() {
       return false;
     }
   };
-
-  // A queued message goes out once the turn before it ended.
-  const queue = (currentId && queues[currentId]) || [];
-  const flushing = useRef(false);
-  useEffect(() => {
-    if (!currentId || conversation.loading || flushing.current) return;
-    if (conversation.running || !queue.length) return;
-    const [next, ...rest] = queue;
-    flushing.current = true;
-    setQueues((all) => ({ ...all, [currentId]: rest }));
-    api
-      .send(currentId, next.text, next.attachments)
-      .then(() => {
-        conversation.setRunning(true);
-        scheduleRefresh();
-      })
-      .catch(fail)
-      .finally(() => {
-        flushing.current = false;
-      });
-  }, [currentId, conversation, queue, api, fail, scheduleRefresh]);
 
   // Tell the user when a turn ends while the page is in the background.
   const wasRunning = useRef(false);
@@ -1167,9 +1142,10 @@ export function App() {
                 registerAddFiles={registerAddFiles}
                 registerMention={registerMention}
                 onSearchFiles={async (query) => (await wsApi.searchFiles(query)).files}
-                queued={queue.map((item) => ({ key: item.key, text: item.text, files: item.attachments.length }))}
-                onRemoveQueued={(key) => currentId && setQueues((all) => ({ ...all, [currentId]: (all[currentId] || []).filter((item) => item.key !== key) }))}
-                context={contextOf(conversation.events, current, current ? config?.providers[current.provider]?.contextWindow : undefined)}
+                queued={queue.map((item) => ({ key: item.key, text: item.text, files: item.attachments.length, sending: messageQueue.sending === item.key, failed: item.failed }))}
+                onSendQueued={messageQueue.sendNow}
+                onRemoveQueued={messageQueue.remove}
+                context={context}
                 awaitingPermission={pending.length > 0}
                 scheduled={schedules}
                 onSchedule={scheduleMessage}

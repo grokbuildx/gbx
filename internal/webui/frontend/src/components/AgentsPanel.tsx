@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, Bot, CircleX, LoaderCircle } from "lucide-react";
 import type { ThreadItem, ToolItem } from "../thread";
-import { agentsOf, toolActive } from "../thread";
+import { agentStepCount, agentsOf, toolActive } from "../thread";
 import { elapsed, tokenCount } from "../format";
 import { useI18n } from "../i18n";
 
@@ -73,7 +73,7 @@ function AgentLabel({ tool, now }: { tool: ToolItem; now: number }) {
   const type = tool.task?.agent || String(tool.input?.subagent_type || "") || tool.name;
   const what = tool.description || tool.task?.description || tool.summary;
   const spent = tool.task?.usage?.durationMs || (tool.startedAt ? (tool.endedAt || (running ? now : tool.startedAt)) - tool.startedAt : 0);
-  const stepCount = tool.children.length || tool.task?.usage?.toolUses || 0;
+  const stepCount = agentStepCount(tool);
   const parts = [
     running ? t("toolRunning") : status === "stopped" ? t("stopped") : status === "failed" ? t("failed") : t("done"),
     spent > 0 ? elapsed(spent) : "",

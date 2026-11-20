@@ -235,7 +235,7 @@ function Thinking({ text, streaming }: { text: string; streaming: boolean }) {
       <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 py-0.5 pl-1 text-[14px] text-ink-3 hover:text-ink-2 [&::-webkit-details-marker]:hidden">
         {streaming && <LoaderCircle size={13} className="animate-spin" />}
         <span>{streaming ? t("thinkingNow") : t("thinking")}</span>
-        <span className="max-w-[420px] truncate text-[13px] opacity-70">{text.split("\n").find((line) => line.trim()) || ""}</span>
+        <span className="max-w-[420px] truncate text-[13px] opacity-70">{text.split("\n").find((line) => line.trim()) || t("thinking")}</span>
         <ChevronRight size={14} className="shrink-0 transition [details[open]>summary>&]:rotate-90" />
       </summary>
       <div className="mt-1 whitespace-pre-wrap border-l-2 border-line py-1 pl-3 text-[13.5px] italic leading-5 text-ink-3">{text}</div>

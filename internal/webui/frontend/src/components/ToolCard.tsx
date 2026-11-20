@@ -2,7 +2,7 @@ import { memo, useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronRight, CircleX, LoaderCircle } from "lucide-react";
 import type { ThreadItem, ToolItem } from "../thread";
-import { agentBodyItems, editStats, isAgent, latestStep, toolActive, toolEdit, toolPlan, toolTodos } from "../thread";
+import { agentBodyItems, agentStepCount, editStats, isAgent, latestStep, toolActive, toolEdit, toolPlan, toolTodos } from "../thread";
 import { useI18n } from "../i18n";
 import { DiffStat, DiffView, PlanCard, TodoCard } from "./ToolViews";
 
@@ -26,7 +26,7 @@ export const ToolCard = memo(function ToolCard({ tool, renderItems }: { tool: To
   const line = tool.description || [tool.name, tool.summary].filter(Boolean).join(" ");
   const shell = tool.name === "Bash" || tool.name === "BashOutput";
   const agent = isAgent(tool);
-  const stepCount = tool.children.length || tool.task?.usage?.toolUses || 0;
+  const stepCount = agentStepCount(tool);
   const bodyItems = agent ? agentBodyItems(tool) : [];
   const step = agent && running && !open ? latestStep(tool) : "";
   const seconds = !running && tool.task?.usage?.durationMs ? `${(tool.task.usage.durationMs / 1000).toFixed(1)}s` : "";

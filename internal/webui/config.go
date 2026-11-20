@@ -26,13 +26,15 @@ const apiMaskSuffix = 4
 
 // ConfigView is the JSON shape of gbx's own configuration.
 type ConfigView struct {
-	Active    ActiveView              `json:"active"`
-	Lang      string                  `json:"lang"`
-	Bypass    bool                    `json:"bypassMode"`
-	LogLevel  string                  `json:"logLevel"`
-	Default   DefaultView             `json:"default"`
-	Providers map[string]ProviderView `json:"providers"`
-	Order     []string                `json:"order"`
+	Active            ActiveView              `json:"active"`
+	Lang              string                  `json:"lang"`
+	Bypass            bool                    `json:"bypassMode"`
+	ServeSandbox      string                  `json:"serveSandbox"`
+	SavedServeSandbox string                  `json:"savedServeSandbox"`
+	LogLevel          string                  `json:"logLevel"`
+	Default           DefaultView             `json:"default"`
+	Providers         map[string]ProviderView `json:"providers"`
+	Order             []string                `json:"order"`
 }
 
 // ActiveView is the persisted active provider selection.
@@ -102,17 +104,38 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, view)
 	case "PUT", "PATCH":
 		var body struct {
-			Active     *ActiveView `json:"active"`
-			Provider   *string     `json:"activeProvider"`
-			Lang       *string     `json:"lang"`
-			BypassMode *bool       `json:"bypassMode"`
-			LogLevel   *string     `json:"logLevel"`
+			Active            *ActiveView `json:"active"`
+			Provider          *string     `json:"activeProvider"`
+			Lang              *string     `json:"lang"`
+			BypassMode        *bool       `json:"bypassMode"`
+			LogLevel          *string     `json:"logLevel"`
+			ServeSandbox      *string     `json:"serveSandbox"`
+			ConfirmSandboxOff bool        `json:"confirmSandboxOff"`
 		}
 		if err := decodeBody(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if body.ServeSandbox != nil {
+			mode, err := NormalizeSandbox(*body.ServeSandbox)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			body.ServeSandbox = &mode
+		}
+		// Serialize persistence and publication so concurrent saves cannot publish
+		// the earlier value after the later config.Update has committed.
+		s.sandboxMu.Lock()
 		if err := s.updateConfig(func(cfg *provider.Config) error {
+			if body.ServeSandbox != nil {
+				mode := *body.ServeSandbox
+				if mode == SandboxOff && !body.ConfirmSandboxOff &&
+					(s.sandbox != SandboxOff || cfg.ServeSandbox != SandboxOff) {
+					return fmt.Errorf("disabling the sandbox requires confirmSandboxOff: true; agent processes can write outside the workspace")
+				}
+				cfg.ServeSandbox = mode
+			}
 			normal := body.Provider
 			if body.Active != nil {
 				normal = &body.Active.Normal
@@ -144,9 +167,14 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil
 		}); err != nil {
+			s.sandboxMu.Unlock()
 			writeConfigError(w, err)
 			return
 		}
+		if body.ServeSandbox != nil {
+			s.sandbox = *body.ServeSandbox
+		}
+		s.sandboxMu.Unlock()
 		view, err := s.configView()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -704,10 +732,16 @@ func (s *Server) configView() (ConfigView, error) {
 	if err != nil {
 		return ConfigView{}, err
 	}
+	savedSandbox, err := NormalizeSandbox(cfg.ServeSandbox)
+	if err != nil {
+		return ConfigView{}, err
+	}
 	view := ConfigView{
-		Active: ActiveView{Normal: cfg.ActiveProvider},
-		Lang:   cfg.Lang,
-		Bypass: cfg.BypassMode,
+		SavedServeSandbox: savedSandbox,
+		Active:            ActiveView{Normal: cfg.ActiveProvider},
+		Lang:              cfg.Lang,
+		Bypass:            cfg.BypassMode,
+		ServeSandbox:      s.SandboxMode(),
 		Default: DefaultView{
 			Name:         provider.DefaultProvider,
 			IsDefault:    true,

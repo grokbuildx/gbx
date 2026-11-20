@@ -371,6 +371,10 @@ func (a *fakeACPAgent) Prompt(ctx context.Context, params acp.PromptRequest) (ac
 		}
 	}
 
+	if method := os.Getenv("GBX_WEBUI_HELPER_BACKGROUND_SUBAGENTS"); method != "" {
+		return a.promptBackgroundSubagents(ctx, params.SessionId, method)
+	}
+
 	if os.Getenv("GBX_WEBUI_HELPER_SUBAGENTS") == "1" {
 		otherKind := acp.ToolKindOther
 		completed := acp.ToolCallStatusCompleted

@@ -74,6 +74,7 @@ type TokenPayload struct {
 // the conversation's context at that point.
 type ContextPayload struct {
 	Tokens int64 `json:"tokens"`
+	Window int64 `json:"window,omitempty"`
 }
 
 // ToolUsePayload reports a tool call the assistant started.
@@ -369,8 +370,9 @@ func (t *acpTranslator) Handle(update acp.SessionUpdate, emit emitter) {
 		if update.UsageUpdate.Cost != nil && update.UsageUpdate.Cost.Amount > 0 {
 			t.sessionCostUSD = update.UsageUpdate.Cost.Amount
 		}
-		if update.UsageUpdate.Used > 0 {
-			emit(EventContext, ContextPayload{Tokens: int64(update.UsageUpdate.Used)})
+		// Zero usage is real: the context may be empty after compaction.
+		if update.UsageUpdate.Used >= 0 && update.UsageUpdate.Size > 0 {
+			emit(EventContext, ContextPayload{Tokens: int64(update.UsageUpdate.Used), Window: int64(update.UsageUpdate.Size)})
 		}
 	}
 }
@@ -470,6 +472,7 @@ func (t *acpTranslator) linkSubagentByDescription(sub *acpSubagentState) *acpTra
 	if wantDesc == "" {
 		return nil
 	}
+	var matched *acpTrackedTool
 	for _, id := range t.toolOrder {
 		tool := t.tools[id]
 		if tool == nil || tool.subagentID != "" {
@@ -481,12 +484,17 @@ func (t *acpTranslator) linkSubagentByDescription(sub *acpSubagentState) *acpTra
 		}
 		taskDesc := firstNonEmpty(desc, summary)
 		if taskDesc == wantDesc {
-			tool.subagentID = sub.id
-			sub.toolCallID = tool.id
-			return tool
+			if matched != nil {
+				return nil
+			}
+			matched = tool
 		}
 	}
-	return nil
+	if matched != nil {
+		matched.subagentID = sub.id
+		sub.toolCallID = matched.id
+	}
+	return matched
 }
 
 func (t *acpTranslator) bindToolToSubagent(tool *acpTrackedTool, desc, summary string, resMeta subagentResultMeta) *acpSubagentState {
@@ -496,6 +504,7 @@ func (t *acpTranslator) bindToolToSubagent(tool *acpTrackedTool, desc, summary s
 	if resMeta.subagentID != "" {
 		tool.subagentID = resMeta.subagentID
 		sub := t.ensureSubagent(resMeta.subagentID)
+		sub.childSessionID = firstNonEmpty(resMeta.childSessionID, sub.childSessionID)
 		sub.toolCallID = tool.id
 		if resMeta.subagentType != "" && sub.subagentType == "" {
 			sub.subagentType = resMeta.subagentType
@@ -521,7 +530,7 @@ func (t *acpTranslator) bindToolToSubagent(tool *acpTrackedTool, desc, summary s
 	return nil
 }
 
-// HandleExtensionUpdate translates Grok Build _x.ai/session/update notifications
+// HandleExtensionUpdate translates Grok Build session extension notifications
 // for subagent lifecycle and usage into Task/ToolResult events.
 func (t *acpTranslator) HandleExtensionUpdate(raw json.RawMessage, emit emitter) {
 	if len(raw) == 0 {
@@ -536,6 +545,7 @@ func (t *acpTranslator) HandleExtensionUpdate(raw json.RawMessage, emit emitter)
 		Model          string `json:"model"`
 		Status         string `json:"status"`
 		ToolCalls      int64  `json:"tool_calls"`
+		ToolCallCount  int64  `json:"tool_call_count"`
 		DurationMs     int64  `json:"duration_ms"`
 		TokensUsed     int64  `json:"tokens_used"`
 		Output         string `json:"output"`
@@ -565,6 +575,18 @@ func (t *acpTranslator) HandleExtensionUpdate(raw json.RawMessage, emit emitter)
 				Description: firstNonEmpty(desc, summary, sub.description),
 				Agent:       firstNonEmpty(subagentTypeFromFields(coerceInputMap(tool.rawInput), tool.meta), sub.subagentType),
 			})
+		}
+
+	case "subagent_progress":
+		sub := t.subagents[strings.TrimSpace(note.SubagentID)]
+		if sub == nil || sub.finished {
+			return
+		}
+		sub.tokensUsed = note.TokensUsed
+		sub.toolCalls = firstPositiveInt64(note.ToolCallCount, note.ToolCalls, sub.toolCalls)
+		sub.durationMs = note.DurationMs
+		if tool := t.linkSubagentByDescription(sub); tool != nil {
+			emit(EventTask, TaskPayload{ID: tool.id, Status: "running", Usage: buildTaskUsage(sub.tokensUsed, sub.toolCalls, sub.durationMs)})
 		}
 
 	case "subagent_finished":

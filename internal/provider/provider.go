@@ -193,6 +193,8 @@ type Config struct {
 	Lang                string `yaml:"lang,omitempty"`
 	// BypassMode automatically passes --always-approve to Grok Build. It is a global launcher setting.
 	BypassMode bool `yaml:"bypass_mode,omitempty"`
+	// ServeSandbox is the sandbox default for new web conversations (workspace or off).
+	ServeSandbox string `yaml:"serve_sandbox,omitempty"`
 	// ConfigVersion is the schema the file was last written with; see
 	// config.CurrentVersion.
 	ConfigVersion int `yaml:"config_version,omitempty"`

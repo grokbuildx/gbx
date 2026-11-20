@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { Blocks, Cloud, FileText, KeyRound, LoaderCircle, Pencil, Plus, RefreshCw, Server, SlidersHorizontal, Star, Trash2, Wifi, X } from "lucide-react";
 import type { Api } from "../api";
-import type { ConfigView, ProviderView, TestResult } from "../types";
+import type { ConfigView, ProviderView, SandboxMode, TestResult } from "../types";
 import { EFFORT_LEVELS } from "../types";
 import { IconButton } from "./Sidebar";
 import { useI18n } from "../i18n";
@@ -154,39 +154,65 @@ function General({ api, config, onChanged }: { api: Api; config: ConfigView | nu
   const [active, setActive] = useState("default");
   const [lang, setLang] = useState("");
   const [bypass, setBypass] = useState(false);
+  const [sandbox, setSandbox] = useState<SandboxMode>("workspace");
   const [status, setStatus] = useState("");
+  const [busy, setBusy] = useState(false);
+  const saving = useRef(false);
   useEffect(() => {
     if (!config) return;
     setActive(config.active?.normal || "default");
     setLang(config.lang || "");
     setBypass(!!config.bypassMode);
+    setSandbox(config.serveSandbox ?? "workspace");
   }, [config]);
   const names = ["default", ...Object.keys(config?.providers || {}).sort()];
   const save = async () => {
+    if (!config || saving.current) return;
+    const sandboxChanged = sandbox !== (config.serveSandbox ?? "workspace") || sandbox !== (config.savedServeSandbox ?? config.serveSandbox ?? "workspace");
+    const confirmSandboxOff = sandboxChanged && sandbox === "off";
+    if (confirmSandboxOff && !confirm(t("confirmSandboxOff"))) return;
+    saving.current = true;
+    setBusy(true);
+    setStatus("");
     try {
-      await api.putConfig({ active: { normal: active }, lang, bypassMode: bypass });
+      await api.putConfig({
+        active: { normal: active }, lang, bypassMode: bypass,
+        ...(sandboxChanged ? { serveSandbox: sandbox } : {}),
+        ...(confirmSandboxOff ? { confirmSandboxOff: true } : {}),
+      });
       await onChanged();
       setStatus(t("saved"));
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      saving.current = false;
+      setBusy(false);
     }
   };
   return (
-    <div className="max-w-[560px] space-y-4">
+    <fieldset disabled={busy || !config} className="min-w-0 max-w-[560px] space-y-4">
       <Field label={t("activeProvider")} hint={t("activeProviderHint")}>
         <Select value={active} onChange={setActive} options={names} />
       </Field>
       <Field label={t("language")}>
         <Select value={lang} onChange={setLang} options={["", "zh", "en"]} labels={{ "": t("langAuto"), zh: "中文", en: "English" }} />
       </Field>
+      <div className="space-y-2">
+        <Field label={t("sandbox")}>
+          <input type="checkbox" checked={sandbox === "workspace"} onChange={(event) => setSandbox(event.target.checked ? "workspace" : "off")} aria-describedby="sandbox-hint" className="size-4 accent-[var(--clay)]" />
+        </Field>
+        <p id="sandbox-hint" className="text-[12px] text-ink-3">{t("sandboxHint")}</p>
+      </div>
       <Field label={t("bypass")} hint={t("bypassHint")}>
         <input type="checkbox" checked={bypass} onChange={(event) => setBypass(event.target.checked)} className="size-4 accent-[var(--clay)]" />
       </Field>
-      <div className="flex items-center gap-3 pt-2">
-        <Button primary onClick={save}>{t("save")}</Button>
+      <div className="flex items-center gap-3 pt-2" aria-live="polite">
+        <Button primary onClick={save} disabled={busy || !config}>
+          {busy && <LoaderCircle size={13} className="animate-spin" />}{t("save")}
+        </Button>
         <Status text={status} />
       </div>
-    </div>
+    </fieldset>
   );
 }
 
@@ -349,20 +375,22 @@ function ProviderEditor({ api, provider, onClose, onSaved }: {
     .filter(Boolean).length;
 
   const defaultModelOptions = useMemo(() => {
-    const items: string[] = [];
+    const items: { value: string; label: string }[] = [];
     const seen = new Set<string>();
-    const add = (raw: string) => {
+    const add = (raw: string, label?: string) => {
       const trimmed = raw.trim();
       if (!trimmed) return;
       const key = trimmed.toLowerCase();
       if (seen.has(key)) return;
       seen.add(key);
-      items.push(trimmed);
+      items.push({ value: trimmed, label: label?.trim() || trimmed });
     };
+    // The chat picker's labels name the upstream model; keep the same names
+    // here instead of raw wire ids.
+    for (const choice of provider?.modelChoices || []) add(choice.value, choice.label);
     if (form.defaultModel.trim()) add(form.defaultModel);
     for (const part of form.models.split(",")) add(part);
     for (const id of catalog) add(id);
-    for (const c of provider?.modelChoices || []) add(c.value);
     return items;
   }, [form.defaultModel, form.models, catalog, provider]);
 
@@ -463,8 +491,8 @@ function ProviderEditor({ api, provider, onClose, onSaved }: {
               <Select
                 value={form.defaultModel.trim()}
                 onChange={set("defaultModel")}
-                options={["", ...defaultModelOptions]}
-                labels={{ "": t("defaultModelAuto") }}
+                options={["", ...defaultModelOptions.map((option) => option.value)]}
+                labels={{ "": t("defaultModelAuto"), ...Object.fromEntries(defaultModelOptions.map((option) => [option.value, option.label])) }}
               />
             ) : (
               <Input value={form.defaultModel} onChange={set("defaultModel")} placeholder={t("modelIdPlaceholder")} className={control + " font-mono text-[13px]"} />

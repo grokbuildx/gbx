@@ -14,6 +14,7 @@ import type {
   ModelChoice,
   PermissionDecision,
   Schedule,
+  SandboxMode,
   Session,
   StoredEvent,
   TestResult,
@@ -162,8 +163,8 @@ export class Api {
     this.request<Session>(`/api/sessions/${id}`, { method: "PATCH", body: patch });
   deleteSession = (id: string, force = false) => this.request<null>(`/api/sessions/${id}${force ? "?force=1" : ""}`, { method: "DELETE" });
   events = (id: string, since = 0) => this.request<StoredEvent[]>(`/api/sessions/${id}/events?since=${since}`);
-  // steer sends the message into the running turn; with none running it
-  // starts one like any message.
+  // steer stops the current turn and sends this message next, preserving
+  // the conversation. With none running it starts a turn immediately.
   send = (id: string, text: string, attachments: string[] = [], steer = false) =>
     this.request<{ seq?: number; running: boolean; steered?: boolean }>(`/api/sessions/${id}/messages`, { method: "POST", body: steer ? { text, attachments, steer } : { text, attachments } });
 
@@ -269,7 +270,7 @@ export class Api {
     appURL(`/api/sessions/${id}/stream?since=${since}` + (this.token ? `&token=${encodeURIComponent(this.token)}` : ""));
 
   config = () => this.request<ConfigView>("/api/config");
-  putConfig = (body: { active?: { normal: string }; activeProvider?: string; lang?: string; bypassMode?: boolean }) =>
+  putConfig = (body: { active?: { normal: string }; activeProvider?: string; lang?: string; bypassMode?: boolean; serveSandbox?: SandboxMode; confirmSandboxOff?: boolean }) =>
     this.request<ConfigView>("/api/config", { method: "PUT", body });
   createProvider = (body: Record<string, unknown>) =>
     this.request<unknown>("/api/config/providers", { method: "POST", body });

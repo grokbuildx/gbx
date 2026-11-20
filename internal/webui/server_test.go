@@ -445,10 +445,6 @@ func TestMessageWhileRunningConflicts(t *testing.T) {
 	if status, body := doJSON(t, "POST", httpServer.URL+"/api/sessions/"+meta.ID+"/messages", "secret", `{"text":"two"}`); status != http.StatusConflict {
 		t.Fatalf("second message = %d: %s", status, body)
 	}
-	// ACP v1 executes one prompt per turn, so steer while running also conflicts.
-	if status, body := doJSON(t, "POST", httpServer.URL+"/api/sessions/"+meta.ID+"/messages", "secret", `{"text":"two","steer":true}`); status != http.StatusConflict {
-		t.Fatalf("steered message while running = %d: %s", status, body)
-	}
 	// A page loaded mid-turn learns the turn is running from the session itself.
 	if running := sessionRunning(t, httpServer.URL, meta.ID); !running {
 		t.Fatal("GET session reports running=false during a turn")

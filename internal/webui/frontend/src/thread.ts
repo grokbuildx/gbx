@@ -134,13 +134,19 @@ export function buildThread(events: StoredEvent[]): ThreadItem[] {
         root.text = root.thinking = null;
         break;
       case "thinking": {
+        const text = (payload as unknown as TokenPayload).text || "";
         const target = scopeFor(parent);
-        if (!target.thinking) {
-          target.thinking = { kind: "thinking", key: `k${event.seq}`, text: "" };
-          target.items.push(target.thinking);
-          target.text = null;
+        if (target.thinking) {
+          // Whitespace inside a trace separates its paragraphs.
+          target.thinking.text += text;
+          break;
         }
-        target.thinking.text += (payload as unknown as TokenPayload).text || "";
+        // Grok ends a trace with whitespace-only chunks. They must not start a
+        // blank Thought block or reopen the one the previous step closed.
+        if (!text.trim()) break;
+        target.thinking = { kind: "thinking", key: `k${event.seq}`, text };
+        target.items.push(target.thinking);
+        target.text = null;
         break;
       }
       case "token": {
@@ -328,15 +334,20 @@ export function agentsOf(items: ThreadItem[], depth = 0): { tool: ToolItem; dept
   return out;
 }
 
-// agentBodyItems returns a sub-agent's own streamed steps, falling back to its
-// final output/summary when execution happened in an isolated child session.
+// agentBodyItems returns a sub-agent's own steps and any final reply that
+// was not already streamed by its child session.
 export function agentBodyItems(tool: ToolItem): ThreadItem[] {
-  const hasChildText = tool.children.some((child) => child.kind === "text" && child.text.trim() !== "");
-  if (hasChildText || toolActive(tool)) return tool.children;
-  const rawOutput = (tool.output || "").trim();
+  if (toolActive(tool)) return tool.children;
+  // Grok's task_result appends model-facing context after the reply; it is not part of what the sub-agent said.
+  const rawOutput = (tool.output || "").split(/\n*<subagent_meta>/)[0].trim();
   const launchNote = /^async agent launched/i.test(rawOutput);
   const reply = (launchNote ? tool.task?.summary || "" : rawOutput || tool.task?.summary || "").trim();
   if (!reply) return tool.children;
+  const last = tool.children.at(-1);
+  const streamedReply = last?.kind === "text" ? last.text.trim() : "";
+  const replyPattern = reply.split(/\s+/).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
+  // A final reply can follow commentary in the same block, but not mid-line.
+  if (new RegExp(`(?:^|\\n)\\s*${replyPattern}$`).test(streamedReply)) return tool.children;
   if (tool.status === "err" || tool.task?.status === "failed") {
     return [...tool.children, { kind: "error", key: `${tool.key}-error`, message: reply }];
   }
@@ -349,6 +360,11 @@ export function agentThread(tool: ToolItem): ThreadItem[] {
   const prompt = typeof tool.input?.prompt === "string" ? tool.input.prompt : "";
   const head: ThreadItem[] = prompt ? [{ kind: "user", key: `${tool.key}-prompt`, text: prompt, attachments: [], ts: tool.startedAt }] : [];
   return [...head, ...agentBodyItems(tool)];
+}
+
+export function agentStepCount(tool: ToolItem): number {
+  const count = (items: ThreadItem[]): number => items.reduce((total, item) => total + (item.kind === "tool" ? 1 + count(item.children) : 0), 0);
+  return (!toolActive(tool) ? tool.task?.usage?.toolUses : undefined) ?? (count(tool.children) || tool.task?.usage?.toolUses || 0);
 }
 
 // The latest step of a sub-agent, for its call's one-line preview.

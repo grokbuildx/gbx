@@ -44,6 +44,10 @@ type Meta struct {
 	// PermissionMode is the permission mode of the next turn; empty uses
 	// the server default (bypassPermissions when gbx's bypass mode is on).
 	PermissionMode string `json:"permissionMode,omitempty"`
+	// Sandbox is pinned at creation; legacy conversations use workspace.
+	Sandbox string `json:"sandbox,omitempty"`
+	// SandboxProfile pins the resolved Grok profile before the first launch.
+	SandboxProfile string `json:"sandboxProfile,omitempty"`
 	// AgentSessionID is the ACP session id Grok Build created for this
 	// conversation. Subsequent turns load it instead of starting a new session.
 	AgentSessionID string `json:"agentSessionId,omitempty"`

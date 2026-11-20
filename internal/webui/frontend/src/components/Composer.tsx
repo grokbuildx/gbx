@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { AlarmClock, ArrowUp, AtSign, Blocks, ChevronDown, Clock, Cloud, FileText, FolderGit2, Gauge, GitBranch, LoaderCircle, Mic, MicOff, Paperclip, Plus, ShieldCheck, Square, SquareSlash, X } from "lucide-react";
+import { AlarmClock, ArrowUp, AtSign, Blocks, ChevronDown, Clock, Cloud, FileText, FolderGit2, Gauge, GitBranch, LoaderCircle, Mic, MicOff, Paperclip, Plus, ShieldCheck, ShieldOff, Square, SquareSlash, X } from "lucide-react";
 import type { Attachment, Capabilities, ProjectDefaults, ProviderView, Schedule, Session, Workspace } from "../types";
 import { EFFORT_LEVELS, PERMISSION_MODES } from "../types";
-import { basename, fileSize } from "../format";
+import { basename, fileSize, tokenCount } from "../format";
+import type { ContextUsage } from "../context";
 import { useI18n } from "../i18n";
 import { buildSlashSuggestions, parseEffortSlashCommand, resolveRouteEffortInfo, stripModelContextSuffix } from "../slash";
 import { MobileEffortMenu, MobileModelMenu } from "./MobileModelMenu";
@@ -43,11 +44,12 @@ interface Props {
   registerAddFiles: (add: (files: File[]) => void) => void;
   registerMention: (mention: (path: string) => void) => void;
   onSearchFiles: (query: string) => Promise<string[]>;
-  // Messages written while a turn runs; they go out when it ends.
-  queued: { key: string; text: string; files: number }[];
+  // Messages wait for the next turn unless explicitly sent now.
+  queued: { key: string; text: string; files: number; sending?: boolean; failed?: boolean }[];
+  onSendQueued: (key: string) => void;
   onRemoveQueued: (key: string) => void;
   // Tokens the last model call read, against the model's window.
-  context?: { tokens: number; window: number };
+  context: ContextUsage;
   // Claude is waiting for an answer to a permission card.
   awaitingPermission: boolean;
   scheduled: Schedule[];
@@ -322,6 +324,7 @@ export function Composer(props: Props) {
   };
 
   const hasHistory = (props.session?.turns || 0) > 0;
+  const sandbox = props.session ? props.session.sandbox ?? "workspace" : capabilities.defaultSandbox ?? "workspace";
   return (
     <footer className="pb-2.5 max-sm:pb-[max(8px,env(safe-area-inset-bottom))]">
       <div ref={box} className="relative pl-6 pr-8 max-sm:px-3">
@@ -426,10 +429,22 @@ export function Composer(props: Props) {
             {props.queued.map((item) => (
               <div key={item.key} className="flex items-center gap-2 rounded-[10px] border border-dashed border-line px-3 py-1.5 text-[13px] text-ink-2">
                 <Clock size={13} className="shrink-0 text-ink-3" />
-                <span className="truncate">{item.text || t("filesOnly", { n: item.files })}</span>
+                <span className="min-w-0 flex-1 truncate">{item.text || t("filesOnly", { n: item.files })}</span>
                 {item.files > 0 && item.text && <span className="shrink-0 text-ink-3">+{item.files}</span>}
-                <span className="ml-auto shrink-0 text-xs text-ink-3 max-sm:hidden">{t("queuedNext")}</span>
-                <button onClick={() => props.onRemoveQueued(item.key)} title={t("remove")} aria-label={t("remove")} className="shrink-0 rounded p-0.5 text-ink-3 hover:bg-hover hover:text-ink max-sm:ml-auto">
+                <span role={item.failed ? "status" : undefined} className="shrink-0 text-xs text-ink-3 max-sm:hidden">{t(item.failed ? "queueFailed" : "queuedNext")}</span>
+                <button
+                  type="button"
+                  onClick={() => props.onSendQueued(item.key)}
+                  disabled={props.queued.some((entry) => entry.sending)}
+                  aria-label={t("queueSendNow")}
+                  aria-busy={!!item.sending}
+                  title={t(item.failed ? "queueFailed" : "queueSendNowHint")}
+                  className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-clay hover:bg-hover disabled:cursor-default disabled:opacity-50 max-sm:min-h-11"
+                >
+                  {item.sending && <LoaderCircle size={13} className="animate-spin" aria-hidden="true" />}
+                  {t(item.sending ? "queueSending" : "queueSendNow")}
+                </button>
+                <button type="button" disabled={item.sending} onClick={() => props.onRemoveQueued(item.key)} title={t("remove")} aria-label={t("remove")} className="grid shrink-0 place-items-center rounded p-0.5 text-ink-3 hover:bg-hover hover:text-ink disabled:cursor-default disabled:opacity-50 max-sm:size-11">
                   <X size={13} />
                 </button>
               </div>
@@ -539,26 +554,41 @@ export function Composer(props: Props) {
         {/* One line: chips shrink and truncate rather than wrap. */}
         <div className="flex min-w-0 flex-nowrap items-center gap-x-1 overflow-hidden px-2 pt-1.5 text-[13px] text-ink-2">
           <Route {...props} />
-          {props.context && <ContextRing {...props.context} />}
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-2 pt-1">
+          <ContextIndicator {...props.context} />
+          <span
+            title={t(props.session ? "sandboxSessionHint" : "sandboxNewHint")}
+            className={"ml-auto flex shrink-0 items-center gap-1 text-[11px] " + (sandbox === "off" ? "text-amber-600 dark:text-amber-400" : "text-ink-3")}
+          >
+            {sandbox === "off" ? <ShieldOff size={12} aria-hidden="true" /> : <ShieldCheck size={12} aria-hidden="true" />}
+            {t(sandbox === "off" ? "sandboxOff" : "sandboxOn")}
+          </span>
         </div>
       </div>
     </footer>
   );
 }
 
-// ContextRing shows how full the context window was at the last model call.
-function ContextRing({ tokens, window: size }: { tokens: number; window: number }) {
+// Usage is unknown until the current turn reports it; the window stays visible.
+function ContextIndicator({ tokens, window: size }: ContextUsage) {
   const { t } = useI18n();
-  const ratio = Math.min(1, tokens / size);
+  const ratio = tokens === undefined ? 0 : tokens / size;
   const radius = 6.5;
   const length = 2 * Math.PI * radius;
   const color = ratio > 0.85 ? "#dc2626" : ratio > 0.6 ? "#d97706" : "#3b82f6";
+  const label = tokens === undefined
+    ? t("contextWaiting", { total: size.toLocaleString() })
+    : t("contextUsed", { used: tokens.toLocaleString(), total: size.toLocaleString(), percent: Math.round(ratio * 100) });
   return (
-    <span title={t("contextUsed", { used: tokens.toLocaleString(), total: size.toLocaleString(), percent: Math.round(ratio * 100) })} className="ml-1 grid size-6 shrink-0 place-items-center max-sm:order-12 max-sm:ml-0">
-      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+    <span title={label} aria-label={label} className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-ink-3 tabular-nums">
+      <svg className="shrink-0" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
         <circle cx="8" cy="8" r={radius} fill="none" stroke="currentColor" strokeOpacity="0.2" strokeWidth="2" />
-        <circle cx="8" cy="8" r={radius} fill="none" stroke={color} strokeWidth="2" strokeDasharray={`${ratio * length} ${length}`} strokeLinecap="round" transform="rotate(-90 8 8)" />
+        {tokens !== undefined && <circle cx="8" cy="8" r={radius} fill="none" stroke={color} strokeWidth="2" strokeDasharray={`${Math.min(1, ratio) * length} ${length}`} strokeLinecap="round" transform="rotate(-90 8 8)" />}
       </svg>
+      <span>{t("contextLabel")}</span>
+      <span className="whitespace-nowrap">{tokens === undefined ? "—" : tokenCount(tokens)} / {tokenCount(size)}</span>
+      <span className="whitespace-nowrap">· {tokens === undefined ? t("contextPending") : `${Math.round(ratio * 100)}%`}</span>
     </span>
   );
 }

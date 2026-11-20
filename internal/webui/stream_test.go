@@ -185,11 +185,21 @@ func TestTranslatorUsageUpdateTracksContextAndCost(t *testing.T) {
 		},
 	})
 	contexts := findKind(events, EventContext)
-	if len(contexts) != 1 || contexts[0].payload.(ContextPayload).Tokens != 42500 {
+	if len(contexts) != 1 || contexts[0].payload.(ContextPayload).Tokens != 42500 || contexts[0].payload.(ContextPayload).Window != 200000 {
 		t.Fatalf("context = %+v", contexts)
 	}
 	if tr.SessionCostUSD() != 0.125 {
 		t.Fatalf("cost = %v, want 0.125", tr.SessionCostUSD())
+	}
+}
+
+func TestTranslatorUsageUpdateReportsEmptyContext(t *testing.T) {
+	_, events := translateACP(t, acp.SessionUpdate{
+		UsageUpdate: &acp.SessionUsageUpdate{Used: 0, Size: 200000},
+	})
+	contexts := findKind(events, EventContext)
+	if len(contexts) != 1 || contexts[0].payload.(ContextPayload) != (ContextPayload{Window: 200000}) {
+		t.Fatalf("context = %+v", contexts)
 	}
 }
 

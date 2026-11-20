@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +14,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/grokbuildx/gbx/internal/config"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 type syncBuffer struct {
@@ -45,6 +51,8 @@ func TestServeCommandFlagsAndValidation(t *testing.T) {
 		{"--port", "70000", "--no-open"},
 		{"--socket", "/tmp/x.sock", "--port", "8099", "--no-open"},
 		{"--base-path", "../bad", "--no-open"},
+		{"--sandbox", "invalid", "--no-open"},
+		{"--sandbox=", "--no-open"},
 		{"extra-arg", "--no-open"},
 	} {
 		c := newServeCommand()
@@ -79,7 +87,15 @@ func TestServeCommandSocketLifecycle(t *testing.T) {
 	cmd := newServeCommand()
 	cmd.SetContext(ctx)
 	cmd.SetOut(&stdout)
-	cmd.SetArgs([]string{"--socket", sock, "--workspace", t.TempDir(), "--no-shell"})
+	if err := config.Update(func(c *provider.Config) error {
+		c.ServeSandbox = "workspace"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stderr syncBuffer
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--socket", sock, "--workspace", t.TempDir(), "--no-shell", "--sandbox", "off"})
 
 	done := make(chan error, 1)
 	go func() {
@@ -104,6 +120,28 @@ func TestServeCommandSocketLifecycle(t *testing.T) {
 	}
 	if ready.Socket != sock || ready.PID == 0 {
 		t.Fatalf("ready = %+v", ready)
+	}
+
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+	}}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
+	resp, err := client.Get("http://127.0.0.1/api/capabilities")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || !strings.Contains(string(body), `"defaultSandbox":"off"`) {
+		t.Fatalf("sandbox flag did not reach server: %s %v", body, err)
+	}
+	if !strings.Contains(stderr.String(), "sandbox") && !strings.Contains(stderr.String(), "沙盒") {
+		t.Fatalf("off flag omitted warning: %q", stderr.String())
+	}
+	loaded, err := config.Load()
+	if err != nil || loaded.ServeSandbox != "workspace" {
+		t.Fatalf("flag persisted over saved setting: %+v %v", loaded, err)
 	}
 
 	cancel()

@@ -8,6 +8,8 @@ export interface Usage {
   durationMs: number;
 }
 
+export type SandboxMode = "workspace" | "off";
+
 export interface Session {
   id: string;
   title: string;
@@ -15,6 +17,8 @@ export interface Session {
   model: string;
   effort: string;
   permissionMode?: string;
+  // Pinned at creation; older conversations without this field use workspace.
+  sandbox?: SandboxMode;
   agentSessionId?: string;
   workspace: string;
   // Set when the conversation runs on a branch of its own in a git worktree.
@@ -69,6 +73,7 @@ export interface Capabilities {
   mcpServers: MCPServer[];
   // The mode a session without its own uses (follows gbx's bypass setting).
   defaultPermissionMode?: string;
+  defaultSandbox?: SandboxMode;
   defaultProvider?: string;
   defaultModel?: string;
   defaultEffort?: string;
@@ -179,6 +184,9 @@ export interface ConfigView {
   active: { normal: string };
   lang: string;
   bypassMode: boolean;
+  // The running server's current new-conversation default.
+  serveSandbox?: SandboxMode;
+  savedServeSandbox?: SandboxMode;
   default?: {
     name: string;
     isDefault: boolean;

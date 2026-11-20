@@ -316,6 +316,167 @@ describe("sub-agents and thinking", () => {
     expect(agentBodyItems(fg).filter((item) => item.kind === "text")).toHaveLength(1);
   });
 
+  it.each(["output", "summary"])("keeps live steps and appends the final %s after completion", (source) => {
+    const events = [
+      ev("tool_use", { id: "a1", name: "Agent", input: { prompt: "Check the repo" } }),
+      ev("task", { id: "a1", status: "running" }),
+      ev("tool_result", { id: "a1", ok: true, output: "Async agent launched successfully." }),
+      ev("thinking", { text: "Inspect ", parent: "a1" }),
+      ev("thinking", { text: "the files", parent: "a1" }),
+      ev("token", { text: "Checking now.", parent: "a1" }),
+      ev("tool_use", { id: "a1:read", name: "Read", parent: "a1" }),
+      ev("tool_result", { id: "a1:read", ok: true, output: "file contents", parent: "a1" }),
+    ];
+    let agent = agentsOf(buildThread(events))[0].tool;
+    expect(toolActive(agent)).toBe(true);
+    expect(agentBodyItems(agent)).toBe(agent.children);
+    expect(agent.children.map((item) => item.kind)).toEqual(["thinking", "text", "tool"]);
+    expect(agent.children[0]).toMatchObject({ text: "Inspect the files" });
+
+    if (source === "output") events.push(ev("tool_result", { id: "a1", ok: true, output: "Final findings." }));
+    else events.push(ev("task", { id: "a1", status: "running", summary: "Final findings." }));
+    agent = agentsOf(buildThread(events))[0].tool;
+    expect(agentBodyItems(agent)).toBe(agent.children);
+
+    events.push(ev("task", { id: "a1", status: "completed" }));
+    agent = agentsOf(buildThread(events))[0].tool;
+    expect(toolActive(agent)).toBe(false);
+    const body = agentBodyItems(agent);
+    expect(body.slice(0, -1)).toEqual(agent.children);
+    expect(body.at(-1)).toMatchObject({ kind: "text", text: "Final findings." });
+    expect(agentThread(agent).map((item) => item.kind)).toEqual(["user", "thinking", "text", "tool", "text"]);
+    expect(agentBodyItems(agent)).toEqual(body);
+    expect(agent.children).toHaveLength(3);
+  });
+
+  it("does not mistake intermediate commentary for a final reply", () => {
+    const agent = agentsOf(buildThread([
+      ev("tool_use", { id: "a1", name: "Task" }),
+      ev("token", { text: "Checking now.", parent: "a1" }),
+      ev("tool_result", { id: "a1", ok: true, output: "Final findings." }),
+    ]))[0].tool;
+    expect(agentBodyItems(agent).map((item) => item.kind === "text" && item.text)).toEqual(["Checking now.", "Final findings."]);
+  });
+
+  it.each(["", "Checking now.\n\n"])("does not duplicate a streamed final reply with prefix %j", (prefix) => {
+    const agent = agentsOf(buildThread([
+      ev("tool_use", { id: "a1", name: "Task" }),
+      ev("thinking", { text: "Check the files", parent: "a1" }),
+      ev("tool_use", { id: "a1:read", name: "Read", parent: "a1" }),
+      ev("tool_result", { id: "a1:read", ok: true, output: "contents", parent: "a1" }),
+      ev("token", { text: `${prefix}  Final\n`, parent: "a1" }),
+      ev("token", { text: "findings.\n", parent: "a1" }),
+      ev("tool_result", { id: "a1", ok: true, output: " \nFinal  findings. \n" }),
+    ]))[0].tool;
+    expect(agentBodyItems(agent)).toBe(agent.children);
+    expect(agentBodyItems(agent).map((item) => item.kind)).toEqual(["thinking", "tool", "text"]);
+  });
+
+  it("deduplicates a replayed final reply after task_result metadata", () => {
+    const agent = agentsOf(buildThread([
+      ev("tool_use", { id: "a1", name: "Task" }),
+      ev("token", { text: "CHILD_FINAL_VERIFIED", parent: "a1" }),
+      ev("tool_result", { id: "a1", ok: true, output: "CHILD_FINAL_VERIFIED\n\n<subagent_meta>id=child, tool_calls=1, turns=1</subagent_meta>\n\n<subagent_result>\nsubagent_id: child\n</subagent_result>" }),
+    ]))[0].tool;
+    expect(agentBodyItems(agent)).toBe(agent.children);
+    expect(agent.children.filter((item) => item.kind === "text")).toHaveLength(1);
+  });
+
+  it.each([
+    ["Not done.", "done."],
+    ["Everything passed.", "Everything (passed)."],
+  ])("does not deduplicate %j against a different final reply %j", (commentary, output) => {
+    const agent = agentsOf(buildThread([
+      ev("tool_use", { id: "a1", name: "Task" }),
+      ev("token", { text: commentary, parent: "a1" }),
+      ev("tool_result", { id: "a1", ok: true, output }),
+    ]))[0].tool;
+    expect(agentBodyItems(agent).map((item) => item.kind === "text" && item.text)).toEqual([commentary, output]);
+  });
+
+  it("deduplicates a final reply containing regular expression characters literally", () => {
+    const output = "[file](path) (a|b) {1} .*+?^$ \\";
+    const agent = agentsOf(buildThread([
+      ev("tool_use", { id: "a1", name: "Task" }),
+      ev("token", { text: output, parent: "a1" }),
+      ev("tool_result", { id: "a1", ok: true, output }),
+    ]))[0].tool;
+    expect(agentBodyItems(agent)).toBe(agent.children);
+  });
+
+  it("does not use text preceding another tool as the streamed final reply", () => {
+    const agent = agentsOf(buildThread([
+      ev("tool_use", { id: "a1", name: "Task" }),
+      ev("token", { text: "No issues.", parent: "a1" }),
+      ev("tool_use", { id: "a1:read", name: "Read", parent: "a1" }),
+      ev("tool_result", { id: "a1:read", ok: true, output: "contents", parent: "a1" }),
+      ev("tool_result", { id: "a1", ok: true, output: "No issues." }),
+    ]))[0].tool;
+    expect(agentBodyItems(agent).map((item) => item.kind)).toEqual(["text", "tool", "text"]);
+  });
+
+  it.each(["tool", "task"])("keeps a %s failure visible after commentary", (source) => {
+    const agent = agentsOf(buildThread([
+      ev("tool_use", { id: "a1", name: "Task" }),
+      ev("token", { text: "Checking now.", parent: "a1" }),
+      ev("tool_result", { id: "a1", ok: source !== "tool", output: source === "tool" ? "Network error" : "Async agent launched successfully." }),
+      ...(source === "task" ? [ev("task", { id: "a1", status: "failed", summary: "Network error" })] : []),
+    ]))[0].tool;
+    expect(agentBodyItems(agent)).toEqual([
+      ...agent.children,
+      { kind: "error", key: `${agent.key}-error`, message: "Network error" },
+    ]);
+  });
+
+  it.each(["", " \n", "Async agent launched successfully."])("adds no fallback for a completed agent with only %j", (output) => {
+    const agent = agentsOf(buildThread([
+      ev("tool_use", { id: "a1", name: "Task" }),
+      ev("thinking", { text: "Checking", parent: "a1" }),
+      ev("tool_result", { id: "a1", ok: true, output }),
+      ev("task", { id: "a1", status: "completed" }),
+    ]))[0].tool;
+    expect(agentBodyItems(agent)).toBe(agent.children);
+  });
+
+  it("isolates interleaved namespaced tools, thinking and replies in nested siblings", () => {
+    const items = buildThread([
+      ev("tool_use", { id: "a", name: "Task" }),
+      ev("tool_use", { id: "b", name: "Task" }),
+      ev("thinking", { text: "A thoughts", parent: "a" }),
+      ev("thinking", { text: "B thoughts", parent: "b" }),
+      ev("tool_use", { id: "a:read", name: "Read", parent: "a" }),
+      ev("tool_use", { id: "b:read", name: "Read", parent: "b" }),
+      ev("tool_use", { id: "a:nested", name: "Task", parent: "a" }),
+      ev("thinking", { text: "Nested thoughts", parent: "a:nested" }),
+      ev("tool_use", { id: "a:nested:read", name: "Read", parent: "a:nested" }),
+      ev("tool_use", { id: "b:read", name: "Read", summary: "B file", parent: "b" }),
+      ev("tool_result", { id: "a:nested:read", ok: true, output: "Nested file", parent: "a:nested" }),
+      ev("token", { text: "Shared final.", parent: "a:nested" }),
+      ev("tool_result", { id: "b:read", ok: false, output: "B failure", parent: "b" }),
+      ev("token", { text: "B reply.", parent: "b" }),
+      ev("tool_result", { id: "a:read", ok: true, output: "A file", parent: "a" }),
+      ev("tool_result", { id: "a:nested", ok: true, output: "Shared final.", parent: "a" }),
+      ev("tool_result", { id: "b", ok: true, output: "B reply." }),
+      ev("tool_result", { id: "a", ok: true, output: "Shared final." }),
+    ]);
+    expect(items.map((item) => item.kind)).toEqual(["tool", "tool"]);
+    const agents = agentsOf(items);
+    expect(agents.map(({ tool, depth }) => [tool.id, depth])).toEqual([["a", 0], ["a:nested", 1], ["b", 0]]);
+    const [a, nested, b] = agents.map(({ tool }) => tool);
+    expect(a.children.map((item) => item.kind)).toEqual(["thinking", "tool", "tool"]);
+    expect(a.children[0]).toMatchObject({ text: "A thoughts" });
+    expect(a.children[1]).toMatchObject({ id: "a:read", output: "A file", status: "ok" });
+    expect(nested.parent).toBe(a);
+    expect(nested.children[0]).toMatchObject({ text: "Nested thoughts" });
+    expect(nested.children[1]).toMatchObject({ id: "a:nested:read", output: "Nested file", status: "ok" });
+    expect(b.children.map((item) => item.kind)).toEqual(["thinking", "tool", "text"]);
+    expect(b.children[0]).toMatchObject({ text: "B thoughts" });
+    expect(b.children[1]).toMatchObject({ id: "b:read", summary: "B file", output: "B failure", status: "err" });
+    expect(agentBodyItems(a).at(-1)).toMatchObject({ kind: "text", text: "Shared final." });
+    expect(agentBodyItems(nested)).toBe(nested.children);
+    expect(agentBodyItems(b)).toBe(b.children);
+  });
+
   it("formats elapsed time and token counts like Claude Code's task list", () => {
     expect([elapsed(8_400), elapsed(542_000), elapsed(3_780_000)]).toEqual(["8s", "9m 2s", "1h 3m"]);
     expect([tokenCount(950), tokenCount(50_040), tokenCount(1_200_000)]).toEqual(["950", "50.0k", "1.2M"]);
@@ -342,6 +503,50 @@ describe("sub-agents and thinking", () => {
     const thinking = items.find((item) => item.kind === "thinking");
     expect(thinking && thinking.kind === "thinking" && thinking.text).toBe("let me think");
     expect(items[items.length - 1].kind).toBe("text");
+  });
+
+  it.each(["token", "tool_use", "tool_result"])("never creates a blank Thought block when whitespace trails a closed trace before %s", (boundary) => {
+    const events: StoredEvent[] = [
+      ev("thinking", { text: "first trace" }),
+      ev("thinking", { text: " " }),
+    ];
+    if (boundary === "token") events.push(ev("token", { text: "reply" }));
+    if (boundary === "tool_use") events.push(ev("tool_use", { id: "t", name: "Read", summary: "f" }));
+    if (boundary === "tool_result") {
+      events.push(ev("tool_use", { id: "t", name: "Read", summary: "f" }));
+      events.push(ev("tool_result", { id: "t", ok: true, output: "f" }));
+    }
+    events.push(ev("thinking", { text: "\n " }));
+    events.push(ev("thinking", { text: "second trace" }));
+    const blocks = buildThread(events).filter((item) => item.kind === "thinking");
+    expect(blocks.map((item) => item.kind === "thinking" && item.text.trim())).toEqual(["first trace", "second trace"]);
+    expect(blocks.every((item) => item.kind === "thinking" && item.text.trim() !== "")).toBe(true);
+  });
+
+  it("treats contiguous thinking, including whitespace separators, as one trace", () => {
+    const blocks = buildThread([
+      ev("thinking", { text: " " }),
+      ev("thinking", { text: "first" }),
+      ev("thinking", { text: "\n\n" }),
+      ev("thinking", { text: "second" }),
+      ev("thinking", { text: "  " }),
+    ]).filter((item) => item.kind === "thinking");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind === "thinking" && blocks[0].text).toBe("first\n\nsecond  ");
+  });
+
+  it("keeps whitespace inside a real trace and ignores a whitespace-only initial chunk", () => {
+    const items = buildThread([
+      ev("thinking", { text: " " }),
+      ev("thinking", { text: "A" }),
+      ev("thinking", { text: "\n\n" }),
+      ev("thinking", { text: "B" }),
+      ev("token", { text: "answer" }),
+    ]);
+    const blocks = items.filter((item) => item.kind === "thinking");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind === "thinking" && blocks[0].text).toBe("A\n\nB");
+    expect(items.map((item) => item.kind)).toEqual(["thinking", "text"]);
   });
 
   it("reads edit stats and todos from tool input", () => {

@@ -1,50 +1,92 @@
-import type { StoredEvent, UserPayload } from "./types";
-
-// Queued is a message written while a turn runs. It goes out when the turn
-// ends, or into the running turn once steered.
 export interface Queued {
   key: string;
   text: string;
   attachments: string[];
-  // Set once the message went into the running turn: the newest event seq
-  // then. Steered messages lead the queue, in the order they were sent.
-  steered?: number;
+  failed?: boolean;
 }
 
-// settleQueue drops the steered messages Claude Code has read (each one comes
-// back as a steered user event, in order). When the turn is over, one it never
-// read (the turn was stopped) becomes an ordinary queued message again;
-// sending keeps a message whose request is still out. It returns null when
-// nothing changes.
-export function settleQueue(queue: Queued[], events: StoredEvent[], running: boolean, sending: ReadonlySet<string>): Queued[] | null {
-  const first = queue[0];
-  if (first?.steered === undefined) return null;
-  let read = events.filter((event) => event.type === "user" && event.seq > first.steered! && (event.payload as UserPayload).steered).length;
-  let changed = false;
-  const next: Queued[] = [];
-  for (const item of queue) {
-    if (item.steered !== undefined && read > 0) {
-      read--;
-      changed = true;
-      continue;
-    }
-    if (item.steered !== undefined && !running && !sending.has(item.key)) {
-      next.push({ ...item, steered: undefined });
-      changed = true;
-      continue;
-    }
-    next.push(item);
+interface QueueState {
+  items: Queued[];
+  sending?: string;
+  // An ordinary send waits for its own turn to finish, not the previous one.
+  waiting?: { after: number; seq?: number };
+}
+
+type Send = (id: string, text: string, attachments: string[], steer: boolean) => Promise<{ running: boolean; steered?: boolean; seq?: number }>;
+const EMPTY: QueueState = { items: [] };
+
+// Ownership is per session and claimed synchronously, before any request.
+export class MessageQueue {
+  private queues: Record<string, QueueState> = {};
+  private results = new Map<string, number>();
+  private listeners = new Set<() => void>();
+
+  snapshot = () => this.queues;
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  };
+
+  private update(id: string, state: QueueState) {
+    this.queues = { ...this.queues, [id]: state };
+    for (const listener of this.listeners) listener();
   }
-  return changed ? next : null;
-}
 
-// steerFirst moves a message to the end of the steered ones at the head of
-// the queue and marks it sent after event seq since.
-export function steerFirst(queue: Queued[], key: string, since: number): Queued[] {
-  const item = queue.find((entry) => entry.key === key);
-  if (!item) return queue;
-  const rest = queue.filter((entry) => entry !== item);
-  const at = rest.findIndex((entry) => entry.steered === undefined);
-  const index = at < 0 ? rest.length : at;
-  return [...rest.slice(0, index), { ...item, steered: since }, ...rest.slice(index)];
+  get(id: string | null): QueueState {
+    return (id && this.queues[id]) || EMPTY;
+  }
+
+  add(id: string, item: Queued) {
+    const state = this.get(id);
+    this.update(id, { ...state, items: [...state.items, item] });
+  }
+
+  remove(id: string, key: string) {
+    const state = this.get(id);
+    if (state.sending === key) return;
+    this.update(id, { ...state, items: state.items.filter((item) => item.key !== key) });
+  }
+
+  observe(id: string, lastResult: number) {
+    this.results.set(id, Math.max(lastResult, this.results.get(id) || 0));
+    const state = this.get(id);
+    if (state.waiting && this.finished(id, state.waiting)) this.update(id, { ...state, waiting: undefined });
+  }
+
+  private finished(id: string, waiting: NonNullable<QueueState["waiting"]>) {
+    const result = this.results.get(id) || 0;
+    return waiting.seq === undefined ? result > waiting.after : result >= waiting.seq;
+  }
+
+  async send(id: string, key: string, request: Send, steer = true): Promise<boolean> {
+    const state = this.get(id);
+    const item = state.items.find((entry) => entry.key === key);
+    if (!item || state.sending) return false;
+    const after = this.results.get(id) || 0;
+    this.update(id, { ...state, sending: key, items: state.items.map((entry) => entry.key === key ? { ...entry, failed: false } : entry) });
+    try {
+      const response = await request(id, item.text, item.attachments, steer);
+      const current = this.get(id);
+      const waiting = response.running && !response.steered ? { after, seq: response.seq } : current.waiting;
+      this.update(id, {
+        ...current,
+        items: current.items.filter((entry) => entry.key !== key),
+        sending: undefined,
+        waiting: waiting && !this.finished(id, waiting) ? waiting : undefined,
+      });
+      return true;
+    } catch (error) {
+      const current = this.get(id);
+      this.update(id, { ...current, sending: undefined, items: current.items.map((entry) => entry.key === key ? { ...entry, failed: true } : entry) });
+      throw error;
+    }
+  }
+
+  async flush(id: string, request: Send): Promise<boolean> {
+    const state = this.get(id);
+    const first = state.items[0];
+    // A failure needs an explicit retry or removal; renders never retry it.
+    if (!first || first.failed || state.sending || state.waiting) return false;
+    return this.send(id, first.key, request, false);
+  }
 }

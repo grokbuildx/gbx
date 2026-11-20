@@ -40,6 +40,7 @@ func newServeCommand() *cobra.Command {
 		lockWorkspaces bool
 		socket         string
 		basePath       string
+		sandbox        string
 	)
 	cmd := &cobra.Command{
 		Use:   "serve [--port <port> | --socket [path]] [--workspace dir]... [--workspace-root dir]... [--token <token>]",
@@ -48,6 +49,9 @@ func newServeCommand() *cobra.Command {
 
 每一个回合起一个新的 Grok Build ACP 进程，并用 LoadSession 续接同一会话，因此 Provider、模型、推理强度（effort）和权限模式
 在回合边界生效；停止当前回合会立即取消 ACP 请求并回收进程。会话历史存放在 ~/.gbx/serve/sessions/<id>/，重启后仍在。
+
+沙盒默认开启。--sandbox workspace|off 覆盖本次启动的新对话默认值；网页设置可修改并保存该默认值。
+已有对话保留创建时的沙盒模式。关闭沙盒会扩大 agent 的文件写入和进程访问权限，工具审批保持独立；父进程限制和上游管理策略仍然有效。
 
 页面包含：会话列表、消息流（文件 diff、任务清单、交互式权限确认卡片）、项目文件编辑器与 Git 面板、Git Worktree 隔离分支、
 网页终端，以及设置弹窗（Provider 管理、OAuth 订阅登录、Grok MCP 连接器、~/.grok/AGENTS.md 指令、gbx cloud 同步）。
@@ -59,6 +63,11 @@ func newServeCommand() *cobra.Command {
 Every turn starts a fresh Grok Build ACP worker and resumes the conversation with LoadSession, so provider, model,
 reasoning effort, and permission mode take effect at turn boundaries. Session history lives under
 ~/.gbx/serve/sessions/<id>/ and survives restarts.
+
+The OS sandbox defaults to workspace. --sandbox workspace|off overrides the saved default at startup;
+web settings can update and save it for new conversations. Existing conversations keep their original sandbox.
+Disabling it broadens agent file-write/process access; tool approval remains independent.
+Inherited OS restrictions and upstream managed policies still apply.
 
 The workspace UI includes a session list, streaming thread (inline diffs, plan checklists, interactive permission cards),
 file editor, Git panel, isolated Git worktrees, optional web terminal (--no-shell to disable), and settings (providers,
@@ -73,6 +82,14 @@ mode-0600 local Unix socket without opening a port.`),
 			socket, err := socketPath(cmd, socket, args)
 			if err != nil {
 				return err
+			}
+			if cmd.Flags().Changed("sandbox") {
+				if strings.TrimSpace(sandbox) == "" {
+					return fmt.Errorf("--sandbox: expected workspace or off")
+				}
+				if sandbox, err = webui.NormalizeSandbox(sandbox); err != nil {
+					return err
+				}
 			}
 			if port < 0 || port > 65535 {
 				return fmt.Errorf("--port must be between 0 and 65535, got %d", port)
@@ -115,9 +132,17 @@ mode-0600 local Unix socket without opening a port.`),
 				Shell:           shell && !noShell,
 				LockWorkspaces:  lockWorkspaces,
 				BasePath:        basePath,
+				Sandbox:         sandbox,
 			})
 			if err != nil {
 				return err
+			}
+
+			if server.SandboxMode() == webui.SandboxOff {
+				fmt.Fprintln(cmd.ErrOrStderr(), locale.T(
+					"警告：已为新对话选择关闭 Grok Build 操作系统沙盒，agent 可写入工作区外的文件并启动程序；工具审批单独控制。已有对话保留原模式，父进程限制和上游管理策略仍然有效。",
+					"Warning: the Grok Build OS sandbox is requested off for new conversations. Agent processes can write outside the workspace and launch programs; tool approval is separate. Existing conversations keep their mode; inherited restrictions and managed policies still apply.",
+				))
 			}
 
 			var listener net.Listener
@@ -209,6 +234,7 @@ mode-0600 local Unix socket without opening a port.`),
 	flags.BoolVar(&noShell, "no-shell", false, locale.T("禁用页面终端（覆盖 --shell）", "Do not offer a terminal in the page; overrides --shell"))
 	flags.BoolVar(&lockWorkspaces, "lock-workspaces", false, locale.T("锁定项目列表，禁止从页面添加目录", "Serve only --workspace / --workspace-root folders; disallow adding others from the page"))
 	flags.StringVar(&socket, "socket", "", locale.T("改为监听本机 Unix socket（不带路径时使用 ~/.gbx/serve/gbx.sock）", "Listen on a local Unix socket instead of TCP (no value: ~/.gbx/serve/gbx.sock)"))
+	flags.StringVar(&sandbox, "sandbox", "", locale.T("新对话的操作系统沙盒：workspace 或 off（默认使用网页保存的设置，否则 workspace；已有对话保持原模式）", "OS sandbox for new conversations: workspace or off (default: saved web setting, otherwise workspace; existing conversations keep their mode)"))
 	flags.StringVar(&basePath, "base-path", "", locale.T("挂载页面与 /api 的 URL 前缀，如 /chat", "Mount the page and /api under a URL prefix such as /chat"))
 	flags.Lookup("socket").NoOptDefVal = defaultSocket
 	return cmd

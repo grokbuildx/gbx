@@ -66,6 +66,8 @@ type Config struct {
 	DefaultProvider string
 	DefaultModel    string
 	DefaultEffort   string
+	// Sandbox overrides the saved new-conversation default for this launch.
+	Sandbox string
 	// StoreRoot overrides the on-disk conversation directory (tests).
 	StoreRoot string
 	// Version is reported by /health.
@@ -99,6 +101,8 @@ type Server struct {
 
 	defaults         metaDefaults
 	explicitProvider bool
+	sandboxMu        sync.RWMutex
+	sandbox          string
 
 	catalogMu       sync.Mutex
 	catalogs        map[string]providerRuntimeCatalog
@@ -150,12 +154,25 @@ type SessionView struct {
 }
 
 func (s *Server) view(meta Meta) SessionView {
+	meta.Sandbox = sessionSandbox(meta)
 	return SessionView{Meta: meta, Running: s.timeline.Running(meta.ID)}
 }
 
 // New creates a server. An empty token is an error: gbx serve never listens
 // without authentication.
 func New(cfg Config) (*Server, error) {
+	sandbox := cfg.Sandbox
+	if sandbox == "" {
+		loaded, err := config.Load()
+		if err != nil {
+			return nil, fmt.Errorf("load sandbox setting: %w", err)
+		}
+		sandbox = loaded.ServeSandbox
+	}
+	sandbox, err := NormalizeSandbox(sandbox)
+	if err != nil {
+		return nil, err
+	}
 	token := strings.TrimSpace(cfg.Token)
 	if token == "" && cfg.RequireToken {
 		return nil, errors.New("a token is required when listening beyond 127.0.0.1: pass --token or set GBX_SERVE_TOKEN")
@@ -213,6 +230,7 @@ func New(cfg Config) (*Server, error) {
 		timeline:         NewTimeline(),
 		token:            token,
 		version:          cfg.Version,
+		sandbox:          sandbox,
 		explicitProvider: strings.TrimSpace(cfg.DefaultProvider) != "",
 		catalogs:         make(map[string]providerRuntimeCatalog),
 		catalogInflight:  make(map[string]*catalogRefreshCall),
@@ -655,6 +673,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			Model:     s.defaults.Model,
 			Effort:    s.defaults.Effort,
 			Workspace: workspace.Path,
+			Sandbox:   s.SandboxMode(),
 		}
 		// The request wins, then the project's defaults, then the server's.
 		s.applyProjectDefaults(&meta, workspace.ID, strings.TrimSpace(body.Provider) != "", strings.TrimSpace(body.Model) != "", strings.TrimSpace(body.Effort) != "")
@@ -846,11 +865,16 @@ func (s *Server) handleSessionMeta(w http.ResponseWriter, r *http.Request, sessi
 			Effort   *string `json:"effort"`
 			// PermissionMode is "" (the default) or one of PermissionModes.
 			PermissionMode *string `json:"permissionMode"`
+			Sandbox        *string `json:"sandbox"`
 			Pinned         *bool   `json:"pinned"`
 			Archived       *bool   `json:"archived"`
 		}
 		if err := decodeBody(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if body.Sandbox != nil {
+			writeError(w, http.StatusConflict, "a conversation keeps its original sandbox; change the new-conversation default in Settings and create a new conversation")
 			return
 		}
 		// What the next turn launches with cannot change under a running
@@ -955,8 +979,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request, session *
 		Provider string `json:"provider"`
 		// Attachments are ids returned by the uploads endpoint.
 		Attachments []string `json:"attachments"`
-		// Steer sends the message into the running turn, if there is one,
-		// instead of being refused as busy.
+		// Steer stops the current turn and sends this message next.
 		Steer bool `json:"steer"`
 	}
 	if err := decodeBody(r, &body); err != nil {
@@ -1011,26 +1034,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request, session *
 		}
 	}
 
-	if body.Steer && s.timeline.Running(session.ID()) {
-		spec := LaunchSpec{Prompt: text, Attachments: launchAttachments(session, attachments), attachmentViews: attachments}
-		err := s.timeline.Steer(session.ID(), spec)
-		switch {
-		case err == nil:
-			writeJSON(w, http.StatusAccepted, map[string]any{"steered": true, "running": true})
-			return
-		case errors.Is(err, errTurnEnded):
-			// The turn ended meanwhile: the message starts the next one.
-			s.timeline.Settle(session.ID(), settleTimeout)
-		case errors.Is(err, ErrBusy):
-			writeError(w, http.StatusConflict, err.Error())
-			return
-		default:
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-	}
-
-	if _, err := s.startTurn(session, text, attachments); err != nil {
+	if _, err := s.startMessageTurn(r.Context(), session, text, attachments, body.Steer); err != nil {
 		if errors.Is(err, ErrBusy) || errors.Is(err, ErrWorkspaceNotServed) || errors.Is(err, ErrWorktreeMissing) {
 			writeError(w, http.StatusConflict, err.Error())
 			return
@@ -1053,6 +1057,10 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request, session *
 // startTurn runs one turn of a conversation with its current settings. Both
 // the message endpoint and the scheduler start turns through it.
 func (s *Server) startTurn(session *Session, text string, attachments []Attachment) (*TurnHandle, error) {
+	return s.startMessageTurn(context.Background(), session, text, attachments, false)
+}
+
+func (s *Server) startMessageTurn(ctx context.Context, session *Session, text string, attachments []Attachment, now bool) (*TurnHandle, error) {
 	meta := session.Meta()
 	if meta.Title == "" || meta.Title == "New conversation" {
 		title := text
@@ -1069,6 +1077,7 @@ func (s *Server) startTurn(session *Session, text string, attachments []Attachme
 		Effort:       meta.Effort,
 		Workspace:    meta.Workspace,
 		Resume:       meta.AgentSessionID,
+		Sandbox:      sessionSandbox(meta),
 		Prompt:       text,
 		// An empty mode follows the server default.
 		PermissionMode: firstNonEmpty(meta.PermissionMode, s.defaults.PermissionMode),
@@ -1095,7 +1104,13 @@ func (s *Server) startTurn(session *Session, text string, attachments []Attachme
 		}
 		spec.Workspace = tree.Path
 	}
-	handle, err := s.timeline.Start(s.runner, session, spec)
+	var handle *TurnHandle
+	var err error
+	if now {
+		handle, err = s.timeline.StartNow(ctx, s.runner, session, spec)
+	} else {
+		handle, err = s.timeline.Start(s.runner, session, spec)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1205,6 +1220,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		"slashCommands":         init.SlashCommands,
 		"mcpServers":            init.MCPServers,
 		"defaultPermissionMode": s.defaults.PermissionMode,
+		"defaultSandbox":        s.SandboxMode(),
 		"defaultProvider":       defaultProvider,
 		"defaultModel":          defaultModel,
 		"defaultEffort":         s.defaults.Effort,

@@ -47,6 +47,9 @@ type LaunchSpec struct {
 	// PermissionMode is the turn's permission mode. Every mode except
 	// bypassPermissions asks the page before tools that require approval.
 	PermissionMode string
+	// Sandbox is independent of tool approval and remains fixed across resumes.
+	Sandbox        string
+	sandboxProfile string
 	// Attachments are files sent with the prompt.
 	Attachments []LaunchAttachment
 	// attachmentViews is what the stored user message shows of them.
@@ -139,31 +142,30 @@ func effectivePermissionMode(mode string) string {
 	return trimmed
 }
 
-func applyWorkspaceSandboxEnv(env []string, workspace string) []string {
-	if !worktreeUsesCustomSandbox(workspace) {
-		return env
-	}
+func applyWorkspaceSandboxEnv(env []string, workspace, sandbox string) []string {
+	profile := sandboxProfile(workspace, sandbox)
 	out := make([]string, 0, len(env)+1)
-	replaced := false
 	for _, entry := range env {
 		key, _, ok := strings.Cut(entry, "=")
 		if ok && strings.EqualFold(key, "GROK_SANDBOX") {
-			out = append(out, "GROK_SANDBOX="+worktreeSandboxProfile)
-			replaced = true
 			continue
 		}
 		out = append(out, entry)
 	}
-	if !replaced {
-		out = append(out, "GROK_SANDBOX="+worktreeSandboxProfile)
-	}
-	return out
+	return append(out, "GROK_SANDBOX="+profile)
 }
 
 // DefaultLauncher prepares Grok Build over ACP stdio with the conversation's
 // selected provider, model, effort and permission mode. It never writes
 // ~/.gbx/config.yaml.
 func DefaultLauncher(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), error) {
+	sandbox, err := NormalizeSandbox(spec.Sandbox)
+	if err != nil {
+		return nil, nil, err
+	}
+	if spec.sandboxProfile != "" && spec.sandboxProfile != sandboxProfile(spec.Workspace, sandbox) {
+		return nil, nil, fmt.Errorf("the conversation's sandbox profile changed; restore its workspace sandbox configuration before continuing")
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, nil, fmt.Errorf("load gbx config: %w", err)
@@ -180,7 +182,7 @@ func DefaultLauncher(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), e
 		}
 		args := buildArgs(spec)
 		cmd := process.Command(grokPath, args...)
-		cmd.Env = applyWorkspaceSandboxEnv(groklaunch.NativeBrowserEnv(os.Environ(), mode), spec.Workspace)
+		cmd.Env = applyWorkspaceSandboxEnv(groklaunch.NativeBrowserEnv(os.Environ(), mode), spec.Workspace, sandbox)
 		return cmd, func() {}, nil
 	}
 	p, ok := cfg.Providers[name]
@@ -216,7 +218,7 @@ func DefaultLauncher(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), e
 	}
 	args := buildArgs(spec)
 	cmd := launch.Command(args...)
-	cmd.Env = applyWorkspaceSandboxEnv(cmd.Env, spec.Workspace)
+	cmd.Env = applyWorkspaceSandboxEnv(cmd.Env, spec.Workspace, sandbox)
 	return cmd, launch.Close, nil
 }
 
@@ -453,12 +455,20 @@ type TurnHandle struct {
 
 // Timeline is the per-session turn gate.
 type Timeline struct {
-	mu      sync.Mutex
-	running map[string]*turn
+	mu        sync.Mutex
+	running   map[string]*turn
+	replacing map[string]*turnReplacement
+}
+
+type turnReplacement struct {
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // NewTimeline returns an empty turn gate.
-func NewTimeline() *Timeline { return &Timeline{running: make(map[string]*turn)} }
+func NewTimeline() *Timeline {
+	return &Timeline{running: make(map[string]*turn), replacing: make(map[string]*turnReplacement)}
+}
 
 // Settle waits up to timeout for a turn that already stored its result to
 // exit, so a message sent right after the result is not refused as busy.
@@ -488,7 +498,7 @@ func (t *Timeline) Running(id string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	_, ok := t.running[id]
-	return ok
+	return ok || t.replacing[id] != nil
 }
 
 // CancelAll stops every turn in flight and returns channels that close once
@@ -499,8 +509,16 @@ func (t *Timeline) CancelAll() []<-chan struct{} {
 	for _, entry := range t.running {
 		entries = append(entries, entry)
 	}
+	replacements := make([]*turnReplacement, 0, len(t.replacing))
+	for _, replacement := range t.replacing {
+		replacement.cancel()
+		replacements = append(replacements, replacement)
+	}
 	t.mu.Unlock()
-	done := make([]<-chan struct{}, 0, len(entries))
+	done := make([]<-chan struct{}, 0, len(entries)+len(replacements))
+	for _, replacement := range replacements {
+		done = append(done, replacement.done)
+	}
 	for _, entry := range entries {
 		t.cancel(entry)
 		done = append(done, entry.done)
@@ -511,41 +529,79 @@ func (t *Timeline) CancelAll() []<-chan struct{} {
 // RequestCancel stops the turn in flight for a session, if any.
 func (t *Timeline) RequestCancel(id string) bool {
 	t.mu.Lock()
-	entry, ok := t.running[id]
-	t.mu.Unlock()
-	if !ok {
-		return false
+	entry := t.running[id]
+	replacement := t.replacing[id]
+	if replacement != nil {
+		replacement.cancel()
 	}
-	t.cancel(entry)
-	return true
+	t.mu.Unlock()
+	if entry != nil {
+		t.cancel(entry)
+	}
+	return entry != nil || replacement != nil
 }
 
-// Steer reports whether a running turn can accept an inline message. ACP v1
-// processes one prompt per turn, so a live turn returns ErrBusy and an ended
-// turn returns errTurnEnded.
-func (t *Timeline) Steer(id string, _ LaunchSpec) error {
+// StartNow reserves the next turn while the current worker settles. This keeps
+// another send or a schedule from taking the slot during cancellation.
+func (t *Timeline) StartNow(ctx context.Context, r *Runner, session *Session, spec LaunchSpec) (*TurnHandle, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	id := session.ID()
+	replacement := &turnReplacement{cancel: cancel, done: make(chan struct{})}
 	t.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		t.mu.Unlock()
+		return nil, err
+	}
+	if t.replacing[id] != nil {
+		t.mu.Unlock()
+		return nil, ErrBusy
+	}
+	t.replacing[id] = replacement
 	entry := t.running[id]
 	t.mu.Unlock()
-	if entry == nil {
-		return errTurnEnded
+	defer func() {
+		t.mu.Lock()
+		delete(t.replacing, id)
+		t.mu.Unlock()
+		close(replacement.done)
+	}()
+	if entry != nil {
+		select {
+		case <-entry.ended:
+		default:
+			t.cancel(entry)
+		}
+		select {
+		case <-entry.done:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("send now: %w", ctx.Err())
+		}
 	}
-	select {
-	case <-entry.ended:
-		return errTurnEnded
-	default:
-		return ErrBusy
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("send now: %w", err)
 	}
+	// The previous worker may have assigned its ACP session ID during setup.
+	spec.Resume = session.Meta().AgentSessionID
+	return t.start(r, session, spec, replacement, ctx)
 }
 
 // Start runs one turn: it stores the user message, launches Grok Build over
 // ACP, and stores every translated event. It returns ErrBusy when a turn
 // already runs.
 func (t *Timeline) Start(r *Runner, session *Session, spec LaunchSpec) (*TurnHandle, error) {
+	return t.start(r, session, spec, nil, context.Background())
+}
+
+func (t *Timeline) start(r *Runner, session *Session, spec LaunchSpec, replacement *turnReplacement, ctx context.Context) (*TurnHandle, error) {
 	id := session.ID()
 
 	t.mu.Lock()
-	if _, busy := t.running[id]; busy {
+	if err := ctx.Err(); err != nil {
+		t.mu.Unlock()
+		return nil, err
+	}
+	if t.running[id] != nil || t.replacing[id] != replacement {
 		t.mu.Unlock()
 		return nil, ErrBusy
 	}
@@ -640,6 +696,9 @@ func (t *Timeline) launch(r *Runner, session *Session, entry *turn, spec LaunchS
 		}
 	}
 
+	if err := pinSessionSandbox(session, &spec); err != nil {
+		return fail(nil, err)
+	}
 	blocks, err := promptBlocks(spec)
 	if err != nil {
 		return fail(nil, err)
@@ -867,6 +926,7 @@ func (t *Timeline) pump(
 			}
 		}
 		applyACPSessionRoute(setupCtx, conn, sessionID, configOptions, targetModel, targetEffort, resumed)
+		client.setContextWindow(fetchACPSessionWindow(setupCtx, conn, sessionID))
 		applyACPSessionMode(setupCtx, conn, sessionID, mode)
 		mcpList := fetchSessionMCPServers(setupCtx, conn, sessionID, spec.Workspace, info.Meta)
 		client.setMCPServers(mcpList)
@@ -1366,6 +1426,12 @@ type acpTurnClient struct {
 	mode       string
 	mcp        []MCPServer
 	translator *acpTranslator
+	children   map[string]*acpChildSession
+	// contextWindow is Grok Build's effective window for this session, learned
+	// once from x.ai/session/info so the page does not guess from the model ID.
+	contextWindow int64
+	// lastContext is the newest reported size, re-published with the window.
+	lastContext int64
 }
 
 func newACPTurnClient(r *Runner, session *Session, entry *turn, workspace, model, mode string) *acpTurnClient {
@@ -1428,6 +1494,47 @@ func (c *acpTurnClient) slashCommands() []string {
 	return c.translator.SlashCommands()
 }
 
+func (c *acpTurnClient) setContextWindow(window int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if window <= 0 || window == c.contextWindow {
+		return
+	}
+	c.contextWindow = window
+	if c.lastContext > 0 {
+		_, _ = c.session.Append(EventContext, ContextPayload{Tokens: c.lastContext, Window: window})
+	}
+}
+
+// fetchACPSessionWindow reads Grok Build's effective context capacity. The page
+// falls back to its model-based estimate when Grok cannot answer.
+func fetchACPSessionWindow(ctx context.Context, conn *acp.ClientSideConnection, sessionID acp.SessionId) int64 {
+	if conn == nil || sessionID == "" {
+		return 0
+	}
+	extCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	raw, err := conn.CallExtension(extCtx, "_x.ai/session/info", map[string]any{"sessionId": string(sessionID)})
+	if err != nil || len(raw) == 0 {
+		return 0
+	}
+	return parseSessionInfoWindow(raw)
+}
+
+func parseSessionInfoWindow(raw []byte) int64 {
+	var envelope struct {
+		Result struct {
+			Context struct {
+				Total int64 `json:"total"`
+			} `json:"context"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Result.Context.Total <= 0 {
+		return 0
+	}
+	return envelope.Result.Context.Total
+}
+
 func (c *acpTurnClient) sessionCostUSD() float64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1437,8 +1544,15 @@ func (c *acpTurnClient) sessionCostUSD() float64 {
 func (c *acpTurnClient) SessionUpdate(_ context.Context, note acp.SessionNotification) error {
 	c.mu.Lock()
 	if c.sessionID != "" && note.SessionId != c.sessionID {
+		if child := c.children[string(note.SessionId)]; child != nil && !c.loading {
+			c.translateChildLocked(child, note.Update)
+			c.flushChildrenLocked()
+		}
 		c.mu.Unlock()
 		return nil
+	}
+	if !c.loading {
+		c.emitContextLocked(note.Meta)
 	}
 	if note.Update.AvailableCommandsUpdate != nil {
 		commands, changed := c.translator.HandleCommands(note.Update.AvailableCommandsUpdate)
@@ -1474,46 +1588,79 @@ func (c *acpTurnClient) SessionUpdate(_ context.Context, note acp.SessionNotific
 	c.translator.Handle(note.Update, func(kind string, payload any) {
 		events = append(events, pair{kind: kind, payload: payload})
 	})
-	c.mu.Unlock()
-
 	for _, ev := range events {
 		_, _ = c.session.Append(ev.kind, ev.payload)
 	}
+	c.flushChildrenLocked()
+	c.mu.Unlock()
 	return nil
 }
 
 var _ acp.ExtensionMethodHandler = (*acpTurnClient)(nil)
 
 func (c *acpTurnClient) HandleExtensionMethod(_ context.Context, method string, params json.RawMessage) (any, error) {
-	if method != "_x.ai/session/update" {
+	// Grok's live carrier and persisted/replayed carrier use the same envelope.
+	if method != "_x.ai/session_notification" && method != "_x.ai/session/update" {
 		return nil, acp.NewMethodNotFound(method)
 	}
 	var env struct {
 		SessionID string          `json:"sessionId"`
 		Update    json.RawMessage `json:"update"`
+		Meta      map[string]any  `json:"_meta"`
 	}
 	if err := json.Unmarshal(params, &env); err != nil || len(env.Update) == 0 {
 		return nil, nil
 	}
 	c.mu.Lock()
-	if c.loading || (c.sessionID != "" && env.SessionID != "" && acp.SessionId(env.SessionID) != c.sessionID) {
+	child := c.children[env.SessionID]
+	if c.loading || (c.sessionID != "" && env.SessionID != "" && acp.SessionId(env.SessionID) != c.sessionID && child == nil) {
 		c.mu.Unlock()
 		return nil, nil
+	}
+	translator := c.translator
+	if child != nil {
+		translator = child.translator
+	} else {
+		c.emitContextLocked(env.Meta)
 	}
 	type pair struct {
 		kind    string
 		payload any
 	}
 	var events []pair
-	c.translator.HandleExtensionUpdate(env.Update, func(kind string, payload any) {
-		events = append(events, pair{kind: kind, payload: payload})
+	translator.HandleExtensionUpdate(env.Update, func(kind string, payload any) {
+		if child != nil {
+			child.pending = append(child.pending, translatedEvent{kind: kind, payload: payload})
+		} else {
+			events = append(events, pair{kind: kind, payload: payload})
+		}
 	})
-	c.mu.Unlock()
-
+	c.registerChildLocked(child, env.Update)
 	for _, ev := range events {
 		_, _ = c.session.Append(ev.kind, ev.payload)
 	}
+	c.flushChildrenLocked()
+	c.mu.Unlock()
 	return nil, nil
+}
+
+// emitContextLocked stores Grok Build's running context size carried on every
+// session notification. totalTokens is the estimated context after the latest
+// model call or local growth; without it a turn only reports end-of-turn cost.
+func (c *acpTurnClient) emitContextLocked(meta map[string]any) {
+	raw, ok := meta["totalTokens"]
+	if !ok {
+		return
+	}
+	tokens, ok := raw.(float64)
+	if !ok || tokens < 0 {
+		return
+	}
+	// A zero window leaves the page on its model-based estimate. The window is
+	// usually learned after the first notification, so re-publish the same
+	// measurement once it arrives.
+	_, _ = c.session.Append(EventContext, ContextPayload{Tokens: int64(tokens), Window: c.contextWindow})
+	c.lastContext = int64(tokens)
 }
 
 func (c *acpTurnClient) RequestPermission(ctx context.Context, req acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
