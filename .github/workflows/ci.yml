@@ -110,4 +110,8 @@ jobs:
         env:
           GBX_TEST_BINARY: ${{ github.workspace }}/gbx-verify${{ runner.os == 'Windows' && '.exe' || '' }}
           GBX_TEST_CODEX: ${{ runner.temp }}/gbx-codex/node_modules/.bin/codex${{ runner.os == 'Windows' && '.cmd' || '' }}
-        run: go test -race -v ./integration/codex ./internal/codex
+        # internal/codex already ran under -race in the portable step above;
+        # here only its real-client tests (TestRealCodex*) need the Codex binary.
+        run: |
+          go test -race -v ./integration/codex
+          go test -race -v -run '^TestRealCodex' ./internal/codex
