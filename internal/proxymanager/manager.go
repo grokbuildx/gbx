@@ -77,7 +77,9 @@ func Default() (*Manager, error) {
 func (m *Manager) statePath() string { return filepath.Join(m.Dir, "state.json") }
 
 func (m *Manager) Read() (*State, error) {
-	data, err := os.ReadFile(m.statePath())
+	// The running proxy replaces state.json atomically; on Windows a read
+	// overlapping that rename fails transiently, so read with retries.
+	data, err := fsutil.ReadFile(m.statePath())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
