@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -113,7 +114,8 @@ func TestSandboxSettingsRequireConfirmationAndPersist(t *testing.T) {
 		t.Fatal("sandbox save changed approval or did not persist")
 	}
 	info, err := os.Stat(config.ConfigPath())
-	if err != nil || info.Mode().Perm() != 0o600 {
+	// Windows has no Unix mode bits; a writable file always reports 0666.
+	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("config permissions: %v %v", info, err)
 	}
 	fresh, _ := sandboxServer(t, Config{})
@@ -212,7 +214,11 @@ func TestSandboxSessionsKeepModeAcrossSettingsAndRestart(t *testing.T) {
 
 func TestSandboxLauncherPoliciesAndProviderIsolation(t *testing.T) {
 	home := isolateConfig(t)
+	// Windows resolves executables only with a PATHEXT extension.
 	bin := filepath.Join(home, "fake-grok")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}

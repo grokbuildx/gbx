@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -404,8 +405,27 @@ func releaseDownloadURL(version, asset string) string {
 	return fmt.Sprintf("https://github.com/grokbuildx/gbx/releases/latest/download/%s", asset)
 }
 
+// legacyNpmVersion matches the npm form of a four-component release tag:
+// vMAJOR.MINOR.PATCH.BUILD is published to npm as MAJOR.MINOR.PATCH-BUILD.
+var legacyNpmVersion = regexp.MustCompile(`^(\d+\.\d+\.\d+)-(\d+)$`)
+
+// canonicalReleaseTag names a version in release-tag form, so a GitHub tag and
+// the npm version of the same release compare equal.
 func canonicalReleaseTag(version string) string {
-	return "v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
+	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
+	if match := legacyNpmVersion.FindStringSubmatch(version); match != nil {
+		version = match[1] + "." + match[2]
+	}
+	return "v" + version
+}
+
+// npmPackageVersion is the npm version published for a release tag.
+func npmPackageVersion(version string) string {
+	tag := strings.TrimPrefix(canonicalReleaseTag(version), "v")
+	if parts := strings.Split(tag, "."); len(parts) == 4 {
+		return strings.Join(parts[:3], ".") + "-" + parts[3]
+	}
+	return tag
 }
 
 // downloadReleaseBinary streams the gzip-compressed release asset at url into

@@ -61,13 +61,24 @@ function npm(args, options = {}) {
 // differs per package. The launcher no longer waits for it: when npm skips a
 // platform package it cannot resolve yet, bin/install.js downloads the same
 // binary from the GitHub release, which the workflow creates first.
+// A four-component release tag (vMAJOR.MINOR.PATCH.BUILD) is published as the
+// npm prerelease MAJOR.MINOR.PATCH-BUILD. npm 11 refuses a prerelease without
+// an explicit dist-tag; these releases are the current version, so tag them
+// latest like any other release.
+function publishArgs(version) {
+  const args = ['publish', '--provenance', '--access', 'public'];
+  if (String(version).includes('-')) args.push('--tag', 'latest');
+  return args;
+}
+
 async function publishPackages(root, options = {}) {
   const log = options.log || logPublish;
   const started = Date.now();
   const exists = options.published || published;
   const publish = options.publish || (async cwd => {
     try {
-      await npm(['publish', '--provenance', '--access', 'public'], { cwd, timeout: 180000 });
+      const { version } = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8'));
+      await npm(publishArgs(version), { cwd, timeout: 180000 });
     } catch (err) {
       if (err.stderr) log('[publish] ' + cwd + ' npm output:\n' + err.stderr.trim());
       throw new Error('npm publish failed in ' + cwd + (err.message ? ': ' + err.message : ''));
@@ -109,4 +120,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { published, publishPackages };
+module.exports = { published, publishPackages, publishArgs };

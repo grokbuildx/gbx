@@ -207,3 +207,21 @@ func TestRestoreNpmCommandAfterInstallRemovedIt(t *testing.T) {
 		t.Fatal("another installation was overwritten")
 	}
 }
+
+func TestFourComponentReleasesMatchTheirNpmVersion(t *testing.T) {
+	// v1.0.0.0 is published to npm as 1.0.0-0; both name one release.
+	if got := canonicalReleaseTag("1.0.0-0"); got != "v1.0.0.0" {
+		t.Fatalf("canonicalReleaseTag(1.0.0-0) = %q", got)
+	}
+	if canonicalReleaseTag("v1.0.0.0") != canonicalReleaseTag("1.0.0-0") {
+		t.Fatal("tag and npm version of one release compare unequal")
+	}
+	for in, want := range map[string]string{"v1.0.0.0": "1.0.0-0", "1.0.0-0": "1.0.0-0", "v2.1.3": "2.1.3", "v1.0.0.12": "1.0.0-12"} {
+		if got := npmPackageVersion(in); got != want {
+			t.Fatalf("npmPackageVersion(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if args := npmUpdateArgs("v1.0.0.1"); args[2] != "@grokbuildx/gbx@1.0.0-1" {
+		t.Fatalf("npm args = %v", args)
+	}
+}

@@ -39,7 +39,7 @@ func npmGlobalPaths(root, goos string) (npmInstallPaths, error) {
 }
 
 func npmUpdateArgs(version string) []string {
-	return []string{"install", "-g", "@grokbuildx/gbx@" + strings.TrimPrefix(canonicalReleaseTag(version), "v"), "--include=optional", "--prefer-online"}
+	return []string{"install", "-g", "@grokbuildx/gbx@" + npmPackageVersion(version), "--include=optional", "--prefer-online"}
 }
 
 func updateViaNpm(version string) error {

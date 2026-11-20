@@ -268,3 +268,9 @@ test('launcher is published only after every platform upload is accepted', async
   assert.equal(published.at(-1), 'main');
   assert.ok(!published.includes('darwin-x64'));
 });
+
+test('four-component releases publish as the latest npm prerelease', () => {
+  const { publishArgs } = require('./publish-npm-packages');
+  assert.deepEqual(publishArgs(releaseVersion('v1.0.0.0')), ['publish', '--provenance', '--access', 'public', '--tag', 'latest']);
+  assert.deepEqual(publishArgs(releaseVersion('v2.1.3')), ['publish', '--provenance', '--access', 'public']);
+});
