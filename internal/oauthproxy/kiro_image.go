@@ -68,6 +68,10 @@ func processKiroImage(value any) (resized, corrected bool) {
 	if detectedFormat == "gif" {
 		return false, corrected
 	}
+	const kiroImageMaxPixels = 25_000_000
+	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > kiroImageMaxPixels {
+		return false, corrected
+	}
 	if len(encoded) <= kiroImageMaxBase64Size &&
 		max(config.Width, config.Height) <= kiroImageMaxLongSide {
 		return false, corrected

@@ -657,12 +657,7 @@ func TestConverterFixesCursorKiroGeminiQoder(t *testing.T) {
 		}
 	})
 
-	t.Run("gemini_sniff_and_qoder_tool_turn_and_stream_deltas", func(t *testing.T) {
-		gemPart, ok := geminiImagePart(conversationPart{Kind: partImage, MediaType: "", Data: onePixelPNGBase64})
-		if !ok || gjson.Get(gemPart, "inline_data.mime_type").String() != "image/png" {
-			t.Fatalf("geminiImagePart failed magic-byte PNG sniff: ok=%t part=%s", ok, gemPart)
-		}
-
+	t.Run("qoder_tool_turn_and_stream_deltas", func(t *testing.T) {
 		// Qoder: interleaved text + tool_result keeps role="tool" first.
 		msgs, _ := qoderTransformUserTurn(conversationTurn{
 			Role: "user",
@@ -721,23 +716,17 @@ func TestConverterFixesCursorKiroGeminiQoder(t *testing.T) {
 }
 
 func TestPhase2MixedCaseModelDetailsLookup(t *testing.T) {
-	cat := &geminiCatalog{
-		Models: []protocol.ModelInfo{
-			{
-				ID:              "Gemini-4-Argon",
-				DisplayName:     "Gemini 4 Argon",
-				ContextWindow:   1_048_576,
-				MaxOutputTokens: 65_536,
-				InputModalities: []string{"text", "image"},
-			},
+	details := map[string]protocol.ModelInfo{
+		"Gemini-4-Argon": {
+			ID:              "Gemini-4-Argon",
+			DisplayName:     "Gemini 4 Argon",
+			ContextWindow:   1_048_576,
+			MaxOutputTokens: 65_536,
+			InputModalities: []string{"text", "image"},
 		},
 	}
-	ids, _, details := cat.publicModels()
-	if _, hasExact := details["Gemini-4-Argon"]; !hasExact {
-		t.Fatalf("expected mixed-case key in geminiCatalog.publicModels() details: %+v", details)
-	}
 
-	modelsToServe := append(append([]string(nil), ids...), "gemini-4-argon")
+	modelsToServe := []string{"Gemini-4-Argon", "gemini-4-argon"}
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer test-key")
 	rec := httptest.NewRecorder()
@@ -938,27 +927,25 @@ func TestPhase2ModelsReasoningEffortAcrossRuntimes(t *testing.T) {
 			t.Fatalf("WorkBuddy /v1/models wb-reasoner fallback = %s", wbRec.Body.String())
 		}
 
-		gemCat := &geminiCatalog{Models: GeminiModelCatalog()}
-		gemIDs, _, gemDetails := gemCat.publicModels()
-		gemServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			serveModelListWithDetails(w, r, "gk", gemIDs, gemDetails)
+		kiroServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			serveModelListWithDetails(w, r, "kk", []string{"claude-sonnet-4-6", "claude-haiku-4-5"}, kiroDetails)
 		}))
-		defer gemServer.Close()
-		roundTrip, err := protocol.GetOpenAIModelInfos(gemServer.URL+"/v1", "gk")
+		defer kiroServer.Close()
+		roundTrip, err := protocol.GetOpenAIModelInfos(kiroServer.URL+"/v1", "kk")
 		if err != nil {
 			t.Fatalf("round-trip GetOpenAIModelInfos failed: %v", err)
 		}
-		foundArgon, foundClaude := false, false
+		foundSonnet, foundHaiku := false, false
 		for _, info := range roundTrip {
-			if info.ID == "gemini-4-argon" && info.ReasoningKnown && len(info.ReasoningLevels) == 3 {
-				foundArgon = true
+			if info.ID == "claude-sonnet-4-6" && info.ReasoningKnown && len(info.ReasoningLevels) == 4 {
+				foundSonnet = true
 			}
-			if info.ID == "claude-opus-4-6-thinking" && info.ReasoningKnown && len(info.ReasoningLevels) == 4 {
-				foundClaude = true
+			if info.ID == "claude-haiku-4-5" && info.ReasoningKnown && len(info.ReasoningLevels) == 0 {
+				foundHaiku = true
 			}
 		}
-		if !foundArgon || !foundClaude {
-			t.Fatalf("Gemini /v1/models round-trip missing efforts: %+v", roundTrip)
+		if !foundSonnet || !foundHaiku {
+			t.Fatalf("Kiro /v1/models round-trip missing efforts: %+v", roundTrip)
 		}
 	})
 }

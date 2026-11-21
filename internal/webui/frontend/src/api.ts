@@ -139,7 +139,11 @@ export class Api {
     return body as T;
   }
 
-  health = () => fetch(appURL("/health")).then((response) => response.json() as Promise<Health>);
+  health = async (): Promise<Health> => {
+    const response = await fetch(appURL("/health"));
+    if (!response.ok) throw new HttpError(response.status, response.statusText);
+    return response.json() as Promise<Health>;
+  };
 
   sessions = () => this.request<Session[]>("/api/sessions");
   session = (id: string) => this.request<Session>(`/api/sessions/${id}`);
@@ -270,7 +274,7 @@ export class Api {
     appURL(`/api/sessions/${id}/stream?since=${since}` + (this.token ? `&token=${encodeURIComponent(this.token)}` : ""));
 
   config = () => this.request<ConfigView>("/api/config");
-  putConfig = (body: { active?: { normal: string }; activeProvider?: string; lang?: string; bypassMode?: boolean; serveSandbox?: SandboxMode; confirmSandboxOff?: boolean }) =>
+  putConfig = (body: { active?: { normal: string }; activeProvider?: string; lang?: string; bypassMode?: boolean; logLevel?: string; serveSandbox?: SandboxMode; confirmSandboxOff?: boolean }) =>
     this.request<ConfigView>("/api/config", { method: "PUT", body });
   createProvider = (body: Record<string, unknown>) =>
     this.request<unknown>("/api/config/providers", { method: "POST", body });

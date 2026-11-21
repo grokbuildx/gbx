@@ -185,6 +185,7 @@ func RunProviderSet(args []string) error {
 	}
 	// 🚀 运行基于特定域 v2 架构的超级大面板
 	m := NewAdvancedConfigModel(&p)
+	defer m.stopOAuthRuntime()
 	m.NameGenerated = nameGenerated
 	if p.OAuthProvider != "" {
 		// The runtime refreshes a credential and fetches its catalog on the way
@@ -199,7 +200,6 @@ func RunProviderSet(args []string) error {
 		return fmt.Errorf("failed running advanced config panel: %w", err)
 	}
 	defer app.Close()
-	defer m.stopOAuthRuntime()
 	if err := app.Run(); err != nil {
 		setDebugf("advanced config panel failed err=%v", err)
 		return fmt.Errorf("failed running advanced config panel: %w", err)
@@ -414,11 +414,18 @@ type protocolDetectionResult struct {
 // A models list verifies credentials. Chat and Responses share that list,
 // so preserve a configured Responses choice without a generation probe.
 func detectProtocolAndModelsPreferred(endpoint, apiKey string, preference ...string) protocolDetectionResult {
+	return detectProtocolAndModelsPreferredContext(context.Background(), endpoint, apiKey, preference...)
+}
+
+func detectProtocolAndModelsPreferredContext(ctx context.Context, endpoint, apiKey string, preference ...string) protocolDetectionResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	base := normalizeModelBaseURL(endpoint)
 	if base == "" || strings.TrimSpace(apiKey) == "" {
 		return protocolDetectionResult{err: fmt.Errorf("endpoint and API key are required")}
 	}
-	req, err := http.NewRequest(http.MethodGet, protocol.NormalizeOpenAIModelsURL(base), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, protocol.NormalizeOpenAIModelsURL(base), nil)
 	if err != nil {
 		return protocolDetectionResult{err: err}
 	}

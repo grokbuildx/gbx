@@ -22,6 +22,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/grokbuildx/gbx/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/groklaunch"
 )
 
 // The workspace file API lets the page browse, read, edit and search the
@@ -63,6 +64,15 @@ type FileContent struct {
 
 var errOutsideWorkspace = errors.New("path is outside the workspace")
 
+func hasGitPathSegment(slashPath string) bool {
+	for _, seg := range strings.Split(slashPath, "/") {
+		if strings.EqualFold(seg, ".git") {
+			return true
+		}
+	}
+	return false
+}
+
 // resolve maps a workspace-relative path to an absolute one inside the
 // workspace. Symbolic links are followed before the check, so a link cannot
 // lead outside; a path that does not exist yet is checked through its parent.
@@ -71,6 +81,9 @@ func (ws Workspace) resolve(rel string) (string, error) {
 		return "", errOutsideWorkspace
 	}
 	clean := path.Clean("/" + filepath.ToSlash(rel))
+	if hasGitPathSegment(clean) {
+		return "", errOutsideWorkspace
+	}
 	abs := filepath.Join(ws.Path, filepath.FromSlash(clean))
 	real, err := filepath.EvalSymlinks(abs)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -90,6 +103,9 @@ func (ws Workspace) resolve(rel string) (string, error) {
 		return "", err
 	}
 	if !withinWorkspace(real, ws.real) {
+		return "", errOutsideWorkspace
+	}
+	if relReal, err := filepath.Rel(ws.real, real); err != nil || hasGitPathSegment(filepath.ToSlash(relReal)) {
 		return "", errOutsideWorkspace
 	}
 	return real, nil
@@ -149,7 +165,7 @@ func (s *Server) listFiles(w http.ResponseWriter, r *http.Request, ws Workspace)
 	list := make([]FileEntry, 0, len(entries))
 	for _, entry := range entries {
 		// Git's own store is never something to browse or edit.
-		if entry.Name() == ".git" {
+		if strings.EqualFold(entry.Name(), ".git") {
 			continue
 		}
 		info, err := entry.Info()
@@ -215,7 +231,13 @@ func (s *Server) readFile(w http.ResponseWriter, r *http.Request, ws Workspace) 
 		writeJSON(w, http.StatusOK, content)
 		return
 	}
-	data, err := os.ReadFile(file)
+	data, err := fsutil.ReadRegularFileLimited(file, MaxReadBytes)
+	if errors.Is(err, fsutil.ErrFileTooLarge) {
+		content.TooBig = true
+		content.Binary = !looksLikeText(file)
+		writeJSON(w, http.StatusOK, content)
+		return
+	}
 	if err != nil {
 		s.fileError(w, err)
 		return
@@ -240,7 +262,7 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request, ws Workspace)
 		ExpectedHash string `json:"expectedHash"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, MaxWriteBytes+(64<<10))
-	if err := decodeBody(r, &body); err != nil {
+	if err := decodeBodyLimit(r, &body, MaxWriteBytes+(64<<10)); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -267,6 +289,7 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request, ws Workspace)
 		s.fileError(w, err)
 		return
 	}
+	s.invalidateFileCache(ws)
 	writeJSON(w, http.StatusOK, map[string]string{"path": ws.relative(file), "hash": hash})
 }
 
@@ -324,14 +347,67 @@ func saveVerified(file string, content []byte, expectedHash string) (string, err
 	return hex.EncodeToString(sum[:]), nil
 }
 
+const fileSearchCacheTTL = 5 * time.Second
+
+type cachedFileList struct {
+	paths    []string
+	cachedAt time.Time
+}
+
+func (s *Server) invalidateFileCache(ws Workspace) {
+	if s == nil || ws.real == "" {
+		return
+	}
+	s.fileCacheMu.Lock()
+	if s.fileCacheGen == nil {
+		s.fileCacheGen = make(map[string]uint64)
+	}
+	s.fileCacheGen[ws.real]++
+	delete(s.fileCache, ws.real)
+	s.fileCacheMu.Unlock()
+}
+
+func (s *Server) cachedWorkspaceFiles(ctx context.Context, ws Workspace) []string {
+	now := time.Now()
+	s.fileCacheMu.Lock()
+	if entry, ok := s.fileCache[ws.real]; ok && now.Sub(entry.cachedAt) < fileSearchCacheTTL {
+		paths := entry.paths
+		s.fileCacheMu.Unlock()
+		return paths
+	}
+	gen := s.fileCacheGen[ws.real]
+	s.fileCacheMu.Unlock()
+
+	if ctx.Err() != nil {
+		return nil
+	}
+	paths, err := s.gitFiles(ctx, ws)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		paths = ws.walkFiles(ctx)
+		if ctx.Err() != nil {
+			return nil
+		}
+	}
+
+	s.fileCacheMu.Lock()
+	if s.fileCacheGen[ws.real] == gen {
+		if s.fileCache == nil {
+			s.fileCache = make(map[string]cachedFileList)
+		}
+		s.fileCache[ws.real] = cachedFileList{paths: paths, cachedAt: time.Now()}
+	}
+	s.fileCacheMu.Unlock()
+	return paths
+}
+
 // searchFiles finds files by name for @ mentions. In a git repository it asks
 // git, which honors .gitignore; elsewhere it walks the tree.
 func (s *Server) searchFiles(w http.ResponseWriter, r *http.Request, ws Workspace) {
 	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
-	paths, err := s.gitFiles(r.Context(), ws)
-	if err != nil {
-		paths = ws.walkFiles()
-	}
+	paths := s.cachedWorkspaceFiles(r.Context(), ws)
 	type match struct {
 		path string
 		rank int
@@ -374,9 +450,13 @@ func (s *Server) searchFiles(w http.ResponseWriter, r *http.Request, ws Workspac
 func (s *Server) gitFiles(ctx context.Context, ws Workspace) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	cmd := exec.CommandContext(ctx, "git",
+		"-c", "core.fsmonitor=false",
+		"-c", "core.hooksPath=/dev/null",
+		"ls-files", "-z", "--cached", "--others", "--exclude-standard",
+	)
 	cmd.Dir = ws.Path
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(groklaunch.ScrubServeEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -390,10 +470,13 @@ func (s *Server) gitFiles(ctx context.Context, ws Workspace) ([]string, error) {
 	return paths, nil
 }
 
-func (ws Workspace) walkFiles() []string {
+func (ws Workspace) walkFiles(ctx context.Context) []string {
 	var paths []string
 	visited := 0
 	_ = filepath.WalkDir(ws.real, func(file string, entry fs.DirEntry, err error) error {
+		if ctx != nil && ctx.Err() != nil {
+			return filepath.SkipAll
+		}
 		if err != nil {
 			return nil
 		}
@@ -402,8 +485,11 @@ func (ws Workspace) walkFiles() []string {
 			return filepath.SkipAll
 		}
 		if entry.IsDir() {
+			if strings.EqualFold(entry.Name(), ".git") {
+				return filepath.SkipDir
+			}
 			switch entry.Name() {
-			case ".git", "node_modules", ".venv", "__pycache__":
+			case "node_modules", ".venv", "__pycache__":
 				return filepath.SkipDir
 			}
 			return nil
@@ -525,6 +611,9 @@ func (s *Server) uploadFiles(w http.ResponseWriter, r *http.Request, ws Workspac
 			return
 		}
 		saved = append(saved, ws.relative(target))
+	}
+	if len(saved) > 0 {
+		s.invalidateFileCache(ws)
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"files": saved})
 }

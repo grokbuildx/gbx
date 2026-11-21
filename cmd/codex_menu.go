@@ -110,6 +110,8 @@ func proxyMenuSwitch(cmd *cobra.Command, _ []string) (switchErr error) {
 				m.CodexListenAddress = endpoint.Host
 			}
 			m.CodexMode = previous.CodexMode
+			m.CatalogMode = previous.CatalogMode
+			m.AdditionalProviders = append([]string(nil), previous.AdditionalProviders...)
 			_, restoreErr := m.Start(ctx, executable, *rollback)
 			return errors.Join(err, restoreErr)
 		}

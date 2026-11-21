@@ -355,37 +355,6 @@ func TestAllRuntimesCoverResponsesAndChatCompletionsFrontDoors(t *testing.T) {
 		assertBothFrontDoors(t, service.handler(), "local-key", "gpt-test", func(tc bool) { toolMode = tc })
 	})
 
-	t.Run("GeminiRuntime", func(t *testing.T) {
-		var toolMode bool
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.URL.RawQuery, "alt=sse") {
-				w.Header().Set("Content-Type", "text/event-stream")
-				if toolMode {
-					_, _ = io.WriteString(w, "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"id\":\"call_1\",\"name\":\"Read\",\"args\":{\"path\":\"/tmp/a\"}}}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":2}}}\n\n")
-				} else {
-					_, _ = io.WriteString(w, "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello world\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":2}}}\n\n")
-				}
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			if toolMode {
-				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"Read","args":{"path":"/tmp/a"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2}}}`)
-			} else {
-				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello world"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2}}}`)
-			}
-		}))
-		defer upstream.Close()
-		prevDaily, prevProd := antigravityBaseURLDaily, antigravityBaseURLProd
-		antigravityBaseURLDaily, antigravityBaseURLProd = upstream.URL, upstream.URL
-		t.Cleanup(func() { antigravityBaseURLDaily, antigravityBaseURLProd = prevDaily, prevProd })
-		service := &geminiService{
-			apiKey: "local-key", authorizer: &chatStaticAuthorizer{token: "tok"},
-			models: []string{"gemini-2.5-pro"}, client: upstream.Client(),
-			projectID: "proj", baseURL: upstream.URL,
-		}
-		assertBothFrontDoors(t, service.handler(), "local-key", "gemini-2.5-pro", func(tc bool) { toolMode = tc })
-	})
-
 	t.Run("KiroRuntime", func(t *testing.T) {
 		var toolMode bool
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

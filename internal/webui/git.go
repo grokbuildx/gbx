@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/grokbuildx/gbx/internal/groklaunch"
 )
 
 // The git API backs the page's changes panel: status, diffs, staging,
@@ -67,10 +69,16 @@ type gitResult struct {
 func (s *Server) git(ctx context.Context, ws Workspace, stdin []byte, args ...string) (gitResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.quotepath=off", "-c", "color.ui=false"}, args...)...)
+	cmdArgs := append([]string{
+		"-c", "core.quotepath=off",
+		"-c", "color.ui=false",
+		"-c", "core.fsmonitor=false",
+		"-c", "core.hooksPath=/dev/null",
+	}, args...)
+	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
 	cmd.Dir = ws.Path
 	// Reads must not take the index lock Claude's own git commands need.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C")
+	cmd.Env = append(groklaunch.ScrubServeEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C")
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -313,8 +321,11 @@ func (s *Server) gitPaths(w http.ResponseWriter, r *http.Request, ws Workspace, 
 	}
 	result, err := s.git(r.Context(), ws, nil, args...)
 	if err == nil && result.code != 0 && args[0] == "restore" {
-		// A repository without commits has nothing to restore from.
-		result, err = s.git(r.Context(), ws, nil, append([]string{"rm", "--cached", "-r", "--quiet", "--"}, args[3:]...)...)
+		// A repository without commits has no HEAD to restore from; check
+		// explicitly so ordinary restore errors never run git rm --cached -r.
+		if headCheck, headErr := s.git(r.Context(), ws, nil, "rev-parse", "--verify", "--quiet", "HEAD"); headErr == nil && headCheck.code != 0 {
+			result, err = s.git(r.Context(), ws, nil, append([]string{"rm", "--cached", "-r", "--quiet", "--"}, args[3:]...)...)
+		}
 	}
 	s.gitDone(w, r, ws, result, err)
 }

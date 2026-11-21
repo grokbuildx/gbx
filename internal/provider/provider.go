@@ -126,9 +126,8 @@ type Provider struct {
 	// AnthropicAuth is retained when editing saved legacy providers.
 	AnthropicAuth string `yaml:"anthropicAuth,omitempty"`
 	// OAuthProvider selects an embedded subscription runtime. Supported
-	// values are gpt, gemini, grok, qoder, kimi, kiro, workbuddy,
-	// workbuddycn, autoclaw, and cursor. Existing codex and xai bindings are
-	// also accepted.
+	// values are gpt, grok, qoder, kimi, kiro, workbuddy, workbuddycn,
+	// autoclaw, and cursor. Existing codex and xai bindings are also accepted.
 	OAuthProvider string `yaml:"oauthProvider,omitempty"`
 	// OAuthAccountCredential binds this provider to a single credential file
 	// (basename of the JSON under ~/.gbx/auth). Subscription runtimes require
@@ -214,12 +213,10 @@ func ValidateRuntime(p Provider) error {
 		if _, ok := OAuthRuntimeType(backend); ok {
 			return nil
 		}
-		switch backend {
-		case "claude", "zed":
+		if IsRetiredOAuthProvider(backend) {
 			return fmt.Errorf("OAuth provider %q has been retired; select another provider with gbx use", backend)
-		default:
-			return fmt.Errorf("unsupported OAuth provider %q", backend)
 		}
+		return fmt.Errorf("unsupported OAuth provider %q", backend)
 	}
 	switch {
 	case IsOpenAICompatibleType(p.Type), IsModelsDevType(p.Type):
@@ -233,18 +230,11 @@ func ValidateRuntime(p Provider) error {
 
 // OAuthRuntimeType identifies the runtime backing a subscription.
 func OAuthRuntimeType(oauthProvider string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(oauthProvider)) {
-	case "gpt", "codex", "grok", "xai":
-		return "openai_responses", true
-	case "gemini", "kimi", "workbuddy", "workbuddycn":
-		return "openai", true
-	case "kiro", "qoder", "cursor":
-		return "openai_responses", true
-	case "autoclaw":
-		return "autoclaw", true
-	default:
+	spec, ok := LookupOAuthSpec(oauthProvider)
+	if !ok {
 		return "", false
 	}
+	return spec.RuntimeType, true
 }
 
 func IsOpenAIResponsesType(providerType string) bool {
@@ -435,27 +425,7 @@ func RuntimeModelSpec(p Provider) string {
 	if bareDef == "" || len(models) == 0 {
 		return strings.Join(models, ",")
 	}
-	for i, model := range models {
-		if strings.EqualFold(stripContextSuffix(model), bareDef) {
-			promoted := model
-			if HasOneMSuffix(rawDef) && !HasOneMSuffix(promoted) {
-				promoted = stripContextSuffix(promoted) + "[1m]"
-			}
-			reordered := make([]string, 0, len(models))
-			reordered = append(reordered, promoted)
-			for j, other := range models {
-				if j == i || strings.EqualFold(stripContextSuffix(other), bareDef) {
-					continue
-				}
-				reordered = append(reordered, other)
-			}
-			return strings.Join(reordered, ",")
-		}
-	}
-	if strings.TrimSpace(p.OAuthProvider) == "" {
-		return strings.Join(append([]string{rawDef}, models...), ",")
-	}
-	return strings.Join(models, ",")
+	return strings.Join(PromoteDefaultModel(models, rawDef, strings.TrimSpace(p.OAuthProvider) == ""), ",")
 }
 
 // ProtocolLabel returns the display name of a configured protocol.
@@ -480,9 +450,8 @@ func ProtocolLabel(providerType string) string {
 // ProtocolLabelForProvider reports the user-facing protocol, including OAuth
 // backends whose real behavior cannot be inferred from the internal Type field.
 func ProtocolLabelForProvider(p Provider) string {
-	switch strings.ToLower(strings.TrimSpace(p.OAuthProvider)) {
-	case "claude", "zed":
-		return strings.ToLower(strings.TrimSpace(p.OAuthProvider)) + " / retired"
+	if lower := strings.ToLower(strings.TrimSpace(p.OAuthProvider)); IsRetiredOAuthProvider(lower) {
+		return lower + " / retired"
 	}
 	return ProtocolLabel(p.Type)
 }

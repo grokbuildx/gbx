@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"path/filepath"
 	"runtime"
@@ -74,10 +73,6 @@ func startKiroOAuth(parent context.Context, modelSpec, credentialFile string) (*
 	if err != nil {
 		return nil, err
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, fmt.Errorf("listen for Kiro runtime: %w", err)
-	}
 	models := kiroRuntimeModels(modelSpec)
 	usageTracker := NewUsageTracker()
 	service := &kiroService{
@@ -86,57 +81,24 @@ func startKiroOAuth(parent context.Context, modelSpec, credentialFile string) (*
 		modelCatalog: newKiroModelCatalog(kiroAvailableModelsEndpoint),
 		pool:         pool,
 		usage:        usageTracker,
-		client:       &http.Client{Transport: newUpstreamTransport(60 * time.Second)},
+		client:       newCredentialHTTPClient(60 * time.Second),
 		upstreamURL: func(credential *kiroCredential) string {
 			return "https://q." + credential.effectiveAPIRegion() + ".amazonaws.com/generateAssistantResponse"
 		},
 	}
-	runCtx, cancel := context.WithCancel(parent)
-	server := &http.Server{
-		Handler:           service.handler(),
-		ReadHeaderTimeout: 15 * time.Second,
-		BaseContext: func(net.Listener) context.Context {
-			return runCtx
-		},
+	proxyRuntime, err := startLoopbackServer(parent, "Kiro runtime", service.handlerForContext(parent), apiKey, usageTracker)
+	if err != nil {
+		return nil, err
 	}
-	started := make(chan struct{})
-	close(started)
-	proxyRuntime := &Runtime{
-		endpoint:   "http://" + listener.Addr().String() + "/v1",
-		apiKey:     apiKey,
-		httpServer: server,
-		listAuths:  pool.listAuths,
-		// The service's own catalog is loaded lazily by /v1/models, but Runtime
-		// must carry the configured models too: providersession.Prepare and the
-		// launcher read Runtime.Models() without asking the runtime to start.
-		models:       models,
-		modelDetails: kiroInitialModelDetails(modelSpec, models),
-		cancel:       cancel,
-		done:         make(chan struct{}),
-		runErr:       make(chan error, 1),
-		started:      started,
-		usage:        usageTracker,
-	}
+	proxyRuntime.listAuths = pool.listAuths
+	// The service's own catalog is loaded lazily by /v1/models, but Runtime
+	// must carry the configured models too: providersession.Prepare and the
+	// launcher read Runtime.Models() without asking the runtime to start.
+	proxyRuntime.models = models
+	proxyRuntime.modelDetails = kiroInitialModelDetails(modelSpec, models)
 	proxyRuntime.cleanup = append(proxyRuntime.cleanup, closeIdleClients(service.client, pool.client))
-	go func() {
-		err := server.Serve(listener)
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
-		proxyRuntime.runErr <- err
-		close(proxyRuntime.done)
-	}()
-	go func() {
-		select {
-		case <-runCtx.Done():
-			ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = server.Shutdown(ctx)
-			stop()
-		case <-proxyRuntime.done:
-		}
-	}()
 	LogInfof("runtime start oauth provider=kiro backend=kiro protocol=responses port=%s credential_file=%s model_count=%d",
-		listener.Addr().String(), filepath.Base(credentialFile), len(models))
+		strings.TrimPrefix(strings.TrimSuffix(proxyRuntime.endpoint, "/v1"), "http://"), filepath.Base(credentialFile), len(models))
 	return proxyRuntime, nil
 }
 
@@ -221,7 +183,11 @@ func kiroKnownVisionModel(model string) bool {
 }
 
 func (s *kiroService) handler() http.Handler {
-	return loopbackFrontMux(s.apiKey, s.handleModels, s.handleResponses)
+	return s.handlerForContext(context.Background())
+}
+
+func (s *kiroService) handlerForContext(ctx context.Context) http.Handler {
+	return loopbackFrontMuxForContext(ctx, s.apiKey, s.handleModels, s.handleResponses)
 }
 
 func (s *kiroService) authorized(request *http.Request) bool {
@@ -631,7 +597,7 @@ func (s *kiroService) doUpstreamRequest(ctx context.Context, converted *kiroConv
 		"budget_dropped_text_bytes", converted.budgetTextBytes, "budget_dropped_tools", converted.budgetTools)
 	DebugHTTPBody(fmt.Sprintf("kiro request request_id=%s path=%s", requestLogID(ctx), request.URL.Path), raw)
 	started := time.Now()
-	response, err := s.client.Do(request)
+	response, err := doCredentialRequest(s.client, request)
 	if err != nil {
 		return nil, fmt.Errorf("call Kiro upstream: %w", err)
 	}

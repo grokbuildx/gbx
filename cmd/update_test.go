@@ -1,9 +1,13 @@
 package cmd
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/grokbuildx/gbx/internal/selfupdate"
+)
 
 func TestReleaseAssetName(t *testing.T) {
-	name, err := releaseAssetName()
+	name, err := selfupdate.ReleaseAssetName()
 	if err != nil {
 		t.Skipf("unsupported platform for self-update: %v", err)
 	}
@@ -16,15 +20,15 @@ func TestReleaseAssetName(t *testing.T) {
 		"gbx-win32-arm64.exe": true,
 	}
 	if !valid[name] {
-		t.Errorf("releaseAssetName() = %q, want one of the release asset names", name)
+		t.Errorf("ReleaseAssetName() = %q, want one of the release asset names", name)
 	}
 }
 
 func TestReleaseDownloadURL(t *testing.T) {
-	if got := releaseDownloadURL("v1.5.6", "gbx-darwin-arm64"); got != "https://github.com/grokbuildx/gbx/releases/download/v1.5.6/gbx-darwin-arm64" {
+	if got := selfupdate.ReleaseDownloadURL("v1.5.6", "gbx-darwin-arm64"); got != "https://github.com/grokbuildx/gbx/releases/download/v1.5.6/gbx-darwin-arm64" {
 		t.Errorf("versioned URL = %q", got)
 	}
-	if got := releaseDownloadURL("unknown", "gbx-linux-amd64"); got != "https://github.com/grokbuildx/gbx/releases/latest/download/gbx-linux-amd64" {
+	if got := selfupdate.ReleaseDownloadURL("unknown", "gbx-linux-amd64"); got != "https://github.com/grokbuildx/gbx/releases/latest/download/gbx-linux-amd64" {
 		t.Errorf("latest URL = %q", got)
 	}
 }
@@ -42,8 +46,8 @@ func TestHumanSize(t *testing.T) {
 		{5*1024*1024 + 512*1024, "5.5 MiB"},
 	}
 	for _, c := range cases {
-		if got := humanSize(c.n); got != c.want {
-			t.Errorf("humanSize(%d) = %q, want %q", c.n, got, c.want)
+		if got := selfupdate.HumanSize(c.n); got != c.want {
+			t.Errorf("HumanSize(%d) = %q, want %q", c.n, got, c.want)
 		}
 	}
 }

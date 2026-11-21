@@ -3,7 +3,6 @@ package webui
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
 	"regexp"
@@ -87,17 +86,12 @@ func (s *Server) sharedSession(token string) (*Session, bool) {
 	if !shareTokenPattern.MatchString(token) {
 		return nil, false
 	}
-	metas, err := s.store.List()
-	if err != nil {
+	id, ok := s.store.FindByShareToken(token)
+	if !ok {
 		return nil, false
 	}
-	for _, meta := range metas {
-		if meta.ShareToken != "" && subtle.ConstantTimeCompare([]byte(meta.ShareToken), []byte(token)) == 1 {
-			session, err := s.store.Open(meta.ID)
-			return session, err == nil
-		}
-	}
-	return nil, false
+	session, err := s.store.Open(id)
+	return session, err == nil
 }
 
 // handleShared serves the public /api/share/<token>[/uploads/<file>].

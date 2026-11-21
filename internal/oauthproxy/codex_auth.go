@@ -95,7 +95,7 @@ func loginCodex(ctx context.Context, authDir string, opts LoginOptions) (LoginRe
 		return LoginResult{}, fmt.Errorf("Codex authentication failed: missing authorization code")
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := newTimedCredentialHTTPClient(30 * time.Second)
 	token, err := exchangeCodexCode(ctx, client, result.code, redirectURI, verifier)
 	if err != nil {
 		return LoginResult{}, err

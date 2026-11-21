@@ -89,19 +89,29 @@ export function FilesPanel({ api, refreshKey, onMention, onWide, onError, onSave
 
   const save = async (overwrite = false) => {
     if (!open || open.saving || (open.content === open.saved && !open.isNew)) return;
-    const hash = overwrite && open.conflict ? open.conflict : open.hash;
-    setOpen({ ...open, saving: true });
+    const path = open.file.path;
+    const sent = open.content;
+    const hash = overwrite && open.conflict !== undefined ? open.conflict : open.hash;
+    setOpen((current) => current && { ...current, saving: true });
     try {
-      const result = await api.writeFile(open.file.path, open.content, hash);
-      setOpen((current) => current && { ...current, saved: current.content, hash: result.hash, conflict: undefined, saving: false, isNew: false });
-      void loadDir(parentOf(open.file.path));
+      const result = await api.writeFile(path, sent, hash);
+      setOpen((current) =>
+        current && current.file.path === path
+          ? { ...current, saved: sent, hash: result.hash, conflict: undefined, saving: false, isNew: false }
+          : current,
+      );
+      void loadDir(parentOf(path));
       onSaved();
     } catch (error) {
       // A 409 carries the hash on disk; saving with it overwrites on purpose.
       const message = error instanceof Error ? error.message : String(error);
       if (/changed on disk|deleted since/.test(message)) {
-        const latest = await api.readFile(open.file.path).catch(() => null);
-        setOpen((current) => current && { ...current, saving: false, conflict: latest?.hash || "" });
+        const latest = await api.readFile(path).catch(() => null);
+        setOpen((current) =>
+          current && current.file.path === path
+            ? { ...current, saving: false, conflict: latest?.hash || "" }
+            : current,
+        );
       } else {
         setOpen((current) => current && { ...current, saving: false });
         onError(error);

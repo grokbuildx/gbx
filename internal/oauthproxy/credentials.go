@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/grokbuildx/gbx/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 // CredentialInfo is the non-secret state doctor reads from ~/.gbx/auth.
@@ -140,30 +141,31 @@ func credentialQuotaExceeded(metadata map[string]any) bool {
 }
 
 func normalizeCredentialBackend(value string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case ProviderCodex, ProviderChatGPT:
-		return ProviderCodex, nil
-	case ProviderQoder:
-		return ProviderQoder, nil
-	case backendXAI, ProviderGrok:
-		return backendXAI, nil
-	case "antigravity", ProviderGemini:
-		return "antigravity", nil
-	case ProviderKimi:
-		return ProviderKimi, nil
-	case ProviderKiro:
-		return ProviderKiro, nil
-	case ProviderWorkBuddy:
-		return ProviderWorkBuddy, nil
-	case ProviderWorkBuddyCN:
-		return ProviderWorkBuddyCN, nil
-	case ProviderAutoClaw:
-		return ProviderAutoClaw, nil
-	case ProviderCursor:
-		return ProviderCursor, nil
-	default:
+	spec, ok := provider.LookupOAuthSpec(value)
+	if !ok {
 		return "", fmt.Errorf("unsupported credential type %q", value)
 	}
+	return spec.Backend, nil
+}
+
+// safeAuthMetadata clones credential metadata while stripping secret token
+// fields so diagnostic callers such as AuthInfo.Metadata never retain raw keys.
+func safeAuthMetadata(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	public := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "access_token", "token", "refresh_token", "refreshtoken", "id_token",
+			"session_token", "csrf_token", "client_secret", "api_key", "zcode_token",
+			"device_id", "deviceid":
+			continue
+		default:
+			public[key] = value
+		}
+	}
+	return public
 }
 
 func credentialIdentity(metadata map[string]any, raw []byte) string {

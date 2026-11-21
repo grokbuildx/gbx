@@ -14,6 +14,7 @@ type terminal struct{}
 type terminalRegistry struct {
 	mu        sync.Mutex
 	terminals map[string]*terminal
+	starting  int
 }
 
 func (s *Server) closeTerminals() {}

@@ -98,7 +98,7 @@ func retryableUpstreamOutcome(response *http.Response, err error) bool {
 }
 
 // outcomeStatus reads the upstream status from either outcome shape: raw
-// responses (passthrough/gemini return non-2xx as responses) or the typed
+// responses (passthrough returns non-2xx as responses) or the typed
 // errors the converter runtimes drain into.
 func outcomeStatus(response *http.Response, err error) int {
 	if response != nil {

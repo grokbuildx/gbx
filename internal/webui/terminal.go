@@ -16,6 +16,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/google/uuid"
+	"github.com/grokbuildx/gbx/internal/groklaunch"
 	"github.com/grokbuildx/gbx/internal/process"
 )
 
@@ -24,8 +25,9 @@ import (
 // so a reconnecting page resumes where it was; keystrokes arrive by POST.
 
 const (
-	terminalBuffer = 256 << 10
-	maxTerminals   = 4
+	terminalBuffer    = 256 << 10
+	maxTerminals      = 4
+	exitedTerminalTTL = 5 * time.Minute
 )
 
 type terminal struct {
@@ -33,17 +35,51 @@ type terminal struct {
 	cmd *exec.Cmd
 	pty *os.File
 
-	mu      sync.Mutex
-	buf     []byte
-	base    int64 // offset of buf[0] in the whole output
-	subs    []chan struct{}
-	exited  bool
-	created time.Time
+	ptyMu     sync.Mutex
+	ptyClosed bool
+
+	mu       sync.Mutex
+	buf      []byte
+	base     int64 // offset of buf[0] in the whole output
+	subs     []chan struct{}
+	exited   bool
+	exitedAt time.Time
+	created  time.Time
 }
 
 type terminalRegistry struct {
 	mu        sync.Mutex
 	terminals map[string]*terminal
+	starting  int
+}
+
+func (t *terminal) writePTY(data string) error {
+	t.ptyMu.Lock()
+	defer t.ptyMu.Unlock()
+	if t.ptyClosed || t.pty == nil {
+		return os.ErrClosed
+	}
+	_, err := io.WriteString(t.pty, data)
+	return err
+}
+
+func (t *terminal) resizePTY(cols, rows uint16) {
+	t.ptyMu.Lock()
+	defer t.ptyMu.Unlock()
+	if t.ptyClosed || t.pty == nil {
+		return
+	}
+	_ = pty.Setsize(t.pty, &pty.Winsize{Cols: cols, Rows: rows})
+}
+
+func (t *terminal) closePTY() {
+	t.ptyMu.Lock()
+	defer t.ptyMu.Unlock()
+	if t.ptyClosed || t.pty == nil {
+		return
+	}
+	t.ptyClosed = true
+	_ = t.pty.Close()
 }
 
 func (t *terminal) notify() {
@@ -76,8 +112,10 @@ func (t *terminal) pump() {
 	_ = t.cmd.Wait()
 	t.mu.Lock()
 	t.exited = true
+	t.exitedAt = time.Now()
 	t.notify()
 	t.mu.Unlock()
+	t.closePTY()
 }
 
 func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +174,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if _, err := io.WriteString(term.pty, body.Data); err != nil {
+		if err := term.writePTY(body.Data); err != nil {
 			writeError(w, http.StatusGone, "the terminal has exited")
 			return
 		}
@@ -150,7 +188,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "cols and rows are required")
 			return
 		}
-		_ = pty.Setsize(term.pty, &pty.Winsize{Cols: body.Cols, Rows: body.Rows})
+		term.resizePTY(body.Cols, body.Rows)
 		w.WriteHeader(http.StatusNoContent)
 	case action == "" && r.Method == http.MethodDelete:
 		s.closeTerminal(term)
@@ -174,20 +212,30 @@ func (s *Server) openTerminal(w http.ResponseWriter, r *http.Request) {
 	if body.Cols == 0 || body.Rows == 0 {
 		body.Cols, body.Rows = 100, 30
 	}
+	now := time.Now()
 	s.terminals.mu.Lock()
 	live := 0
-	for _, term := range s.terminals.terminals {
+	for id, term := range s.terminals.terminals {
 		term.mu.Lock()
-		if !term.exited {
+		exited := term.exited
+		stale := exited && len(term.subs) == 0 && !term.exitedAt.IsZero() && now.Sub(term.exitedAt) > exitedTerminalTTL
+		term.mu.Unlock()
+		if stale {
+			delete(s.terminals.terminals, id)
+			continue
+		}
+		if !exited {
 			live++
 		}
-		term.mu.Unlock()
 	}
-	s.terminals.mu.Unlock()
-	if live >= maxTerminals {
+	if live+s.terminals.starting >= maxTerminals {
+		s.terminals.mu.Unlock()
 		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("at most %d terminals at a time", maxTerminals))
 		return
 	}
+	s.terminals.starting++
+	s.terminals.mu.Unlock()
+
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
@@ -197,27 +245,24 @@ func (s *Server) openTerminal(w http.ResponseWriter, r *http.Request) {
 	cmd.Env = append(terminalEnv(), "TERM=xterm-256color", "COLORTERM=truecolor")
 	file, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: body.Cols, Rows: body.Rows})
 	if err != nil {
+		s.terminals.mu.Lock()
+		s.terminals.starting--
+		s.terminals.mu.Unlock()
 		writeError(w, http.StatusInternalServerError, "start shell: "+err.Error())
 		return
 	}
 	term := &terminal{id: uuid.NewString(), cmd: cmd, pty: file, created: time.Now()}
 	s.terminals.mu.Lock()
+	s.terminals.starting--
 	s.terminals.terminals[term.id] = term
 	s.terminals.mu.Unlock()
 	go term.pump()
 	writeJSON(w, http.StatusCreated, map[string]string{"id": term.id})
 }
 
-// terminalEnv is the server's environment without gbx serve's own credential.
+// terminalEnv is the server's environment without gbx serve's own credentials.
 func terminalEnv() []string {
-	env := []string{}
-	for _, entry := range os.Environ() {
-		if strings.HasPrefix(entry, "GBX_SERVE_TOKEN=") {
-			continue
-		}
-		env = append(env, entry)
-	}
-	return env
+	return groklaunch.ScrubServeEnv(os.Environ())
 }
 
 // closeTerminals ends every shell, as when the server stops.
@@ -234,8 +279,11 @@ func (s *Server) closeTerminals() {
 }
 
 func (s *Server) closeTerminal(term *terminal) {
-	_ = term.pty.Close()
-	if term.cmd.Process != nil {
+	term.closePTY()
+	term.mu.Lock()
+	exited := term.exited
+	term.mu.Unlock()
+	if !exited && term.cmd.Process != nil {
 		process.KillTree(term.cmd)
 	}
 	s.terminals.mu.Lock()

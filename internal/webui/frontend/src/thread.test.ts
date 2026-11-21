@@ -466,7 +466,7 @@ describe("sub-agents and thinking", () => {
     expect(a.children.map((item) => item.kind)).toEqual(["thinking", "tool", "tool"]);
     expect(a.children[0]).toMatchObject({ text: "A thoughts" });
     expect(a.children[1]).toMatchObject({ id: "a:read", output: "A file", status: "ok" });
-    expect(nested.parent).toBe(a);
+    expect(nested.parentId).toBe(a.id);
     expect(nested.children[0]).toMatchObject({ text: "Nested thoughts" });
     expect(nested.children[1]).toMatchObject({ id: "a:nested:read", output: "Nested file", status: "ok" });
     expect(b.children.map((item) => item.kind)).toEqual(["thinking", "tool", "text"]);
@@ -602,5 +602,29 @@ describe("permissions", () => {
     const [a, b] = items.filter((item) => item.kind === "permission");
     expect(a.kind === "permission" && a.status).toBe("allow");
     expect(b.kind === "permission" && b.status).toBe("cancelled");
+  });
+});
+
+import { ThreadReducer } from "./thread";
+
+describe("ThreadReducer", () => {
+  it("preserves referential identity of untouched items across streaming token updates", () => {
+    const reducer = new ThreadReducer();
+    const first = reducer.apply([
+      ev("user", { text: "edit" }),
+      ev("tool_use", { id: "e1", name: "Edit", input: { file_path: "a.go", old_string: "a", new_string: "b" } }),
+      ev("tool_result", { id: "e1", ok: true, output: "" }),
+      ev("token", { text: "Hello" }),
+    ]);
+    const second = reducer.apply([
+      ev("token", { text: " world" }),
+    ]);
+    expect(second).not.toBe(first);
+    expect(second[0]).toBe(first[0]); // day
+    expect(second[1]).toBe(first[1]); // user
+    expect(second[2]).toBe(first[2]); // completed tool stays ===
+    expect(second[3]).not.toBe(first[3]); // updated text is cloned
+    expect(second[3].kind === "text" && second[3].text).toBe("Hello world");
+    expect(first[3].kind === "text" && first[3].text).toBe("Hello");
   });
 });

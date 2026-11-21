@@ -24,15 +24,15 @@ type Change struct {
 }
 
 func readSettings(path string) (map[string]json.RawMessage, error) {
-	data, err := os.ReadFile(path)
+	data, err := fsutil.ReadRegularFileLimited(path, 4<<20)
 	if errors.Is(err, os.ErrNotExist) {
 		return make(map[string]json.RawMessage), nil
 	}
+	if errors.Is(err, fsutil.ErrFileTooLarge) {
+		return nil, fmt.Errorf("Claude settings exceed 4 MiB")
+	}
 	if err != nil {
 		return nil, err
-	}
-	if len(data) > 4<<20 {
-		return nil, fmt.Errorf("Claude settings exceed 4 MiB")
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {

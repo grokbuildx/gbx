@@ -9,10 +9,11 @@ package locale
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/grokbuildx/gbx/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/paths"
 	"gopkg.in/yaml.v3"
 )
 
@@ -55,9 +56,11 @@ func (lm *LanguageManager) init() {
 
 // readConfigLang reads the lang field from config.yaml.
 func readConfigLang() string {
-	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".gbx", "config.yaml")
-	data, err := os.ReadFile(path)
+	path, err := paths.ConfigPath()
+	if err != nil {
+		return ""
+	}
+	data, err := fsutil.ReadFile(path)
 	if err != nil {
 		return ""
 	}

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -120,18 +119,6 @@ func startQoderOAuth(parent context.Context, _ string, credentialFile string) (*
 	// models.
 	service.models = models
 
-	listener, err := net.Listen("tcp", runtimeLoopbackHost+":0")
-	if err != nil {
-		return nil, fmt.Errorf("listen for Qoder runtime: %w", err)
-	}
-	runCtx, cancel := context.WithCancel(parent)
-	server := &http.Server{
-		Handler:           service.handler(),
-		ReadHeaderTimeout: 15 * time.Second,
-		BaseContext: func(net.Listener) context.Context {
-			return runCtx
-		},
-	}
 	modelIDs := make([]string, 0, len(service.models))
 	modelNames := make(map[string]string, len(service.models))
 	modelDetails := make(map[string]protocol.ModelInfo, len(service.models))
@@ -146,53 +133,32 @@ func startQoderOAuth(parent context.Context, _ string, credentialFile string) (*
 		}
 		modelDetails[strings.ToLower(model.ID)] = info
 	}
-	started := make(chan struct{})
-	close(started)
-	proxyRuntime := &Runtime{
-		endpoint:   "http://" + listener.Addr().String() + "/v1",
-		apiKey:     apiKey,
-		httpServer: server,
-		listAuths:  pool.listAuths,
-		cancel:     cancel,
-		done:       make(chan struct{}),
-		runErr:     make(chan error, 1),
-		started:    started,
-		models:     modelIDs,
-		modelNames: modelNames,
-		// The account catalog's PriceFactor is the credit rate the picker shows.
-		modelDetails: modelDetails,
-		// A silent substitution is what let a credential that had simply expired
-		// shrink the saved catalog from 17 models to 5: `gbx set` adopted the
-		// compatibility list as if it were the account's. Recording it lets the
-		// caller keep what it had and say so.
-		catalogFallback: catalogFallback,
-		usage:           usageTracker,
+	proxyRuntime, err := startLoopbackServer(parent, "Qoder runtime", service.handlerForContext(parent), apiKey, usageTracker)
+	if err != nil {
+		return nil, err
 	}
+	proxyRuntime.listAuths = pool.listAuths
+	proxyRuntime.models = modelIDs
+	proxyRuntime.modelNames = modelNames
+	// The account catalog's PriceFactor is the credit rate the picker shows.
+	proxyRuntime.modelDetails = modelDetails
+	// A silent substitution is what let a credential that had simply expired
+	// shrink the saved catalog from 17 models to 5: `gbx set` adopted the
+	// compatibility list as if it were the account's. Recording it lets the
+	// caller keep what it had and say so.
+	proxyRuntime.catalogFallback = catalogFallback
 	proxyRuntime.cleanup = append(proxyRuntime.cleanup, closeIdleClients(service.client))
-	go func() {
-		err := server.Serve(listener)
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
-		proxyRuntime.runErr <- err
-		close(proxyRuntime.done)
-	}()
-	go func() {
-		select {
-		case <-runCtx.Done():
-			ctx, stop := context.WithTimeout(context.Background(), runtimeStopTimeout)
-			_ = server.Shutdown(ctx)
-			stop()
-		case <-proxyRuntime.done:
-		}
-	}()
 	LogInfof("runtime start oauth provider=qoder backend=qoder protocol=responses port=%s credential_file=%s model_count=%d",
-		listener.Addr().String(), filepath.Base(credentialFile), len(modelIDs))
+		strings.TrimPrefix(strings.TrimSuffix(proxyRuntime.endpoint, "/v1"), "http://"), filepath.Base(credentialFile), len(modelIDs))
 	return proxyRuntime, nil
 }
 
 func (service *qoderService) handler() http.Handler {
-	return loopbackFrontMux(service.apiKey, service.handleModels, service.handleResponses)
+	return service.handlerForContext(context.Background())
+}
+
+func (service *qoderService) handlerForContext(ctx context.Context) http.Handler {
+	return loopbackFrontMuxForContext(ctx, service.apiKey, service.handleModels, service.handleResponses)
 }
 
 func (service *qoderService) authorized(request *http.Request) bool {
@@ -801,19 +767,26 @@ type qoderToolState struct {
 	args     strings.Builder
 }
 
+const qoderMaxSSELineBytes = 16 << 20
+
 func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *responseAssembler) (qoderStreamUsage, error) {
 	usage := qoderStreamUsage{}
 	tools := make(map[int]*qoderToolState)
 	retainedArgs := 0
+	terminalSeen := false
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64<<10), int(qoderMaxBodyBytes))
+	scanner.Buffer(make([]byte, 64<<10), min(int(qoderMaxBodyBytes), qoderMaxSSELineBytes))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "" || data == "[DONE]" {
+		if data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			terminalSeen = true
 			continue
 		}
 		inner, err := qoderEnvelopeBody([]byte(data))
@@ -826,7 +799,11 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 			}
 			return usage, err
 		}
-		if len(inner) == 0 || string(inner) == "[DONE]" {
+		if len(inner) == 0 {
+			continue
+		}
+		if string(inner) == "[DONE]" {
+			terminalSeen = true
 			continue
 		}
 		var event struct {
@@ -935,6 +912,9 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 					state.args.WriteString(args)
 				}
 			}
+			if choice.FinishReason != "" {
+				terminalSeen = true
+			}
 			switch choice.FinishReason {
 			case "length":
 				assembler.stopReason = "max_tokens"
@@ -946,7 +926,13 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 	if err := scanner.Err(); err != nil {
 		return usage, fmt.Errorf("read Qoder event stream: %w", err)
 	}
+	if !terminalSeen {
+		return usage, fmt.Errorf("Qoder event stream ended before terminal event: %w", io.ErrUnexpectedEOF)
+	}
 	if err := assembler.start(); err != nil {
+		return usage, err
+	}
+	if err := assembler.flushInlineContent(); err != nil {
 		return usage, err
 	}
 	indexes := make([]int, 0, len(tools))
@@ -954,6 +940,11 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 		indexes = append(indexes, index)
 	}
 	sort.Ints(indexes)
+	for _, index := range indexes {
+		if err := assembler.validateToolUseName(tools[index].name); err != nil {
+			return usage, err
+		}
+	}
 	for _, index := range indexes {
 		state := tools[index]
 		id := strings.TrimSpace(state.id)

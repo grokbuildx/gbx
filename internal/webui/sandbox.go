@@ -42,33 +42,52 @@ func sandboxProfile(workspace, mode string) string {
 
 // Pin before launching so a crash or workspace change cannot alter a resumed profile.
 func pinSessionSandbox(session *Session, spec *LaunchSpec) error {
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	meta := session.meta
-	mode, err := NormalizeSandbox(sessionSandbox(meta))
+	var updatedMeta *Meta
+	err := func() error {
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		if session.deleted {
+			return ErrNotFound
+		}
+		if session.deleting {
+			return ErrBusy
+		}
+		meta := session.meta
+		mode, err := NormalizeSandbox(sessionSandbox(meta))
+		if err != nil {
+			return err
+		}
+		if spec.Sandbox != "" && spec.Sandbox != mode {
+			return fmt.Errorf("a conversation keeps its original sandbox; start a new conversation to change it")
+		}
+		spec.Sandbox = mode
+		profile := sandboxProfile(spec.Workspace, mode)
+		if meta.SandboxProfile != "" && meta.SandboxProfile != profile {
+			return fmt.Errorf("the conversation's sandbox profile changed; restore its workspace sandbox configuration before continuing")
+		}
+		if meta.SandboxProfile == "" {
+			if meta.Worktree != nil && mode == SandboxWorkspace && profile != worktreeSandboxProfile {
+				return fmt.Errorf("the conversation's worktree sandbox profile is missing; restore its sandbox configuration before continuing")
+			}
+			meta.Sandbox = mode
+			meta.SandboxProfile = profile
+			if err := writeMeta(session.dir, meta); err != nil {
+				return fmt.Errorf("save conversation sandbox: %w", err)
+			}
+			session.meta.Sandbox = mode
+			session.meta.SandboxProfile = profile
+			copied := session.meta
+			updatedMeta = &copied
+		}
+		spec.sandboxProfile = profile
+		return nil
+	}()
 	if err != nil {
 		return err
 	}
-	if spec.Sandbox != "" && spec.Sandbox != mode {
-		return fmt.Errorf("a conversation keeps its original sandbox; start a new conversation to change it")
+	if updatedMeta != nil && session.store != nil {
+		session.store.recordMeta(session, *updatedMeta)
 	}
-	spec.Sandbox = mode
-	profile := sandboxProfile(spec.Workspace, mode)
-	if meta.SandboxProfile != "" && meta.SandboxProfile != profile {
-		return fmt.Errorf("the conversation's sandbox profile changed; restore its workspace sandbox configuration before continuing")
-	}
-	if meta.SandboxProfile == "" {
-		if meta.Worktree != nil && mode == SandboxWorkspace && profile != worktreeSandboxProfile {
-			return fmt.Errorf("the conversation's worktree sandbox profile is missing; restore its sandbox configuration before continuing")
-		}
-		meta.Sandbox = mode
-		meta.SandboxProfile = profile
-		if err := writeMeta(session.dir, meta); err != nil {
-			return fmt.Errorf("save conversation sandbox: %w", err)
-		}
-		session.meta = meta
-	}
-	spec.sandboxProfile = profile
 	return nil
 }
 

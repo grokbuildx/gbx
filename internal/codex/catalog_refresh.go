@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"os"
 	"strings"
 
 	"github.com/grokbuildx/gbx/internal/fsutil"
@@ -78,7 +77,7 @@ func (g *Gateway) RefreshNativeCatalog(ctx context.Context, overlay *Overlay) {
 // rewrites config.toml, rotates independent credentials, or reconstructs native
 // entries. The catalog path and overlay's restoration journal stay unchanged.
 func (o *Overlay) RefreshCatalog(models []Model) error {
-	raw, err := os.ReadFile(o.CatalogPath)
+	raw, err := fsutil.ReadRegularFileLimited(o.CatalogPath, 16<<20)
 	if err != nil {
 		return err
 	}
@@ -117,7 +116,7 @@ func (o *Overlay) RefreshCatalog(models []Model) error {
 // ReplaceCatalog changes the complete GBX model set while preserving all
 // native rows and unknown native fields from the current catalog file.
 func (o *Overlay) ReplaceCatalog(models []Model) error {
-	raw, err := os.ReadFile(o.CatalogPath)
+	raw, err := fsutil.ReadRegularFileLimited(o.CatalogPath, 16<<20)
 	if err != nil {
 		return err
 	}

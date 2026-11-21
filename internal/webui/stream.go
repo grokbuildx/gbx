@@ -913,7 +913,7 @@ func acpToolPresentationWithMetaCanonical(kind acp.ToolKind, title string, rawIn
 		}
 	case len(diffs) > 1:
 		name = "MultiEdit"
-		encodedDiffs := make([]map[string]any, 0, len(diffs))
+		encodedDiffs := make([]any, 0, len(diffs))
 		for _, diff := range diffs {
 			before := ""
 			if diff.OldText != nil {
@@ -951,21 +951,19 @@ func acpToolPresentationWithMetaCanonical(kind acp.ToolKind, title string, rawIn
 		}
 	}
 
-	var rawBytes json.RawMessage
+	cleanTitle := truncateRunes(redactSecrets(collapseSpace(title)), SummaryLimit)
 	if len(fields) > 0 {
-		if encoded, err := json.Marshal(fields); err == nil {
-			rawBytes = encoded
-		}
+		description = toolDescriptionFromFields(fields)
+		redactMap(fields)
+		summary = summarizeToolFields(fields)
+		input = toolInputFromValue(fields)
 	} else if rawInput != nil {
 		if encoded, err := json.Marshal(rawInput); err == nil {
-			rawBytes = encoded
+			input = toolInput(encoded)
+			description = toolDescription(encoded)
+			summary = summarizeToolInput(name, encoded)
 		}
 	}
-
-	input = toolInput(rawBytes)
-	description = toolDescription(rawBytes)
-	cleanTitle := truncateRunes(redactSecrets(collapseSpace(title)), SummaryLimit)
-	summary = summarizeToolInput(name, rawBytes)
 	if cleanTitle != "" && !strings.EqualFold(cleanTitle, name) {
 		if mapped, ok := canonicalGrokToolName(cleanTitle); !ok || mapped != name {
 			if description == "" && cleanTitle != summary {
@@ -1127,6 +1125,31 @@ func toolNameForKindWithMeta(kind acp.ToolKind, title string, fields map[string]
 	return "Tool"
 }
 
+func cloneJSONValue(v any) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for k, item := range typed {
+			out[k] = cloneJSONValue(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneJSONValue(item)
+		}
+		return out
+	case []map[string]any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneJSONValue(item)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 func coerceInputMap(rawInput any) map[string]any {
 	out := map[string]any{}
 	if rawInput == nil {
@@ -1135,7 +1158,7 @@ func coerceInputMap(rawInput any) map[string]any {
 	switch typed := rawInput.(type) {
 	case map[string]any:
 		for k, v := range typed {
-			out[k] = v
+			out[k] = cloneJSONValue(v)
 		}
 	case string:
 		trimmed := strings.TrimSpace(typed)
@@ -1217,6 +1240,10 @@ func toolInput(input json.RawMessage) json.RawMessage {
 	if fields, ok := value.(map[string]any); ok {
 		redactMap(fields)
 	}
+	return toolInputFromValue(value)
+}
+
+func toolInputFromValue(value any) json.RawMessage {
 	value = capStrings(value)
 	encoded, err := json.Marshal(value)
 	if err != nil || len(encoded) > toolInputLimit {
@@ -1237,8 +1264,20 @@ func capStrings(value any) any {
 		for i, item := range typed {
 			typed[i] = capStrings(item)
 		}
+	case []map[string]any:
+		for _, item := range typed {
+			capStrings(item)
+		}
 	}
 	return value
+}
+
+func toolDescriptionFromFields(fields map[string]any) string {
+	desc, _ := fields["description"].(string)
+	if desc == "" {
+		return ""
+	}
+	return truncateRunes(redactSecrets(collapseSpace(desc)), SummaryLimit)
 }
 
 // toolDescription is the input's "description" field, when the tool has one.
@@ -1262,6 +1301,10 @@ func summarizeToolInput(name string, input json.RawMessage) string {
 		return truncateRunes(redactSecrets(string(input)), SummaryLimit)
 	}
 	redactMap(fields)
+	return summarizeToolFields(fields)
+}
+
+func summarizeToolFields(fields map[string]any) string {
 	for _, key := range []string{"command", "file_path", "path", "skill", "url", "pattern", "query", "description", "subagent_type", "prompt", "notebook_path"} {
 		if value, ok := fields[key]; ok {
 			if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
@@ -1269,12 +1312,7 @@ func summarizeToolInput(name string, input json.RawMessage) string {
 			}
 		}
 	}
-	keys := make([]string, 0, len(fields))
-	for key := range fields {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	if len(keys) == 0 {
+	if len(fields) == 0 {
 		return ""
 	}
 	encoded, err := json.Marshal(fields)
@@ -1301,6 +1339,10 @@ func redactMap(values map[string]any) {
 				if nested, ok := item.(map[string]any); ok {
 					redactMap(nested)
 				}
+			}
+		case []map[string]any:
+			for _, item := range typed {
+				redactMap(item)
 			}
 		}
 	}

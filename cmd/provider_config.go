@@ -72,15 +72,11 @@ func oneMModelsFromProvider(p provider.Provider) []string {
 }
 
 func stripOneMSuffix(model string) string {
-	model = strings.TrimSpace(model)
-	for strings.HasSuffix(model, "[1m]") {
-		model = strings.TrimSpace(strings.TrimSuffix(model, "[1m]"))
-	}
-	return model
+	return provider.StripContextSuffix(model)
 }
 
 func hasOneMSuffix(model string) bool {
-	return strings.HasSuffix(strings.TrimSpace(model), "[1m]")
+	return provider.HasOneMSuffix(model)
 }
 
 // updateProvider applies fn to one provider under the config lock, against the

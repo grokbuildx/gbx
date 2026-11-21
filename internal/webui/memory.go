@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/grokbuildx/gbx/internal/fsutil"
 )
 
 // grokConfigDir is where Grok Build keeps its user files: GROK_HOME, else ~/.grok.
@@ -45,14 +47,14 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		memory := UserMemory{Path: file}
-		data, err := os.ReadFile(file)
+		data, err := fsutil.ReadRegularFileLimited(file, MaxReadBytes)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
+		case errors.Is(err, fsutil.ErrFileTooLarge):
+			memory.TooBig = true
 		case err != nil:
 			s.fileError(w, err)
 			return
-		case len(data) > MaxReadBytes:
-			memory.TooBig = true
 		default:
 			sum := sha256.Sum256(data)
 			memory.Hash = hex.EncodeToString(sum[:])
@@ -65,7 +67,7 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 			ExpectedHash string `json:"expectedHash"`
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, MaxWriteBytes+(64<<10))
-		if err := decodeBody(r, &body); err != nil {
+		if err := decodeBodyLimit(r, &body, MaxWriteBytes+(64<<10)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}

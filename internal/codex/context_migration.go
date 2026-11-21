@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -109,6 +110,11 @@ func recoverLocalContext(home, session, encrypted, account string) (string, erro
 	if err != nil {
 		return "", err
 	}
+	root, err := os.OpenRoot(home)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
 	var files []string
 	for _, pattern := range []string{filepath.Join(home, "sessions", "*", "*", "*", "rollout-*"+session+"*.jsonl"), filepath.Join(home, "archived_sessions", "rollout-*"+session+"*.jsonl")} {
 		matches, err := filepath.Glob(pattern)
@@ -121,29 +127,36 @@ func recoverLocalContext(home, session, encrypted, account string) (string, erro
 		return "", unavailableMigration()
 	}
 	sort.Strings(files)
+	const maxMigrationBytes int64 = 128 << 20
 	var excerpt migrationExcerpt
 	var bytesRead int64
 	for _, path := range files {
-		resolved, err := filepath.EvalSymlinks(path)
-		if err != nil || !strings.HasPrefix(resolved, home+string(os.PathSeparator)) {
+		rel, err := filepath.Rel(home, path)
+		if err != nil || rel == "." || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
 			return "", unavailableMigration()
 		}
-		file, err := os.Open(resolved)
+		file, err := root.Open(rel)
 		if err != nil {
-			return "", err
+			return "", unavailableMigration()
 		}
 		info, err := file.Stat()
 		if err != nil || !info.Mode().IsRegular() {
 			file.Close()
 			return "", unavailableMigration()
 		}
-		bytesRead += info.Size()
-		if bytesRead > 128<<20 {
+		remaining := maxMigrationBytes - bytesRead
+		if remaining <= 0 || info.Size() > remaining {
 			file.Close()
 			return "", unavailableMigration()
 		}
-		matched, err := scanMigrationTranscript(file, session, encrypted, account, &excerpt)
+		limited := &io.LimitedReader{R: file, N: remaining + 1}
+		matched, err := scanMigrationTranscript(limited, session, encrypted, account, &excerpt)
 		file.Close()
+		consumed := (remaining + 1) - limited.N
+		if consumed > remaining {
+			return "", unavailableMigration()
+		}
+		bytesRead += consumed
 		if err != nil {
 			return "", err
 		}
@@ -154,8 +167,8 @@ func recoverLocalContext(home, session, encrypted, account string) (string, erro
 	return "", unavailableMigration()
 }
 
-func scanMigrationTranscript(file *os.File, session, encrypted, account string, excerpt *migrationExcerpt) (bool, error) {
-	scanner := bufio.NewScanner(file)
+func scanMigrationTranscript(reader io.Reader, session, encrypted, account string, excerpt *migrationExcerpt) (bool, error) {
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64<<10), maxBodyBytes)
 	verified := false
 	for scanner.Scan() {
@@ -295,16 +308,31 @@ type migrationExcerpt struct {
 	omitted            bool
 }
 
+func trimUTF8CutEnd(s string) string {
+	n := len(s)
+	start := n - 1
+	for start >= 0 && n-start < utf8.UTFMax && !utf8.RuneStart(s[start]) {
+		start--
+	}
+	if start >= 0 && utf8.RuneStart(s[start]) && !utf8.FullRuneInString(s[start:]) {
+		return s[:start]
+	}
+	return s
+}
+
+func trimUTF8CutStart(s string) string {
+	i := 0
+	for i < len(s) && i < utf8.UTFMax-1 && !utf8.RuneStart(s[i]) {
+		i++
+	}
+	return s[i:]
+}
+
 func (e *migrationExcerpt) add(record string) {
 	const perRecord = 4096
 	if len(record) > perRecord {
-		head, tail := record[:perRecord/2], record[len(record)-perRecord/2:]
-		for !utf8.ValidString(head) {
-			head = head[:len(head)-1]
-		}
-		for !utf8.ValidString(tail) {
-			tail = tail[1:]
-		}
+		head := trimUTF8CutEnd(record[:perRecord/2])
+		tail := trimUTF8CutStart(record[len(record)-perRecord/2:])
 		record = head + "\n[record excerpted]\n" + tail
 		e.omitted = true
 	}

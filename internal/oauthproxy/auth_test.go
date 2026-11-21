@@ -33,7 +33,6 @@ func TestBackendProviderAliases(t *testing.T) {
 		"codex":     "codex",
 		"gpt":       "codex",
 		"qoder":     "qoder",
-		"gemini":    "antigravity",
 		"grok":      "xai",
 		"xai":       "xai",
 		"kimi":      "kimi",
@@ -49,18 +48,23 @@ func TestBackendProviderAliases(t *testing.T) {
 			t.Fatalf("BackendProvider(%q) = %q, %v; want %q", input, got, err, want)
 		}
 	}
+	for _, retired := range []string{"gemini", "antigravity", "gemini-cli"} {
+		if _, err := BackendProvider(retired); err == nil || !strings.Contains(err.Error(), "retired") {
+			t.Fatalf("BackendProvider(%q) = %v, want retired error", retired, err)
+		}
+	}
 	if _, err := BackendProvider("unknown"); err == nil {
 		t.Fatal("BackendProvider(unknown) should fail")
 	}
 }
 
 func TestValidateLoginProviderAcceptsPublicNames(t *testing.T) {
-	for _, name := range []string{ProviderChatGPT, ProviderGemini, ProviderGrok, ProviderQoder, ProviderKimi, ProviderKiro, ProviderWorkBuddy, ProviderWorkBuddyCN, ProviderAutoClaw, ProviderCursor} {
+	for _, name := range []string{ProviderChatGPT, ProviderGrok, ProviderQoder, ProviderKimi, ProviderKiro, ProviderWorkBuddy, ProviderWorkBuddyCN, ProviderAutoClaw, ProviderCursor} {
 		if _, err := ValidateLoginProvider(name); err != nil {
 			t.Fatalf("ValidateLoginProvider(%q) error: %v", name, err)
 		}
 	}
-	for _, name := range []string{ProviderCodex, "chatgpt", "antigravity", "xai", ""} {
+	for _, name := range []string{ProviderCodex, "chatgpt", "gemini", "antigravity", "gemini-cli", "xai", ""} {
 		if _, err := ValidateLoginProvider(name); err == nil {
 			t.Fatalf("ValidateLoginProvider(%q) should fail", name)
 		}
@@ -83,7 +87,7 @@ func TestImportCredentialOnlyAcceptsAutoClaw(t *testing.T) {
 	t.Cleanup(func() { autoclawDesktopAuthPath = originalPath })
 
 	// OAuth backends never ride the import path.
-	for _, name := range []string{ProviderChatGPT, ProviderGemini, "unknown", ""} {
+	for _, name := range []string{ProviderChatGPT, "gemini", "unknown", ""} {
 		if _, err := ImportCredential(context.Background(), name); err == nil {
 			t.Fatalf("ImportCredential(%q) should fail", name)
 		}
@@ -166,7 +170,7 @@ func TestNormalizeOpenAIBaseURLDoesNotRewriteUserBasePath(t *testing.T) {
 }
 
 func TestValidateLoginProviderHidesCodexBackend(t *testing.T) {
-	for _, target := range []string{ProviderChatGPT, ProviderGemini} {
+	for _, target := range []string{ProviderChatGPT, ProviderGrok} {
 		got, err := ValidateLoginProvider(target)
 		if err != nil || got != target {
 			t.Fatalf("ValidateLoginProvider(%q) = %q, %v", target, got, err)
@@ -589,10 +593,28 @@ func TestStartEmbeddedProxyExposesOnlyRequestedProviderModels(t *testing.T) {
 }
 
 func TestStartRequiresMatchingCredential(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	_, err := StartOAuth(context.Background(), ProviderGemini, "", "antigravity-missing.json")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_, err := StartOAuth(context.Background(), ProviderKimi, "", "kimi-missing.json")
 	if err == nil {
-		t.Fatal("Start() should fail without Gemini credentials")
+		t.Fatal("Start() should fail without Kimi credentials")
+	}
+
+	// Legacy retired Gemini credentials must be rejected cleanly without deleting the file.
+	authDir := filepath.Join(home, ".gbx", "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(authDir, "antigravity-old.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"type":"antigravity","access_token":"tok"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = StartOAuth(context.Background(), "gemini", "", "antigravity-old.json")
+	if err == nil || !strings.Contains(err.Error(), "retired") {
+		t.Fatalf("StartOAuth(gemini) = %v, want retired error", err)
+	}
+	if _, statErr := os.Stat(legacyPath); statErr != nil {
+		t.Fatalf("retired StartOAuth must not delete legacy credential file: %v", statErr)
 	}
 }
 

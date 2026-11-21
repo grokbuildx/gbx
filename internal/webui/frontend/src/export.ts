@@ -1,6 +1,3 @@
-import { createElement } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type { ThreadItem } from "./thread";
 import { toolEdit, toolPlan, toolTodos } from "./thread";
 import type { Translate } from "./i18n";
@@ -69,11 +66,172 @@ export function diffSection(diff: { base: string; diff: string; truncated?: bool
   return `\n## ${t("shareChanges", { branch, base: diff.base })}${note}\n\n${fence}diff\n${diff.diff.replace(/\n$/, "")}\n${fence}\n`;
 }
 
+const escapeHTML = (value: string): string =>
+  value.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+
+function safeHref(url: string): string {
+  const trimmed = url.trim();
+  if (/^(https?:|mailto:|#)/i.test(trimmed)) return escapeHTML(trimmed);
+  return "";
+}
+
+function renderInlineMarkdown(text: string): string {
+  // Split out inline code spans first so markup inside code is never interpreted.
+  const parts: string[] = [];
+  const codePattern = /(`+)([\s\S]*?)\1/g;
+  let last = 0;
+  for (const match of text.matchAll(codePattern)) {
+    const start = match.index ?? 0;
+    if (start > last) parts.push(renderInlineProse(text.slice(last, start)));
+    parts.push(`<code>${escapeHTML(match[2])}</code>`);
+    last = start + match[0].length;
+  }
+  if (last < text.length) parts.push(renderInlineProse(text.slice(last)));
+  return parts.join("");
+}
+
+function formatEmphasis(escaped: string): string {
+  let out = escaped.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  out = out.replace(/(^|[^\w*])\*([^*]+)\*(?!\w)/g, "$1<em>$2</em>");
+  return out;
+}
+
+function renderInlineProse(text: string): string {
+  const clean = text.replace(/\0/g, "");
+  const anchors: string[] = [];
+  const withPlaceholders = clean.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label: string, url: string) => {
+    const href = safeHref(url);
+    const renderedLabel = formatEmphasis(escapeHTML(label));
+    if (!href) return `\0A${anchors.push(renderedLabel) - 1}\0`;
+    const anchor = `<a href="${href}" target="_blank" rel="noopener noreferrer">${renderedLabel}</a>`;
+    return `\0A${anchors.push(anchor) - 1}\0`;
+  });
+  const formatted = formatEmphasis(escapeHTML(withPlaceholders));
+  return formatted.replace(/\0A(\d+)\0/g, (_, idx: string) => anchors[Number(idx)] ?? "");
+}
+
+function renderMarkdownHTML(markdown: string): string {
+  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
+  const out: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+    const detailsOpen = /^<details><summary>(.*)<\/summary>\s*$/.exec(line);
+    if (detailsOpen) {
+      const summary = detailsOpen[1];
+      const inner: string[] = [];
+      i++;
+      while (i < lines.length && !/^<\/details>\s*$/.test(lines[i])) {
+        inner.push(lines[i]);
+        i++;
+      }
+      if (i < lines.length) i++;
+      out.push(`<details><summary>${escapeHTML(summary)}</summary>${renderMarkdownHTML(inner.join("\n"))}</details>`);
+      continue;
+    }
+    const fence = /^(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      const marker = fence[1];
+      const lang = fence[2].trim().split(/\s+/)[0] || "";
+      const codeLines: string[] = [];
+      i++;
+      const closePattern = new RegExp(`^${marker[0]}{${marker.length},}\\s*$`);
+      while (i < lines.length && !closePattern.test(lines[i])) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      if (i < lines.length) i++;
+      const cls = lang ? ` class="language-${escapeHTML(lang)}"` : "";
+      out.push(`<pre><code${cls}>${escapeHTML(codeLines.join("\n"))}</code></pre>`);
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      const level = heading[1].length;
+      out.push(`<h${level}>${renderInlineMarkdown(heading[2].trim())}</h${level}>`);
+      i++;
+      continue;
+    }
+    if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      out.push("<hr>");
+      i++;
+      continue;
+    }
+    if (/^>\s?/.test(line)) {
+      const quoted: string[] = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) {
+        quoted.push(lines[i].replace(/^>\s?/, ""));
+        i++;
+      }
+      out.push(`<blockquote>${renderMarkdownHTML(quoted.join("\n"))}</blockquote>`);
+      continue;
+    }
+    if (i + 1 < lines.length && line.includes("|") && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[i + 1])) {
+      const parseRow = (row: string) =>
+        row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => renderInlineMarkdown(cell.trim()));
+      const headers = parseRow(line);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) {
+        rows.push(parseRow(lines[i]));
+        i++;
+      }
+      const head = `<thead><tr>${headers.map((c) => `<th>${c}</th>`).join("")}</tr></thead>`;
+      const body = rows.length ? `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody>` : "";
+      out.push(`<table>${head}${body}</table>`);
+      continue;
+    }
+    if (/^\s*[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line)) {
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      const tag = ordered ? "ol" : "ul";
+      const pattern = ordered ? /^\s*\d+\.\s+(.*)$/ : /^\s*[-*+]\s+(.*)$/;
+      const items: string[] = [];
+      while (i < lines.length) {
+        const match = pattern.exec(lines[i]);
+        if (!match) break;
+        const itemText = match[1];
+        const task = /^\[([ xX])\]\s+(.*)$/.exec(itemText);
+        if (task) {
+          const checked = task[1].toLowerCase() === "x" ? " checked" : "";
+          items.push(`<li><input type="checkbox" disabled${checked}> ${renderInlineMarkdown(task[2])}</li>`);
+        } else {
+          items.push(`<li>${renderInlineMarkdown(itemText)}</li>`);
+        }
+        i++;
+      }
+      out.push(`<${tag}>${items.join("")}</${tag}>`);
+      continue;
+    }
+    const para: string[] = [];
+    while (
+      i < lines.length &&
+      lines[i].trim() &&
+      !/^<details><summary>.*<\/summary>\s*$/.test(lines[i]) &&
+      !/^<\/details>\s*$/.test(lines[i]) &&
+      !/^(`{3,}|~{3,})/.test(lines[i]) &&
+      !/^#{1,6}\s+/.test(lines[i]) &&
+      !/^>\s?/.test(lines[i]) &&
+      !/^\s*[-*+]\s+/.test(lines[i]) &&
+      !/^\s*\d+\.\s+/.test(lines[i]) &&
+      !/^(-{3,}|\*{3,}|_{3,})\s*$/.test(lines[i])
+    ) {
+      para.push(lines[i]);
+      i++;
+    }
+    out.push(`<p>${para.map(renderInlineMarkdown).join("<br>")}</p>`);
+  }
+  return out.join("\n");
+}
+
 export async function transcriptHTML(title: string, markdown: string): Promise<string> {
-  // Only the server renderer is loaded on demand; the rest is already in the page.
-  const { renderToStaticMarkup } = await import("react-dom/server");
-  const body = renderToStaticMarkup(createElement(ReactMarkdown, { remarkPlugins: [remarkGfm] }, markdown));
-  const escaped = title.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+  const body = renderMarkdownHTML(markdown);
+  const escaped = escapeHTML(title);
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escaped}</title>
 <style>

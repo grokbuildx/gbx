@@ -1,8 +1,8 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Folders, Moon, PanelRight, PanelRightClose, Paperclip, Plus, Settings, SquareTerminal, Sun, X } from "lucide-react";
 import { Api, HttpError, Unauthorized, storeToken, storedToken } from "./api";
-import type { Attachment, Capabilities, ConfigView, GitStatus, Health, PermissionDecision, ProjectDefaults, ProviderView, Schedule, Session, Workspace } from "./types";
-import { agentsOf, agentThread, buildThread, latestCapabilities, pendingPermissions, toolActive } from "./thread";
+import type { Attachment, Capabilities, ConfigView, GitStatus, Health, PermissionDecision, ProjectDefaults, ProviderView, Schedule, Session, StoredEvent, Workspace } from "./types";
+import { agentsOf, agentThread, latestCapabilities, pendingPermissions, ThreadReducer, toolActive, type ThreadItem } from "./thread";
 import { AgentBanner, AgentsPanel } from "./components/AgentsPanel";
 import { diffSection, download, safeFileName, transcriptHTML, transcriptMarkdown } from "./export";
 import { CommandPalette } from "./components/CommandPalette";
@@ -14,18 +14,19 @@ import { Sidebar, SidebarIcon } from "./components/Sidebar";
 import { TabBar } from "./components/TabBar";
 import type { PanelTab, TabItem } from "./components/TabBar";
 import { RightPanel } from "./components/RightPanel";
-import { FilesPanel } from "./components/FilesPanel";
-import { GitPanel } from "./components/GitPanel";
 import { Thread } from "./components/Thread";
-import { Composer } from "./components/Composer";
-import { SettingsDialog } from "./components/SettingsDialog";
+import { clearDraft, Composer } from "./components/Composer";
 import { FolderPicker } from "./components/FolderPicker";
 import { ShareDialog } from "./components/Share";
-import { ProjectDetail, ProjectsList } from "./components/ProjectsPage";
 import { Gate } from "./components/Gate";
 
-// The terminal (xterm.js) loads only when a terminal tab opens.
+// Heavy secondary views load only when opened, keeping initial bundle lean.
 const TerminalPanel = lazy(() => import("./components/TerminalPanel"));
+const FilesPanel = lazy(() => import("./components/FilesPanel").then((m) => ({ default: m.FilesPanel })));
+const GitPanel = lazy(() => import("./components/GitPanel").then((m) => ({ default: m.GitPanel })));
+const SettingsDialog = lazy(() => import("./components/SettingsDialog").then((m) => ({ default: m.SettingsDialog })));
+const ProjectsList = lazy(() => import("./components/ProjectsPage").then((m) => ({ default: m.ProjectsList })));
+const ProjectDetail = lazy(() => import("./components/ProjectsPage").then((m) => ({ default: m.ProjectDetail })));
 
 type Theme = "light" | "dark";
 
@@ -354,7 +355,49 @@ export function App() {
   }, []);
 
   const conversation = useConversation(api, phase === "ready" ? currentId : null, scheduleRefresh, mergeSession);
-  const items = useMemo(() => buildThread(conversation.events), [conversation.events]);
+  const threadRef = useRef<{
+    reducer: ThreadReducer;
+    events: StoredEvent[];
+    items: ThreadItem[];
+    count: number;
+    firstSeq: number;
+    lastSeq: number;
+    id: string | null;
+  }>({
+    reducer: new ThreadReducer(),
+    events: [],
+    items: [],
+    count: 0,
+    firstSeq: 0,
+    lastSeq: 0,
+    id: null,
+  });
+  const items = useMemo(() => {
+    const events = conversation.events;
+    const state = threadRef.current;
+    if (state.id === currentId && state.events === events) {
+      return state.items;
+    }
+    const sameStream =
+      state.id === currentId &&
+      events.length >= state.count &&
+      (state.count === 0 || (events[0]?.seq === state.firstSeq && events[state.count - 1]?.seq === state.lastSeq));
+    const reducer = sameStream ? state.reducer : new ThreadReducer();
+    const startIndex = sameStream ? state.count : 0;
+    const delta = events.length > startIndex ? events.slice(startIndex) : [];
+    const next = reducer.apply(delta);
+    threadRef.current = {
+      reducer,
+      events,
+      items: next,
+      count: events.length,
+      firstSeq: events[0]?.seq ?? 0,
+      lastSeq: events[events.length - 1]?.seq ?? 0,
+      id: currentId,
+    };
+    return next;
+  }, [conversation.events, currentId]);
+  const attachmentURL = useCallback((file: string) => (currentId ? api.uploadURL(currentId, file) : ""), [api, currentId]);
   const agents = useMemo(() => agentsOf(items), [items]);
   const agentsRunning = agents.filter(({ tool }) => toolActive(tool)).length;
   // The sub-agent the main view shows instead of the conversation, like
@@ -410,7 +453,7 @@ export function App() {
     }
   }, [pending, t]);
 
-  const current = sessions.find((session) => session.id === currentId) || null;
+  const current = currentSession;
   const providers: ProviderView[] = useMemo(
     () => Object.values(config?.providers || {}).sort((a, b) => a.name.localeCompare(b.name)),
     [config],
@@ -691,6 +734,7 @@ export function App() {
         return;
       }
     }
+    clearDraft(session.id);
     setSessions((list) => list.filter((item) => item.id !== session.id));
     if (currentId === session.id) {
       // Its tab closes; the neighbouring one comes forward.
@@ -719,6 +763,7 @@ export function App() {
         fail(error);
         break;
       }
+      clearDraft(session.id);
       setSessions((all) => all.filter((item) => item.id !== session.id));
       if (currentId === session.id) setCurrentId(null);
     }
@@ -1005,49 +1050,53 @@ export function App() {
 
         {page === "projects" && (
           <main className="flex min-w-0 flex-1 flex-col">
-            <ProjectsList
-              workspaces={workspaceList}
-              sessions={sessions}
-              current={activeWorkspace}
-              recentFolders={recentFolders}
-              onOpen={openProject}
-              onOpenFolder={openFolder}
-              onReopenFolder={canAddWorkspace ? (path) => pickFolder(path).catch(fail) : undefined}
-              onRemove={removeWorkspace}
-              sidebarHidden={collapsed}
-              onShowSidebar={toggleSidebar}
-            />
+            <Suspense fallback={null}>
+              <ProjectsList
+                workspaces={workspaceList}
+                sessions={sessions}
+                current={activeWorkspace}
+                recentFolders={recentFolders}
+                onOpen={openProject}
+                onOpenFolder={openFolder}
+                onReopenFolder={canAddWorkspace ? (path) => pickFolder(path).catch(fail) : undefined}
+                onRemove={removeWorkspace}
+                sidebarHidden={collapsed}
+                onShowSidebar={toggleSidebar}
+              />
+            </Suspense>
           </main>
         )}
         {page === "project" && (
           <main className="flex min-w-0 flex-1 flex-col">
             {activeWorkspace ? (
-              <ProjectDetail
-                api={wsApi}
-                workspace={activeWorkspace}
-                sessions={sessions}
-                onBack={showProjects}
-                onNewConversation={startNew}
-                onSelect={select}
-                onPatchMany={patchMany}
-                providers={providers}
-                defaultProvider={capabilities.defaultProvider || config?.active?.normal || "default"}
-                defaultEffortLevels={capabilities.defaultEffortLevels}
-                defaults={activeDefaults || {}}
-                onSaveDefaults={async (defaults) => {
-                  if (!activeWorkspace) return;
-                  const saved = await api.setProjectDefaults(activeWorkspace.id, defaults);
-                  setProjectDefaults((all) => ({ ...all, [activeWorkspace.id]: saved }));
-                }}
-                onDeleteMany={deleteMany}
-                onConnectors={() => {
-                  setSettingsOpen("connectors");
-                  loadConfig();
-                }}
-                registerLeaveGuard={registerLeaveGuard}
-                sidebarHidden={collapsed}
-                onShowSidebar={toggleSidebar}
-              />
+              <Suspense fallback={null}>
+                <ProjectDetail
+                  api={wsApi}
+                  workspace={activeWorkspace}
+                  sessions={sessions}
+                  onBack={showProjects}
+                  onNewConversation={startNew}
+                  onSelect={select}
+                  onPatchMany={patchMany}
+                  providers={providers}
+                  defaultProvider={capabilities.defaultProvider || config?.active?.normal || "default"}
+                  defaultEffortLevels={capabilities.defaultEffortLevels}
+                  defaults={activeDefaults || {}}
+                  onSaveDefaults={async (defaults) => {
+                    if (!activeWorkspace) return;
+                    const saved = await api.setProjectDefaults(activeWorkspace.id, defaults);
+                    setProjectDefaults((all) => ({ ...all, [activeWorkspace.id]: saved }));
+                  }}
+                  onDeleteMany={deleteMany}
+                  onConnectors={() => {
+                    setSettingsOpen("connectors");
+                    loadConfig();
+                  }}
+                  registerLeaveGuard={registerLeaveGuard}
+                  sidebarHidden={collapsed}
+                  onShowSidebar={toggleSidebar}
+                />
+              </Suspense>
             ) : null}
           </main>
         )}
@@ -1116,7 +1165,7 @@ export function App() {
                 loading={conversation.loading}
                 workspace={workspace}
                 route={route}
-                attachmentURL={(file) => (currentId ? api.uploadURL(currentId, file) : "")}
+                attachmentURL={attachmentURL}
                 onPermission={respondPermission}
                 onOnboard={config && !providers.length && !currentId ? () => { setSettingsOpen("providers"); loadConfig(); } : undefined}
               />
@@ -1192,13 +1241,17 @@ export function App() {
                   )}
                   {panel === "files" && (
                     <div className="min-h-0 flex-1">
-                      <FilesPanel key={scopeKey} api={wsApi} refreshKey={refreshKey} onMention={(path) => mention.current(path)} onWide={setPanelWide} onError={fail} onSaved={loadGit} />
+                      <Suspense fallback={null}>
+                        <FilesPanel key={scopeKey} api={wsApi} refreshKey={refreshKey} onMention={(path) => mention.current(path)} onWide={setPanelWide} onError={fail} onSaved={loadGit} />
+                      </Suspense>
                     </div>
                   )}
                   {panel === "agents" && <AgentsPanel items={items} running={conversation.running} selected={viewed ? agentView : null} onSelect={openAgent} />}
                   {panel === "git" && (
                     <div className="min-h-0 flex-1">
-                      <GitPanel key={scopeKey} api={wsApi} status={git} onStatus={setGit} onRefresh={loadGit} focus={gitFocus} onWide={setPanelWide} onError={fail} />
+                      <Suspense fallback={null}>
+                        <GitPanel key={scopeKey} api={wsApi} status={git} onStatus={setGit} onRefresh={loadGit} focus={gitFocus} onWide={setPanelWide} onError={fail} />
+                      </Suspense>
                     </div>
                   )}
                 </div>
@@ -1246,14 +1299,16 @@ export function App() {
         )}
 
         {settingsOpen && (
-          <SettingsDialog initialTab={settingsOpen} api={api} workspaceApi={wsApi} config={config} loadError={configError} onClose={() => {
-            setSettingsOpen(false);
-            // Settings may have pushed, pulled or logged in.
-            void loadSync();
-          }} onChanged={async () => {
-            await loadConfig();
-            await loadCapabilities();
-          }} />
+          <Suspense fallback={null}>
+            <SettingsDialog initialTab={settingsOpen} api={api} workspaceApi={wsApi} config={config} loadError={configError} onClose={() => {
+              setSettingsOpen(false);
+              // Settings may have pushed, pulled or logged in.
+              void loadSync();
+            }} onChanged={async () => {
+              await loadConfig();
+              await loadCapabilities();
+            }} />
+          </Suspense>
         )}
 
         {notice && (

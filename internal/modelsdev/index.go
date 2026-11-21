@@ -1,7 +1,6 @@
 package modelsdev
 
 import (
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -25,10 +24,14 @@ type reasoningEntry struct {
 }
 
 func newIndex(data []byte) (*Index, error) {
-	var providers map[string]Provider
-	if err := json.Unmarshal(data, &providers); err != nil {
-		return nil, fmt.Errorf("decode models.dev metadata: %w", err)
+	providers, err := decodeAllProviders(data)
+	if err != nil {
+		return nil, err
 	}
+	return newIndexFromProviders(providers)
+}
+
+func newIndexFromProviders(providers map[string]Provider) (*Index, error) {
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("models.dev metadata is empty")
 	}

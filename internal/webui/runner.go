@@ -159,6 +159,10 @@ func applyWorkspaceSandboxEnv(env []string, workspace, sandbox string) []string 
 // selected provider, model, effort and permission mode. It never writes
 // ~/.gbx/config.yaml.
 func DefaultLauncher(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), error) {
+	return defaultLauncherWithPool(ctx, spec, nil)
+}
+
+func defaultLauncherWithPool(ctx context.Context, spec LaunchSpec, pool *runtimePool) (*exec.Cmd, func(), error) {
 	sandbox, err := NormalizeSandbox(spec.Sandbox)
 	if err != nil {
 		return nil, nil, err
@@ -170,7 +174,7 @@ func DefaultLauncher(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), e
 	if err != nil {
 		return nil, nil, fmt.Errorf("load gbx config: %w", err)
 	}
-	grokPath, err := groklaunch.LookPath()
+	grokPath, err := groklaunch.LookPathContext(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("grok CLI not found in PATH: %w", err)
 	}
@@ -182,7 +186,7 @@ func DefaultLauncher(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), e
 		}
 		args := buildArgs(spec)
 		cmd := process.Command(grokPath, args...)
-		cmd.Env = applyWorkspaceSandboxEnv(groklaunch.NativeBrowserEnv(os.Environ(), mode), spec.Workspace, sandbox)
+		cmd.Env = applyWorkspaceSandboxEnv(groklaunch.ScrubServeEnv(groklaunch.NativeBrowserEnv(os.Environ(), mode)), spec.Workspace, sandbox)
 		return cmd, func() {}, nil
 	}
 	p, ok := cfg.Providers[name]
@@ -193,13 +197,36 @@ func DefaultLauncher(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), e
 	if err := provider.ValidateRuntime(p); err != nil {
 		return nil, nil, err
 	}
-	launch, err := groklaunch.PrepareBrowserWithMode(ctx, grokPath, p, "", mode)
-	if err != nil {
-		return nil, nil, err
+	var launch *groklaunch.Launch
+	var release func()
+	var exclusive func() bool
+	if pool != nil {
+		session, rel, excl, acqErr := pool.AcquireWithExclusivity(ctx, p)
+		if acqErr != nil {
+			return nil, nil, acqErr
+		}
+		release = rel
+		exclusive = excl
+		launch, err = groklaunch.PrepareBrowserWithSession(grokPath, session, "", mode)
+		if err != nil {
+			release()
+			return nil, nil, err
+		}
+	} else {
+		launch, err = groklaunch.PrepareBrowserWithMode(ctx, grokPath, p, "", mode)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	if spec.runtimeUsage != nil && launch.Session != nil && launch.Session.Runtime != nil {
 		rt := launch.Session.Runtime
-		*spec.runtimeUsage = func() Usage { return usageFromRuntime(rt) }
+		before := usageFromRuntime(rt)
+		*spec.runtimeUsage = func() Usage {
+			if exclusive != nil && !exclusive() {
+				return Usage{}
+			}
+			return subtractUsage(usageFromRuntime(rt), before)
+		}
 	}
 	if spec.onRuntimeCatalog != nil && launch.Session != nil && launch.Session.Runtime != nil {
 		rt := launch.Session.Runtime
@@ -218,8 +245,15 @@ func DefaultLauncher(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), e
 	}
 	args := buildArgs(spec)
 	cmd := launch.Command(args...)
-	cmd.Env = applyWorkspaceSandboxEnv(cmd.Env, spec.Workspace, sandbox)
-	return cmd, launch.Close, nil
+	cmd.Env = applyWorkspaceSandboxEnv(groklaunch.ScrubServeEnv(cmd.Env), spec.Workspace, sandbox)
+	cleanup := launch.Close
+	if release != nil {
+		cleanup = func() {
+			launch.Close()
+			release()
+		}
+	}
+	return cmd, cleanup, nil
 }
 
 func resolveManagedDefaultEffort(p provider.Provider, model string, session *providersession.Session) string {
@@ -418,6 +452,11 @@ type turn struct {
 	// abort wakes a turn waiting for a global slot or a pending permission.
 	abort     chan struct{}
 	abortOnce sync.Once
+	// reapedCh closes as soon as cmd.Wait returns so cancel paths never
+	// signal or kill a reused PID.
+	reapedCh   chan struct{}
+	reapedOnce sync.Once
+	reaped     bool
 	// cancelRequested records a user stop so the exit is not reported as a crash.
 	cancelRequested bool
 	mu              sync.Mutex
@@ -429,6 +468,35 @@ type turn struct {
 
 func (e *turn) triggerAbort() {
 	e.abortOnce.Do(func() { close(e.abort) })
+}
+
+func (e *turn) markReaped() {
+	e.mu.Lock()
+	e.reaped = true
+	e.mu.Unlock()
+	e.reapedOnce.Do(func() {
+		if e.reapedCh != nil {
+			close(e.reapedCh)
+		}
+	})
+}
+
+func (e *turn) signalInterrupt() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.reaped || e.cmd == nil || e.cmd.Process == nil {
+		return
+	}
+	_ = e.cmd.Process.Signal(os.Interrupt)
+}
+
+func (e *turn) killTree() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.reaped || e.cmd == nil || e.cmd.Process == nil {
+		return
+	}
+	process.KillTree(e.cmd)
 }
 
 func (e *turn) closeStdin() {
@@ -609,6 +677,7 @@ func (t *Timeline) start(r *Runner, session *Session, spec LaunchSpec, replaceme
 		done:         make(chan struct{}),
 		ended:        make(chan struct{}),
 		abort:        make(chan struct{}),
+		reapedCh:     make(chan struct{}),
 		subscription: spec.Subscription,
 		pending:      make(map[string]pendingPermission),
 	}
@@ -642,6 +711,7 @@ func (t *Timeline) start(r *Runner, session *Session, spec LaunchSpec, replaceme
 	default:
 	}
 	if _, err := session.Append(EventStatus, StatusPayload{State: "queued"}); err != nil {
+		session.closeAppendFile()
 		relinquish()
 		return nil, err
 	}
@@ -651,6 +721,7 @@ func (t *Timeline) start(r *Runner, session *Session, spec LaunchSpec, replaceme
 		case <-entry.abort:
 			_, _ = session.Append(EventResult, ResultPayload{Cancelled: true, Message: "cancelled while queued"})
 			_ = session.Touch()
+			session.closeAppendFile()
 			relinquish()
 			return
 		}
@@ -675,17 +746,26 @@ func (t *Timeline) launch(r *Runner, session *Session, entry *turn, spec LaunchS
 		_, _ = session.Append(EventError, ErrorPayload{Message: redactSecrets(err.Error())})
 		_, _ = session.Append(EventResult, ResultPayload{IsError: true})
 		_ = session.Touch()
+		session.closeAppendFile()
 		relinquish()
 		return err
 	}
 
-	if stopped {
+	cancelBeforeStart := func(cleanup func()) error {
 		cancel()
+		if cleanup != nil {
+			cleanup()
+		}
 		<-r.sem
 		_, _ = session.Append(EventResult, ResultPayload{Cancelled: true, Message: "cancelled before it started"})
 		_ = session.Touch()
+		session.closeAppendFile()
 		relinquish()
 		return nil
+	}
+
+	if stopped {
+		return cancelBeforeStart(nil)
 	}
 
 	if strings.TrimSpace(spec.Workspace) == "" {
@@ -712,10 +792,22 @@ func (t *Timeline) launch(r *Runner, session *Session, entry *turn, spec LaunchS
 
 	cmd, cleanup, err := r.Prepare(ctx, spec)
 	if err != nil {
+		entry.mu.Lock()
+		wasCancelled := entry.cancelRequested
+		entry.mu.Unlock()
+		if wasCancelled {
+			return cancelBeforeStart(cleanup)
+		}
 		return fail(nil, err)
 	}
 	if cleanup == nil {
 		cleanup = func() {}
+	}
+	entry.mu.Lock()
+	wasCancelled := entry.cancelRequested
+	entry.mu.Unlock()
+	if wasCancelled {
+		return cancelBeforeStart(cleanup)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -731,6 +823,12 @@ func (t *Timeline) launch(r *Runner, session *Session, entry *turn, spec LaunchS
 	}
 	cmd.Dir = spec.Workspace
 	process.ConfigureGroup(cmd)
+	entry.mu.Lock()
+	wasCancelled = entry.cancelRequested
+	entry.mu.Unlock()
+	if wasCancelled {
+		return cancelBeforeStart(cleanup)
+	}
 	if err := cmd.Start(); err != nil {
 		return fail(cleanup, fmt.Errorf("start Grok Build: %w", err))
 	}
@@ -748,7 +846,7 @@ func (t *Timeline) launch(r *Runner, session *Session, entry *turn, spec LaunchS
 	stopped = entry.cancelRequested
 	entry.mu.Unlock()
 	if stopped {
-		t.cancel(entry)
+		t.cancelEntry(entry, true)
 	}
 
 	go t.pump(r, session, entry, spec, blocks, client, conn, stderr, fallbackUsage, cleanup, cancel, relinquish)
@@ -756,6 +854,10 @@ func (t *Timeline) launch(r *Runner, session *Session, entry *turn, spec LaunchS
 }
 
 func (t *Timeline) cancel(entry *turn) {
+	t.cancelEntry(entry, false)
+}
+
+func (t *Timeline) cancelEntry(entry *turn, force bool) {
 	entry.mu.Lock()
 	alreadyRequested := entry.cancelRequested
 	entry.cancelRequested = true
@@ -764,7 +866,7 @@ func (t *Timeline) cancel(entry *turn) {
 	cmd := entry.cmd
 	cancel := entry.cancel
 	entry.mu.Unlock()
-	if alreadyRequested {
+	if alreadyRequested && !force {
 		return
 	}
 	entry.triggerAbort()
@@ -774,6 +876,8 @@ func (t *Timeline) cancel(entry *turn) {
 			defer stop()
 			_ = conn.Cancel(cancelCtx, acp.CancelNotification{SessionId: sessionID})
 			select {
+			case <-entry.reapedCh:
+				return
 			case <-entry.done:
 				return
 			case <-time.After(2 * time.Second):
@@ -783,7 +887,7 @@ func (t *Timeline) cancel(entry *turn) {
 			}
 			entry.closeStdin()
 			if cmd != nil {
-				interrupt(cmd, entry.done)
+				interrupt(entry)
 			}
 		}()
 		return
@@ -793,22 +897,23 @@ func (t *Timeline) cancel(entry *turn) {
 	}
 	if cmd != nil {
 		entry.closeStdin()
-		interrupt(cmd, entry.done)
+		interrupt(entry)
 	}
 }
 
 // interrupt asks the process to stop: SIGINT, then SIGKILL of its tree after
-// 2s unless done closes first.
-func interrupt(cmd *exec.Cmd, done <-chan struct{}) {
-	if cmd.Process == nil {
+// 2s unless the process is reaped or done closes first.
+func interrupt(entry *turn) {
+	if entry == nil {
 		return
 	}
-	_ = cmd.Process.Signal(os.Interrupt)
+	entry.signalInterrupt()
 	go func() {
 		select {
-		case <-done:
+		case <-entry.reapedCh:
+		case <-entry.done:
 		case <-time.After(2 * time.Second):
-			process.KillTree(cmd)
+			entry.killTree()
 		}
 	}()
 }
@@ -828,6 +933,7 @@ func (t *Timeline) pump(
 	relinquish func(),
 ) {
 	defer relinquish()
+	defer session.closeAppendFile()
 	defer cancel()
 	defer cleanup()
 	defer func() { <-r.sem }()
@@ -926,9 +1032,26 @@ func (t *Timeline) pump(
 			}
 		}
 		applyACPSessionRoute(setupCtx, conn, sessionID, configOptions, targetModel, targetEffort, resumed)
-		client.setContextWindow(fetchACPSessionWindow(setupCtx, conn, sessionID))
-		applyACPSessionMode(setupCtx, conn, sessionID, mode)
-		mcpList := fetchSessionMCPServers(setupCtx, conn, sessionID, spec.Workspace, info.Meta)
+		var (
+			sessionWindow int64
+			mcpList       []MCPServer
+			setupWG       sync.WaitGroup
+		)
+		setupWG.Add(3)
+		go func() {
+			defer setupWG.Done()
+			sessionWindow = fetchACPSessionWindow(setupCtx, conn, sessionID)
+		}()
+		go func() {
+			defer setupWG.Done()
+			applyACPSessionMode(setupCtx, conn, sessionID, mode)
+		}()
+		go func() {
+			defer setupWG.Done()
+			mcpList = fetchSessionMCPServers(setupCtx, conn, sessionID, spec.Workspace, info.Meta)
+		}()
+		setupWG.Wait()
+		client.setContextWindow(sessionWindow)
 		client.setMCPServers(mcpList)
 
 		entry.mu.Lock()
@@ -992,12 +1115,16 @@ func (t *Timeline) pump(
 
 	entry.closeStdin()
 	waitDone := make(chan error, 1)
-	go func() { waitDone <- entry.cmd.Wait() }()
+	go func() {
+		err := entry.cmd.Wait()
+		entry.markReaped()
+		waitDone <- err
+	}()
 	var waitErr error
 	select {
 	case waitErr = <-waitDone:
 	case <-time.After(2 * time.Second):
-		process.KillTree(entry.cmd)
+		entry.killTree()
 		waitErr = <-waitDone
 	}
 	<-stderrDone
@@ -1421,6 +1548,7 @@ type acpTurnClient struct {
 	model     string
 
 	mu         sync.Mutex
+	appendMu   sync.Mutex
 	sessionID  acp.SessionId
 	loading    bool
 	mode       string
@@ -1432,6 +1560,12 @@ type acpTurnClient struct {
 	contextWindow int64
 	// lastContext is the newest reported size, re-published with the window.
 	lastContext int64
+}
+
+func (c *acpTurnClient) appendEventsLocked(events []translatedEvent) {
+	for _, ev := range events {
+		_, _ = c.session.Append(ev.kind, ev.payload)
+	}
 }
 
 func newACPTurnClient(r *Runner, session *Session, entry *turn, workspace, model, mode string) *acpTurnClient {
@@ -1495,15 +1629,20 @@ func (c *acpTurnClient) slashCommands() []string {
 }
 
 func (c *acpTurnClient) setContextWindow(window int64) {
+	c.appendMu.Lock()
+	defer c.appendMu.Unlock()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if window <= 0 || window == c.contextWindow {
+		c.mu.Unlock()
 		return
 	}
 	c.contextWindow = window
+	var events []translatedEvent
 	if c.lastContext > 0 {
-		_, _ = c.session.Append(EventContext, ContextPayload{Tokens: c.lastContext, Window: window})
+		events = append(events, translatedEvent{kind: EventContext, payload: ContextPayload{Tokens: c.lastContext, Window: window}})
 	}
+	c.mu.Unlock()
+	c.appendEventsLocked(events)
 }
 
 // fetchACPSessionWindow reads Grok Build's effective context capacity. The page
@@ -1542,17 +1681,21 @@ func (c *acpTurnClient) sessionCostUSD() float64 {
 }
 
 func (c *acpTurnClient) SessionUpdate(_ context.Context, note acp.SessionNotification) error {
+	c.appendMu.Lock()
+	defer c.appendMu.Unlock()
+	var events []translatedEvent
 	c.mu.Lock()
 	if c.sessionID != "" && note.SessionId != c.sessionID {
 		if child := c.children[string(note.SessionId)]; child != nil && !c.loading {
 			c.translateChildLocked(child, note.Update)
-			c.flushChildrenLocked()
+			events = c.drainChildrenLocked(events)
 		}
 		c.mu.Unlock()
+		c.appendEventsLocked(events)
 		return nil
 	}
 	if !c.loading {
-		c.emitContextLocked(note.Meta)
+		events = c.collectContextLocked(note.Meta, events)
 	}
 	if note.Update.AvailableCommandsUpdate != nil {
 		commands, changed := c.translator.HandleCommands(note.Update.AvailableCommandsUpdate)
@@ -1560,6 +1703,7 @@ func (c *acpTurnClient) SessionUpdate(_ context.Context, note acp.SessionNotific
 		sid := string(c.sessionID)
 		mcp := append([]MCPServer(nil), c.mcp...)
 		c.mu.Unlock()
+		c.appendEventsLocked(events)
 		if changed {
 			initPayload := InitPayload{
 				SessionID:     sid,
@@ -1570,7 +1714,7 @@ func (c *acpTurnClient) SessionUpdate(_ context.Context, note acp.SessionNotific
 			}
 			c.runner.remember(initPayload)
 			if !loading && sid != "" {
-				_, _ = c.session.Append(EventInit, initPayload)
+				c.appendEventsLocked([]translatedEvent{{kind: EventInit, payload: initPayload}})
 			}
 		}
 		return nil
@@ -1580,19 +1724,12 @@ func (c *acpTurnClient) SessionUpdate(_ context.Context, note acp.SessionNotific
 		c.mu.Unlock()
 		return nil
 	}
-	type pair struct {
-		kind    string
-		payload any
-	}
-	var events []pair
 	c.translator.Handle(note.Update, func(kind string, payload any) {
-		events = append(events, pair{kind: kind, payload: payload})
+		events = append(events, translatedEvent{kind: kind, payload: payload})
 	})
-	for _, ev := range events {
-		_, _ = c.session.Append(ev.kind, ev.payload)
-	}
-	c.flushChildrenLocked()
+	events = c.drainChildrenLocked(events)
 	c.mu.Unlock()
+	c.appendEventsLocked(events)
 	return nil
 }
 
@@ -1611,6 +1748,9 @@ func (c *acpTurnClient) HandleExtensionMethod(_ context.Context, method string, 
 	if err := json.Unmarshal(params, &env); err != nil || len(env.Update) == 0 {
 		return nil, nil
 	}
+	c.appendMu.Lock()
+	defer c.appendMu.Unlock()
+	var events []translatedEvent
 	c.mu.Lock()
 	child := c.children[env.SessionID]
 	if c.loading || (c.sessionID != "" && env.SessionID != "" && acp.SessionId(env.SessionID) != c.sessionID && child == nil) {
@@ -1621,46 +1761,35 @@ func (c *acpTurnClient) HandleExtensionMethod(_ context.Context, method string, 
 	if child != nil {
 		translator = child.translator
 	} else {
-		c.emitContextLocked(env.Meta)
+		events = c.collectContextLocked(env.Meta, events)
 	}
-	type pair struct {
-		kind    string
-		payload any
-	}
-	var events []pair
 	translator.HandleExtensionUpdate(env.Update, func(kind string, payload any) {
 		if child != nil {
 			child.pending = append(child.pending, translatedEvent{kind: kind, payload: payload})
 		} else {
-			events = append(events, pair{kind: kind, payload: payload})
+			events = append(events, translatedEvent{kind: kind, payload: payload})
 		}
 	})
 	c.registerChildLocked(child, env.Update)
-	for _, ev := range events {
-		_, _ = c.session.Append(ev.kind, ev.payload)
-	}
-	c.flushChildrenLocked()
+	events = c.drainChildrenLocked(events)
 	c.mu.Unlock()
+	c.appendEventsLocked(events)
 	return nil, nil
 }
 
-// emitContextLocked stores Grok Build's running context size carried on every
-// session notification. totalTokens is the estimated context after the latest
-// model call or local growth; without it a turn only reports end-of-turn cost.
-func (c *acpTurnClient) emitContextLocked(meta map[string]any) {
+// collectContextLocked captures Grok Build's running context size carried on
+// every session notification so it can be persisted once c.mu is released.
+func (c *acpTurnClient) collectContextLocked(meta map[string]any, out []translatedEvent) []translatedEvent {
 	raw, ok := meta["totalTokens"]
 	if !ok {
-		return
+		return out
 	}
 	tokens, ok := raw.(float64)
 	if !ok || tokens < 0 {
-		return
+		return out
 	}
-	// A zero window leaves the page on its model-based estimate. The window is
-	// usually learned after the first notification, so re-publish the same
-	// measurement once it arrives.
-	_, _ = c.session.Append(EventContext, ContextPayload{Tokens: int64(tokens), Window: c.contextWindow})
 	c.lastContext = int64(tokens)
+	return append(out, translatedEvent{kind: EventContext, payload: ContextPayload{Tokens: int64(tokens), Window: c.contextWindow}})
 }
 
 func (c *acpTurnClient) RequestPermission(ctx context.Context, req acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {

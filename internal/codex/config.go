@@ -150,15 +150,21 @@ func Plan(ctx context.Context, g *Gateway, directory string) (*Overlay, error) {
 				model = selected
 			}
 		}
-		if _, ok := g.routes[model]; !ok {
-			model, _ = g.models[0]["slug"].(string)
+		g.catalogMu.RLock()
+		snap := g.currentLocked()
+		routes := snap.routes
+		models := snap.models
+		g.catalogMu.RUnlock()
+		if _, ok := routes[model]; !ok {
+			model, _ = models[0]["slug"].(string)
 		}
-		g.legacyCompaction = make(map[string]Route)
+		legacyCompaction := make(map[string]Route)
 		for _, entry := range native.Models {
 			if slug, _ := entry["slug"].(string); slug != "" && !strings.HasPrefix(strings.ToLower(slug), "gbx/") {
-				g.legacyCompaction[slug] = g.routes[model]
+				legacyCompaction[slug] = routes[model]
 			}
 		}
+		g.setLegacyCompaction(legacyCompaction)
 		values["model_provider"], values["model"] = IndependentProviderID, model
 		quote := func(value string) string { encoded, _ := json.Marshal(value); return string(encoded) }
 		overlay.ProviderBlock = fmt.Sprintf("\n# GBX temporary provider\n[model_providers.%s]\nname = \"GBX\"\nbase_url = %s\nwire_api = \"responses\"\nrequires_openai_auth = false\nsupports_websockets = false\nexperimental_bearer_token = %s\n# End GBX temporary provider\n", IndependentProviderID, quote(base), quote(g.Token()))
@@ -206,15 +212,15 @@ func Plan(ctx context.Context, g *Gateway, directory string) (*Overlay, error) {
 }
 
 func readConfig(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+	data, err := fsutil.ReadRegularFileLimited(path, 4<<20)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
+	if errors.Is(err, fsutil.ErrFileTooLarge) {
+		return nil, fmt.Errorf("Codex configuration exceeds 4 MiB")
+	}
 	if err != nil {
 		return nil, err
-	}
-	if len(data) > 4<<20 {
-		return nil, fmt.Errorf("Codex configuration exceeds 4 MiB")
 	}
 	return data, nil
 }
@@ -284,8 +290,8 @@ func desktopExecutableCandidates(goos, home, localAppData string) []string {
 }
 
 func cliPackageEntrypoint(cliDir string) string {
-	raw, err := os.ReadFile(filepath.Join(cliDir, "codex-package.json"))
-	if err != nil || len(raw) > 64<<10 {
+	raw, err := fsutil.ReadRegularFileLimited(filepath.Join(cliDir, "codex-package.json"), 64<<10)
+	if err != nil {
 		return ""
 	}
 	var pkg struct {
@@ -341,7 +347,7 @@ func nativeCatalog(ctx context.Context, home string, fields map[string]any) (Cat
 		if !filepath.IsAbs(path) {
 			return Catalog{}, fmt.Errorf("Codex model_catalog_json must be an absolute path")
 		}
-		data, err := os.ReadFile(path)
+		data, err := fsutil.ReadRegularFileLimited(path, 16<<20)
 		if err != nil {
 			return Catalog{}, fmt.Errorf("read existing Codex model catalog: %w", err)
 		}
@@ -374,7 +380,7 @@ func fallbackNativeCatalog(ctx context.Context, home string) (Catalog, bool) {
 }
 
 func cachedNativeCatalog(ctx context.Context, home string) (Catalog, bool) {
-	data, err := os.ReadFile(filepath.Join(home, "models_cache.json"))
+	data, err := fsutil.ReadRegularFileLimited(filepath.Join(home, "models_cache.json"), 16<<20)
 	if err != nil {
 		return Catalog{}, false
 	}
@@ -413,6 +419,7 @@ func bundledNativeCatalog(ctx context.Context) (Catalog, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	command := process.Command(executable, "debug", "models", "--bundled")
+	process.ConfigureGroup(command)
 	command.WaitDelay = time.Second
 	command.Env = make([]string, 0, len(os.Environ()))
 	for _, entry := range os.Environ() {
@@ -438,7 +445,7 @@ func bundledNativeCatalog(ctx context.Context) (Catalog, error) {
 			return Catalog{}, fmt.Errorf("Codex must support debug models --bundled (update Codex)")
 		}
 	case <-ctx.Done():
-		_ = command.Process.Kill()
+		process.KillTree(command)
 		<-done
 		return Catalog{}, ctx.Err()
 	}
@@ -593,6 +600,37 @@ func withConfig(ctx context.Context, path string, edit func([]byte, map[string]a
 	return fsutil.WriteFileAtomic(path, updated, 0o600)
 }
 
+func applyScopedEdits(data []byte, changes []ConfigChange, selectVal func(ConfigChange) (*string, bool)) ([]byte, error) {
+	type scopeBatch struct {
+		scope  []string
+		values map[string]*string
+	}
+	var batches []*scopeBatch
+	byKey := make(map[string]*scopeBatch)
+	for _, change := range changes {
+		val, include := selectVal(change)
+		if !include {
+			continue
+		}
+		scopeKey := strings.Join(change.Scope, "\x00")
+		batch := byKey[scopeKey]
+		if batch == nil {
+			batch = &scopeBatch{scope: change.Scope, values: make(map[string]*string)}
+			byKey[scopeKey] = batch
+			batches = append(batches, batch)
+		}
+		batch.values[change.Key] = val
+	}
+	var err error
+	for _, batch := range batches {
+		data, err = editScope(data, batch.scope, batch.values)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return data, nil
+}
+
 func (o *Overlay) Apply(ctx context.Context) error {
 	if o == nil {
 		return nil
@@ -611,11 +649,11 @@ func (o *Overlay) Apply(ctx context.Context) error {
 			}
 		}
 		var err error
-		for _, change := range o.Changes {
-			data, err = editScope(data, change.Scope, map[string]*string{change.Key: change.Applied})
-			if err != nil {
-				return nil, err
-			}
+		data, err = applyScopedEdits(data, o.Changes, func(change ConfigChange) (*string, bool) {
+			return change.Applied, true
+		})
+		if err != nil {
+			return nil, err
 		}
 		return append(data, []byte(o.ProviderBlock)...), nil
 	})
@@ -628,20 +666,16 @@ func (o *Overlay) Restore(ctx context.Context) error {
 		if o.ProviderBlock != "" {
 			data = bytes.Replace(data, []byte(o.ProviderBlock), nil, 1)
 		}
-		for _, change := range o.Changes {
+		return applyScopedEdits(data, o.Changes, func(change ConfigChange) (*string, bool) {
 			current, exists := scopeFields(fields, change.Scope)[change.Key]
 			if change.Applied == nil && !exists || change.Applied != nil && current == *change.Applied || change.PreviousApplied != nil && current == *change.PreviousApplied {
 				if len(change.Scope) > 0 && scopeFields(fields, change.Scope) == nil {
-					continue
+					return nil, false
 				}
-				var err error
-				data, err = editScope(data, change.Scope, map[string]*string{change.Key: change.Before})
-				if err != nil {
-					return nil, err
-				}
+				return change.Before, true
 			}
-		}
-		return data, nil
+			return nil, false
+		})
 	})
 	if err != nil {
 		return err

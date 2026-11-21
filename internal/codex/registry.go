@@ -8,6 +8,8 @@ import (
 	"maps"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/grokbuildx/gbx/internal/modelsdev"
 	"github.com/grokbuildx/gbx/internal/oauthproxy"
@@ -23,9 +25,52 @@ type RuntimeBinding struct {
 }
 
 type runtimeGeneration struct {
-	active  int // guarded by Gateway.catalogMu
-	retired bool
+	active  atomic.Int64
+	retired atomic.Bool
+	mu      sync.Mutex
+	closed  bool
 	close   func()
+}
+
+func (gen *runtimeGeneration) setClose(fn func()) {
+	if gen == nil {
+		return
+	}
+	gen.mu.Lock()
+	if gen.closed {
+		gen.mu.Unlock()
+		if fn != nil {
+			fn()
+		}
+		return
+	}
+	gen.close = fn
+	gen.mu.Unlock()
+}
+
+func (gen *runtimeGeneration) retire() {
+	if gen == nil {
+		return
+	}
+	gen.retired.Store(true)
+}
+
+func (gen *runtimeGeneration) maybeClose() {
+	if gen == nil || !gen.retired.Load() || gen.active.Load() != 0 {
+		return
+	}
+	gen.mu.Lock()
+	if gen.closed {
+		gen.mu.Unlock()
+		return
+	}
+	gen.closed = true
+	fn := gen.close
+	gen.close = nil
+	gen.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 type catalogSnapshot struct {
@@ -62,38 +107,42 @@ func (g *Gateway) currentLocked() *catalogSnapshot {
 
 func (g *Gateway) OwnRuntime(close func()) {
 	g.catalogMu.Lock()
-	defer g.catalogMu.Unlock()
-	g.currentLocked().generation.close = close
-}
-
-func retireGeneration(gen *runtimeGeneration) func() {
-	gen.retired = true
-	if gen.active == 0 {
-		close := gen.close
-		gen.close = nil
-		return close
-	}
-	return nil
+	gen := g.currentLocked().generation
+	g.catalogMu.Unlock()
+	gen.setClose(close)
 }
 
 func (g *Gateway) acquireSnapshot() (*catalogSnapshot, func()) {
-	g.catalogMu.Lock()
-	snapshot := g.currentLocked()
-	snapshot.generation.active++
-	g.catalogMu.Unlock()
-	return snapshot, func() {
+	g.catalogMu.RLock()
+	snapshot := g.modelSnapshot.Load()
+	if snapshot == nil {
+		g.catalogMu.RUnlock()
 		g.catalogMu.Lock()
-		snapshot.generation.active--
-		var close func()
-		if snapshot.generation.retired && snapshot.generation.active == 0 {
-			close = snapshot.generation.close
-			snapshot.generation.close = nil
-		}
+		snapshot = g.currentLocked()
+		g.modelSnapshot.Store(snapshot)
+		snapshot.generation.active.Add(1)
 		g.catalogMu.Unlock()
-		if close != nil {
-			close()
+	} else {
+		snapshot.generation.active.Add(1)
+		g.catalogMu.RUnlock()
+	}
+	return snapshot, func() {
+		if snapshot.generation.active.Add(-1) == 0 {
+			snapshot.generation.maybeClose()
 		}
 	}
+}
+
+func remapLegacyCompaction(old map[string]Route, nextRoutes map[string]Route, defaultRoute Route) map[string]Route {
+	out := make(map[string]Route, len(old))
+	for id, route := range old {
+		if replacement, ok := nextRoutes[route.Alias]; ok {
+			out[id] = replacement
+		} else {
+			out[id] = defaultRoute
+		}
+	}
+	return out
 }
 
 // ReplaceProviders atomically publishes a complete route set after persistence.
@@ -112,15 +161,15 @@ func (g *Gateway) ReplaceProviders(bindings []RuntimeBinding, persist func([]Mod
 			return fmt.Errorf("invalid or duplicate Codex runtime binding")
 		}
 		names[p.Name] = true
-		prepared := &Gateway{routes: make(map[string]Route)}
-		if err := prepared.buildModels(binding.Runtime, p); err != nil {
+		models, routes, err := buildProviderCatalog(binding.Runtime, p)
+		if err != nil {
 			return err
 		}
-		for alias, route := range prepared.routes {
+		for alias, route := range routes {
 			next.routes[alias] = route
 			next.runtimes[alias] = binding.Runtime
 		}
-		next.models = append(next.models, prepared.models...)
+		next.models = append(next.models, models...)
 		if binding.Close != nil {
 			cleanups = append(cleanups, binding.Close)
 		}
@@ -139,34 +188,54 @@ func (g *Gateway) ReplaceProviders(bindings []RuntimeBinding, persist func([]Mod
 			model["display_name"] = label + " (" + next.routes[alias].Provider + ")"
 		}
 	}
-	next.generation.close = func() {
+	next.generation.setClose(func() {
 		for _, close := range cleanups {
 			close()
 		}
+	})
+
+	g.reloadMu.Lock()
+	defer g.reloadMu.Unlock()
+
+	g.catalogMu.RLock()
+	closed := g.closed
+	old := g.modelSnapshot.Load()
+	if !closed && old == nil {
+		g.catalogMu.RUnlock()
+		g.catalogMu.Lock()
+		closed = g.closed
+		if !closed {
+			old = g.currentLocked()
+			g.modelSnapshot.Store(old)
+		}
+		g.catalogMu.Unlock()
+	} else {
+		g.catalogMu.RUnlock()
 	}
-	g.catalogMu.Lock()
-	old := g.currentLocked()
+	if closed {
+		return fmt.Errorf("Codex gateway is closed")
+	}
 	next.native = old.native
 	applyClientToolMode(next.native, next.models, next.routes)
-	next.legacyCompaction = make(map[string]Route, len(old.legacyCompaction))
 	defaultRoute := next.routes[next.models[0]["slug"].(string)]
-	for id, route := range old.legacyCompaction {
-		if replacement, ok := next.routes[route.Alias]; ok {
-			next.legacyCompaction[id] = replacement
-		} else {
-			next.legacyCompaction[id] = defaultRoute
-		}
-	}
+	next.legacyCompaction = remapLegacyCompaction(old.legacyCompaction, next.routes, defaultRoute)
+	// Persist outside catalogMu so inference requests never stall on disk I/O.
 	if err := persist(cloneCatalogModels(next.models)); err != nil {
-		g.catalogMu.Unlock()
 		return err
 	}
-	g.modelSnapshot.Store(next)
-	closeOld := retireGeneration(old.generation)
-	g.catalogMu.Unlock()
-	if closeOld != nil {
-		closeOld()
+	g.catalogMu.Lock()
+	if g.closed {
+		g.catalogMu.Unlock()
+		return fmt.Errorf("Codex gateway is closed")
 	}
+	current := g.currentLocked()
+	next.native = current.native
+	next.legacyCompaction = remapLegacyCompaction(current.legacyCompaction, next.routes, defaultRoute)
+	applyClientToolMode(next.native, next.models, next.routes)
+	g.modelSnapshot.Store(next)
+	current.generation.retire()
+	g.catalogMu.Unlock()
+	current.generation.maybeClose()
 	return nil
 }
 
@@ -201,9 +270,27 @@ func (g *Gateway) serveCatalog(w http.ResponseWriter, r *http.Request, snapshot 
 
 // RefreshProvidersMetadata keeps each route bound to its existing account.
 func (g *Gateway) RefreshProvidersMetadata(providers []provider.Provider, persist func([]Model) error) error {
-	g.catalogMu.Lock()
-	defer g.catalogMu.Unlock()
-	current := g.currentLocked()
+	g.reloadMu.Lock()
+	defer g.reloadMu.Unlock()
+
+	g.catalogMu.RLock()
+	closed := g.closed
+	current := g.modelSnapshot.Load()
+	if !closed && current == nil {
+		g.catalogMu.RUnlock()
+		g.catalogMu.Lock()
+		closed = g.closed
+		if !closed {
+			current = g.currentLocked()
+			g.modelSnapshot.Store(current)
+		}
+		g.catalogMu.Unlock()
+	} else {
+		g.catalogMu.RUnlock()
+	}
+	if closed {
+		return fmt.Errorf("Codex gateway is closed")
+	}
 	next := *current
 	next.models = cloneCatalogModels(current.models)
 	next.routes = maps.Clone(current.routes)
@@ -247,11 +334,34 @@ func (g *Gateway) RefreshProvidersMetadata(providers []provider.Provider, persis
 			}
 		}
 	}
-	if err := persist(next.models); err != nil {
+	if err := persist(cloneCatalogModels(next.models)); err != nil {
 		return err
 	}
+	g.catalogMu.Lock()
+	if g.closed {
+		g.catalogMu.Unlock()
+		return fmt.Errorf("Codex gateway is closed")
+	}
+	latest := g.currentLocked()
+	next.native = latest.native
+	next.legacyCompaction = latest.legacyCompaction
+	next.generation = latest.generation
+	applyClientToolMode(next.native, next.models, next.routes)
 	g.modelSnapshot.Store(&next)
+	g.catalogMu.Unlock()
 	return nil
+}
+
+func (g *Gateway) setLegacyCompaction(mapping map[string]Route) {
+	g.catalogMu.Lock()
+	defer g.catalogMu.Unlock()
+	g.legacyCompaction = maps.Clone(mapping)
+	if current := g.modelSnapshot.Load(); current != nil {
+		next := *current
+		next.native = g.nativeCatalog
+		next.legacyCompaction = maps.Clone(g.legacyCompaction)
+		g.modelSnapshot.Store(&next)
+	}
 }
 
 func (g *Gateway) finishCatalogPlan() {

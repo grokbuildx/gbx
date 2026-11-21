@@ -30,21 +30,3 @@ func TestRefusalContentAndStopReason(t *testing.T) {
 		})
 	}
 }
-
-func TestGeminiToolIDsUniqueAcrossResponses(t *testing.T) {
-	seen := make(map[string]bool)
-	for range 3 {
-		a := newResponseAssembler(&adapterRequest{}, nil)
-		if err := processGeminiNonStream([]byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{}}}]},"finishReason":"STOP"}]}`), a); err != nil {
-			t.Fatal(err)
-		}
-		id := a.contentBlocks()[0].ID
-		if id == "" || seen[id] {
-			t.Fatalf("duplicate tool ID: %s", id)
-		}
-		if toolNameFromClaudeToolUseID(id) != "lookup" {
-			t.Fatalf("legacy name fallback broken: %s", id)
-		}
-		seen[id] = true
-	}
-}

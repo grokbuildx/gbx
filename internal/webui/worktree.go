@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // A conversation may run in a git worktree of its own: a new branch checked
@@ -157,7 +158,7 @@ func (s *Server) createWorktree(ctx context.Context, ws Workspace, name string) 
 	if s.ensureWorktreeSandboxProfile(ctx, ws, dir) {
 		overlays = append(overlays, ".grok/sandbox.toml")
 	}
-	s.writeWorktreeOverlays(ctx, Workspace{Path: dir}, overlays)
+	s.writeWorktreeOverlays(ws, name, overlays)
 	return info, nil
 }
 
@@ -302,7 +303,30 @@ func worktreeUsesCustomSandbox(workspace string) bool {
 	return strings.Contains(string(raw), "[profiles."+worktreeSandboxProfile+"]")
 }
 
-func (s *Server) worktreeOverlayManifestPath(ctx context.Context, tree Workspace) string {
+func validateOverlayRel(raw string) (string, bool) {
+	rel := strings.TrimSpace(filepath.ToSlash(raw))
+	if rel == "" || strings.ContainsRune(rel, 0) || strings.HasPrefix(rel, "/") || filepath.IsAbs(raw) {
+		return "", false
+	}
+	for i, seg := range strings.Split(rel, "/") {
+		if seg == "" || seg == "." || seg == ".." || strings.EqualFold(seg, ".git") {
+			return "", false
+		}
+		if i == 0 && strings.Contains(seg, ":") {
+			return "", false
+		}
+	}
+	return rel, true
+}
+
+func (s *Server) worktreeOverlayManifestPath(ws Workspace, name string) string {
+	if s == nil || s.store == nil || ws.ID == "" || !worktreeNamePattern.MatchString(name) {
+		return ""
+	}
+	return filepath.Join(s.store.Root(), ".worktree-overlays", ws.ID, name)
+}
+
+func (s *Server) legacyWorktreeOverlayManifestPath(ctx context.Context, tree Workspace) string {
 	gitDir, err := s.gitText(ctx, tree, "rev-parse", "--git-dir")
 	if err != nil || gitDir == "" {
 		return ""
@@ -313,49 +337,63 @@ func (s *Server) worktreeOverlayManifestPath(ctx context.Context, tree Workspace
 	return filepath.Join(gitDir, "gbx-overlays")
 }
 
-func (s *Server) writeWorktreeOverlays(ctx context.Context, tree Workspace, overlays []string) {
-	if len(overlays) == 0 {
+func (s *Server) writeWorktreeOverlays(ws Workspace, name string, overlays []string) {
+	manifest := s.worktreeOverlayManifestPath(ws, name)
+	if manifest == "" {
 		return
 	}
-	manifest := s.worktreeOverlayManifestPath(ctx, tree)
-	if manifest == "" {
+	if os.MkdirAll(filepath.Dir(manifest), 0o700) != nil {
 		return
 	}
 	seen := make(map[string]struct{}, len(overlays))
 	var lines []string
-	for _, rel := range overlays {
-		rel = strings.TrimSpace(filepath.ToSlash(rel))
-		if rel == "" {
+	for _, raw := range overlays {
+		rel, ok := validateOverlayRel(raw)
+		if !ok {
 			continue
 		}
-		if _, ok := seen[rel]; ok {
+		if _, dup := seen[rel]; dup {
 			continue
 		}
 		seen[rel] = struct{}{}
 		lines = append(lines, rel)
 	}
+	content := ""
 	if len(lines) > 0 {
-		_ = os.WriteFile(manifest, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+		content = strings.Join(lines, "\n") + "\n"
 	}
+	// Always write the manifest (even when empty) so readWorktreeOverlays knows
+	// this worktree uses the store-backed manifest and never falls back to the
+	// sandbox-writable .git directory.
+	_ = os.WriteFile(manifest, []byte(content), 0o600)
 }
 
-func (s *Server) readWorktreeOverlays(ctx context.Context, tree Workspace) map[string]struct{} {
+func (s *Server) readWorktreeOverlays(ctx context.Context, ws Workspace, name string, tree Workspace) map[string]struct{} {
 	out := make(map[string]struct{}, len(worktreeLocalFiles))
 	for _, rel := range worktreeLocalFiles {
-		out[filepath.ToSlash(rel)] = struct{}{}
+		if valid, ok := validateOverlayRel(rel); ok {
+			out[valid] = struct{}{}
+		}
 	}
-	manifest := s.worktreeOverlayManifestPath(ctx, tree)
-	if manifest == "" {
-		return out
+	var raw []byte
+	var err error
+	manifest := s.worktreeOverlayManifestPath(ws, name)
+	if manifest != "" {
+		raw, err = os.ReadFile(manifest)
+	} else {
+		err = fs.ErrNotExist
 	}
-	raw, err := os.ReadFile(manifest)
+	if errors.Is(err, fs.ErrNotExist) {
+		if legacy := s.legacyWorktreeOverlayManifestPath(ctx, tree); legacy != "" {
+			raw, err = os.ReadFile(legacy)
+		}
+	}
 	if err != nil {
 		return out
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			out[line] = struct{}{}
+		if valid, ok := validateOverlayRel(line); ok {
+			out[valid] = struct{}{}
 		}
 	}
 	return out
@@ -403,12 +441,21 @@ func isLocalCopy(rel string) bool {
 	return false
 }
 
-func pruneEmptyOverlayParents(dir, rel string) {
+func pruneEmptyOverlayParentsRoot(root *os.Root, rel string) {
+	if root == nil {
+		return
+	}
 	for parent := filepath.Dir(filepath.FromSlash(rel)); parent != "." && parent != "" && parent != string(filepath.Separator); parent = filepath.Dir(parent) {
-		if os.Remove(filepath.Join(dir, parent)) != nil {
+		if root.Remove(parent) != nil {
 			break
 		}
 	}
+}
+
+type removedOverlayBackup struct {
+	rel  string
+	data []byte
+	perm fs.FileMode
 }
 
 // removeWorktree deletes a conversation's worktree and, when it was merged,
@@ -417,23 +464,70 @@ func pruneEmptyOverlayParents(dir, rel string) {
 func (s *Server) removeWorktree(ctx context.Context, ws Workspace, info SessionWorktree, force bool) error {
 	dir := s.worktreeDir(ws, info.Name)
 	if _, err := os.Stat(dir); err == nil {
-		// The personal files copied in are untracked, which git worktree
-		// remove refuses; the project keeps the originals.
 		tree := Workspace{Path: dir}
-		for rel := range s.readWorktreeOverlays(ctx, tree) {
-			nativeRel := filepath.FromSlash(rel)
-			if _, err := s.gitText(ctx, tree, "ls-files", "--error-unmatch", "--", nativeRel); err != nil {
-				_ = os.Remove(filepath.Join(dir, nativeRel))
-				pruneEmptyOverlayParents(dir, rel)
+		overlays := s.readWorktreeOverlays(ctx, ws, info.Name, tree)
+		if !force {
+			// Check cleanliness before deleting any overlay files so a refused
+			// non-force delete never strips .grok/sandbox.toml or .mcp.json.
+			statusRes, statusErr := s.git(ctx, tree, nil, "status", "--porcelain", "-z", "-uall")
+			if statusErr != nil {
+				return statusErr
 			}
+			if statusRes.code == 0 && countChangesWithOverlays(statusRes.stdout, overlays) > 0 {
+				return errors.New("the worktree has uncommitted changes; commit or discard them first")
+			}
+		}
+		// The personal files copied in are untracked, which git worktree
+		// remove refuses; the project keeps the originals. Use os.OpenRoot so
+		// symlinks or traversal entries can never touch files outside dir.
+		var backups []removedOverlayBackup
+		if root, rootErr := os.OpenRoot(dir); rootErr == nil {
+			for rel := range overlays {
+				validRel, ok := validateOverlayRel(rel)
+				if !ok {
+					continue
+				}
+				nativeRel := filepath.FromSlash(validRel)
+				if _, err := s.gitText(ctx, tree, "ls-files", "--error-unmatch", "--", nativeRel); err == nil {
+					continue
+				}
+				fi, statErr := root.Lstat(nativeRel)
+				if statErr != nil || !fi.Mode().IsRegular() {
+					continue
+				}
+				if !force {
+					if data, readErr := root.ReadFile(nativeRel); readErr == nil {
+						backups = append(backups, removedOverlayBackup{
+							rel:  nativeRel,
+							data: data,
+							perm: fi.Mode().Perm(),
+						})
+					}
+				}
+				if root.Remove(nativeRel) == nil {
+					pruneEmptyOverlayParentsRoot(root, validRel)
+				}
+			}
+			_ = root.Close()
 		}
 		args := []string{"worktree", "remove"}
 		if force {
 			args = append(args, "--force")
 		}
 		if _, err := s.gitText(ctx, ws, append(args, "--", dir)...); err != nil {
+			// Restore removed overlays if a non-force removal still failed.
+			if !force {
+				for _, b := range backups {
+					target := filepath.Join(dir, b.rel)
+					_ = os.MkdirAll(filepath.Dir(target), 0o755)
+					_ = os.WriteFile(target, b.data, b.perm)
+				}
+			}
 			return err
 		}
+	}
+	if manifest := s.worktreeOverlayManifestPath(ws, info.Name); manifest != "" {
+		_ = os.Remove(manifest)
 	}
 	_, _ = s.gitText(ctx, ws, "worktree", "prune")
 	_, _ = s.gitText(ctx, ws, "branch", "-d", "--", info.Branch)
@@ -442,42 +536,90 @@ func (s *Server) removeWorktree(ctx context.Context, ws Workspace, info SessionW
 
 func (s *Server) worktreeStatus(ctx context.Context, ws Workspace, info SessionWorktree) WorktreeStatus {
 	status := WorktreeStatus{SessionWorktree: info, Path: s.worktreeDir(ws, info.Name), Files: []WorktreeFile{}}
-	status.Current, _ = s.gitText(ctx, ws, "symbolic-ref", "--quiet", "--short", "HEAD")
-	if remote, _ := s.gitText(ctx, ws, "config", "--get", "branch."+info.Base+".remote"); info.Base != "" && remote != "" && remote != "." {
-		status.Remote = remote
-	} else if remotes, _ := s.gitText(ctx, ws, "remote"); remotes != "" {
-		status.Remote = strings.Fields(remotes)[0]
-		for _, name := range strings.Fields(remotes) {
-			if name == "origin" {
-				status.Remote = name
+
+	var (
+		current  string
+		remote   string
+		behind   int
+		ahead    int
+		dirty    int
+		files    []WorktreeFile
+		upstream string
+	)
+
+	tree, treeErr := s.worktreeWorkspace(ws, info.Name)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		current, _ = s.gitText(ctx, ws, "symbolic-ref", "--quiet", "--short", "HEAD")
+	}()
+	go func() {
+		defer wg.Done()
+		if r, _ := s.gitText(ctx, ws, "config", "--get", "branch."+info.Base+".remote"); info.Base != "" && r != "" && r != "." {
+			remote = r
+		} else if remotes, _ := s.gitText(ctx, ws, "remote"); remotes != "" {
+			fields := strings.Fields(remotes)
+			remote = fields[0]
+			for _, name := range fields {
+				if name == "origin" {
+					remote = name
+				}
 			}
 		}
-	}
-	tree, err := s.worktreeWorkspace(ws, info.Name)
-	if err != nil {
-		return status
-	}
-	status.Exists = true
-	base := info.Base
-	if base == "" {
-		base = info.BaseCommit
-	}
-	if counts, err := s.gitText(ctx, tree, "rev-list", "--left-right", "--count", base+"...HEAD"); err == nil {
-		if fields := strings.Fields(counts); len(fields) == 2 {
-			status.Behind, _ = strconv.Atoi(fields[0])
-			status.Ahead, _ = strconv.Atoi(fields[1])
+	}()
+
+	if treeErr == nil {
+		status.Exists = true
+		base := info.Base
+		if base == "" {
+			base = info.BaseCommit
 		}
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			if counts, err := s.gitText(ctx, tree, "rev-list", "--left-right", "--count", base+"...HEAD"); err == nil {
+				if fields := strings.Fields(counts); len(fields) == 2 {
+					behind, _ = strconv.Atoi(fields[0])
+					ahead, _ = strconv.Atoi(fields[1])
+				}
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if result, err := s.git(ctx, tree, nil, "status", "--porcelain", "-z", "-uall"); err == nil && result.code == 0 {
+				dirty = countChangesWithOverlays(result.stdout, s.readWorktreeOverlays(ctx, ws, info.Name, tree))
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if result, err := s.git(ctx, tree, nil, "diff", "--name-status", "-z", "--no-renames", base+"...HEAD"); err == nil && result.code == 0 {
+				fields := strings.Split(strings.TrimSuffix(string(result.stdout), "\x00"), "\x00")
+				out := make([]WorktreeFile, 0, min(len(fields)/2, maxWorktreeFiles))
+				for i := 0; i+1 < len(fields) && len(out) < maxWorktreeFiles; i += 2 {
+					out = append(out, WorktreeFile{Status: fields[i], Path: fields[i+1]})
+				}
+				files = out
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			upstream, _ = s.gitText(ctx, tree, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+		}()
 	}
-	if result, err := s.git(ctx, tree, nil, "status", "--porcelain", "-z", "-uall"); err == nil && result.code == 0 {
-		status.Dirty = countChangesWithOverlays(result.stdout, s.readWorktreeOverlays(ctx, tree))
-	}
-	if result, err := s.git(ctx, tree, nil, "diff", "--name-status", "-z", "--no-renames", base+"...HEAD"); err == nil && result.code == 0 {
-		fields := strings.Split(strings.TrimSuffix(string(result.stdout), "\x00"), "\x00")
-		for i := 0; i+1 < len(fields) && len(status.Files) < maxWorktreeFiles; i += 2 {
-			status.Files = append(status.Files, WorktreeFile{Status: fields[i], Path: fields[i+1]})
+
+	wg.Wait()
+	status.Current = current
+	status.Remote = remote
+	if status.Exists {
+		status.Behind = behind
+		status.Ahead = ahead
+		status.Dirty = dirty
+		if files != nil {
+			status.Files = files
 		}
+		status.Upstream = upstream
 	}
-	status.Upstream, _ = s.gitText(ctx, tree, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
 	return status
 }
 

@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/grokbuildx/gbx/internal/config"
 	"github.com/grokbuildx/gbx/internal/locale"
 	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/selfupdate"
 	"github.com/grokbuildx/gbx/internal/webui"
 	"github.com/spf13/cobra"
 )
@@ -67,7 +69,7 @@ reasoning effort, and permission mode take effect at turn boundaries. Session hi
 The OS sandbox defaults to workspace. --sandbox workspace|off overrides the saved default at startup;
 web settings can update and save it for new conversations. Existing conversations keep their original sandbox.
 Disabling it broadens agent file-write/process access; tool approval remains independent.
-Inherited OS restrictions and upstream managed policies still apply.
+Inherited OS restrictions and managed policies still apply.
 
 The workspace UI includes a session list, streaming thread (inline diffs, plan checklists, interactive permission cards),
 file editor, Git panel, isolated Git worktrees, optional web terminal (--no-shell to disable), and settings (providers,
@@ -108,9 +110,13 @@ mode-0600 local Unix socket without opening a port.`),
 				}
 			}
 
+			token = strings.TrimSpace(token)
 			if token == "" {
 				token = strings.TrimSpace(os.Getenv("GBX_SERVE_TOKEN"))
 			}
+			// Remove the server token from process env immediately so no child
+			// process (ACP worker, git, shell, MCP) can ever inherit it.
+			_ = os.Unsetenv("GBX_SERVE_TOKEN")
 			generatedToken := false
 			if socket == "" && token == "" {
 				token = rand.Text()
@@ -128,7 +134,7 @@ mode-0600 local Unix socket without opening a port.`),
 				DefaultEffort:   effort,
 				Version:         Version,
 				SelfBinary:      selfBinary(),
-				LatestVersion:   fetchLatestReleaseVersion,
+				LatestVersion:   selfupdate.FetchLatestReleaseVersion,
 				Shell:           shell && !noShell,
 				LockWorkspaces:  lockWorkspaces,
 				BasePath:        basePath,
@@ -137,6 +143,15 @@ mode-0600 local Unix socket without opening a port.`),
 			if err != nil {
 				return err
 			}
+			var closeServerOnce sync.Once
+			closeServer := func() {
+				closeServerOnce.Do(func() {
+					closeCtx, cancelClose := context.WithTimeout(context.Background(), 4*time.Second)
+					defer cancelClose()
+					_ = server.Close(closeCtx)
+				})
+			}
+			defer closeServer()
 
 			if server.SandboxMode() == webui.SandboxOff {
 				fmt.Fprintln(cmd.ErrOrStderr(), locale.T(
@@ -173,17 +188,21 @@ mode-0600 local Unix socket without opening a port.`),
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			serveDone := make(chan struct{})
 			shutdownDone := make(chan struct{})
 			go func() {
 				defer close(shutdownDone)
-				<-ctx.Done()
-				stop()
-				fmt.Fprint(os.Stderr, locale.T("\n正在停止 gbx serve…（再按一次 Ctrl+C 立即退出）\n", "\nStopping gbx serve… (Ctrl+C again to quit now)\n"))
-				cancelBase()
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-				defer cancel()
-				_ = server.Close(shutdownCtx)
-				_ = httpServer.Shutdown(shutdownCtx)
+				select {
+				case <-ctx.Done():
+					stop()
+					fmt.Fprint(os.Stderr, locale.T("\n正在停止 gbx serve…（再按一次 Ctrl+C 立即退出）\n", "\nStopping gbx serve… (Ctrl+C again to quit now)\n"))
+					cancelBase()
+					closeServer()
+					httpCtx, cancelHTTP := context.WithTimeout(context.Background(), 3*time.Second)
+					defer cancelHTTP()
+					_ = httpServer.Shutdown(httpCtx)
+				case <-serveDone:
+				}
 			}()
 
 			if socket != "" {
@@ -212,7 +231,11 @@ mode-0600 local Unix socket without opening a port.`),
 					}
 				}
 			}
-			if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			err = httpServer.Serve(listener)
+			close(serveDone)
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				closeServer()
+				<-shutdownDone
 				return err
 			}
 			<-shutdownDone

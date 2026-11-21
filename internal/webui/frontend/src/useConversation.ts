@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
+import { Unauthorized } from "./api";
 import type { Api } from "./api";
 import type { Session, StoredEvent, UserPayload } from "./types";
 
 // EventSource delivers only the event types it listens for by name, so every
 // type the server stores must be here (stream_types_test.go checks it).
 const STREAM_TYPES = ["init", "token", "thinking", "context", "tool_use", "tool_result", "task", "permission", "permission_resolved", "result", "error", "queued", "status", "user"];
+
+const RECONNECT_INITIAL_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
 
 export interface Conversation {
   events: StoredEvent[];
@@ -41,6 +45,7 @@ export function useConversation(
     let retry: ReturnType<typeof setTimeout> | undefined;
     let frame = 0;
     let lastSeq = 0;
+    let backoff = RECONNECT_INITIAL_MS;
     const buffer: StoredEvent[] = [];
 
     // A streamed answer appends an event per token; render once per frame.
@@ -58,12 +63,19 @@ export function useConversation(
       // the last seq seen is what keeps the history gap-free.
       const stream = new EventSource(api.streamURL(id, lastSeq));
       source = stream;
+      let opened = false;
+      stream.onopen = () => {
+        opened = true;
+        backoff = RECONNECT_INITIAL_MS;
+      };
       for (const type of STREAM_TYPES) {
         stream.addEventListener(type, (message) => {
           // EventSource also dispatches a plain "error" Event when its
           // connection drops. Only server MessageEvents belong to the chat;
           // counting a disconnect would invent an error and advance lastSeq.
           if (!(message instanceof MessageEvent)) return;
+          opened = true;
+          backoff = RECONNECT_INITIAL_MS;
           const data = message.data;
           let payload: unknown = {};
           try {
@@ -90,24 +102,50 @@ export function useConversation(
         if (source !== stream) return;
         stream.close();
         source = null;
-        if (!closed) retry = setTimeout(open, 3000);
+        if (closed) return;
+        const delay = backoff;
+        backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
+        const scheduleRetry = () => {
+          if (!closed && source === null) retry = setTimeout(open, delay);
+        };
+        if (!opened) {
+          // EventSource does not expose HTTP status codes; verify auth before
+          // retrying so a revoked token stops reconnecting immediately.
+          void api.session(id).then(
+            () => scheduleRetry(),
+            (err) => {
+              if (closed) return;
+              if (err instanceof Unauthorized) {
+                setError(err.message);
+                return;
+              }
+              scheduleRetry();
+            },
+          );
+          return;
+        }
+        scheduleRetry();
       };
     };
 
     setLoading(true);
     (async () => {
       try {
-        const history = await api.events(id, 0);
+        const [history, initialSession] = await Promise.all([api.events(id, 0), api.session(id)]);
         if (closed) return;
         for (const event of history) {
           buffer.push(event);
           lastSeq = Math.max(lastSeq, event.seq);
         }
         flush();
-        // Asked after the history: a turn that ends in between still delivers
-        // its result through the stream, and one that starts, its user event.
-        const fresh = await api.session(id);
-        if (closed) return;
+        let fresh = initialSession;
+        const boundary = lastBoundaryType(history);
+        // Confirm running state whenever the parallel session and events snapshots
+        // disagree in either direction (a turn ended or started between them).
+        if ((fresh.running && boundary === "result") || (!fresh.running && boundary === "user")) {
+          fresh = await api.session(id);
+          if (closed) return;
+        }
         setRunning(!!fresh.running);
         callbacks.current.onSession(fresh);
         open();
@@ -127,4 +165,13 @@ export function useConversation(
   }, [api, id]);
 
   return { events, running, loading, error, setRunning };
+}
+
+function lastBoundaryType(events: StoredEvent[]): string {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev.type === "result") return "result";
+    if (ev.type === "user" && !(ev.payload as UserPayload | undefined)?.mirrored) return "user";
+  }
+  return "";
 }

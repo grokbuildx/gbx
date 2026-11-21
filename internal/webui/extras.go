@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/grokbuildx/gbx/internal/groklaunch"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 // Subscription logins, MCP servers and the update check: settings the page
@@ -26,14 +27,17 @@ import (
 // ── subscription login ──────────────────────────────────────────────────────
 
 // OAuthProviders are the names `gbx oauth` accepts.
-var OAuthProviders = []string{"gpt", "gemini", "grok", "qoder", "kimi", "kiro", "workbuddy", "workbuddycn", "autoclaw", "cursor"}
+var OAuthProviders = provider.PublicOAuthProviders()
 
 var (
 	aliasPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$`)
 	urlPattern   = regexp.MustCompile(`https?://[^\s"'<>]+`)
 )
 
-const loginTimeout = 10 * time.Minute
+const (
+	loginTimeout     = 10 * time.Minute
+	finishedLoginTTL = 10 * time.Minute
+)
 
 type oauthLogin struct {
 	ID       string   `json:"id"`
@@ -48,7 +52,8 @@ type oauthLogin struct {
 	// stdin takes a pasted redirect address (cloud login); nil otherwise.
 	stdin io.WriteCloser
 
-	cancel context.CancelFunc
+	cancel     context.CancelFunc
+	finishedAt time.Time
 }
 
 type loginRegistry struct {
@@ -141,6 +146,7 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) runLogin(provider string, args []string, withStdin bool) (*oauthLogin, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), loginTimeout)
 	cmd := exec.CommandContext(ctx, s.selfBinary, args...)
+	cmd.Env = groklaunch.ScrubServeEnv(os.Environ())
 	if workspace, ok := s.workspaces.fallback(); ok {
 		cmd.Dir = workspace.Path
 	}
@@ -162,7 +168,13 @@ func (s *Server) runLogin(provider string, args []string, withStdin bool) (*oaut
 		return nil, err
 	}
 	login := &oauthLogin{ID: uuid.NewString(), Provider: provider, Output: []string{}, URLs: []string{}, cancel: cancel, stdin: stdin}
+	now := time.Now()
 	s.logins.mu.Lock()
+	for id, existing := range s.logins.logins {
+		if existing.Done && !existing.finishedAt.IsZero() && now.Sub(existing.finishedAt) > finishedLoginTTL {
+			delete(s.logins.logins, id)
+		}
+	}
 	s.logins.logins[login.ID] = login
 	s.logins.mu.Unlock()
 
@@ -185,8 +197,12 @@ func (s *Server) runLogin(provider string, args []string, withStdin bool) (*oaut
 		_ = writer.Close()
 		<-scanned
 		cancel()
+		if err == nil {
+			s.invalidateAllProviderCatalogs()
+		}
 		s.logins.mu.Lock()
 		login.Done = true
+		login.finishedAt = time.Now()
 		login.OK = err == nil
 		if err != nil && !login.Cancelled {
 			login.Error = lastLine(strings.Join(login.Output, "\n"), err.Error())
@@ -278,7 +294,7 @@ func mcpServers(ctx context.Context, ws Workspace) []MCPEntry {
 						}
 						entry := MCPEntry{Name: srv.Name, Scope: scope, Type: kind}
 						if srv.URL != "" {
-							entry.Target = srv.URL
+							entry.Target = redactSecrets(srv.URL)
 						} else {
 							entry.Target = redactSecrets(strings.TrimSpace(srv.Command + " " + strings.Join(srv.Args, " ")))
 						}
@@ -314,7 +330,7 @@ func mcpServers(ctx context.Context, ws Workspace) []MCPEntry {
 				}
 				entry := MCPEntry{Name: name, Scope: "project", Type: kind}
 				if srv.URL != "" {
-					entry.Target = srv.URL
+					entry.Target = redactSecrets(srv.URL)
 				} else {
 					entry.Target = redactSecrets(strings.TrimSpace(srv.Command + " " + strings.Join(srv.Args, " ")))
 				}
@@ -423,8 +439,9 @@ func (s *Server) removeMCP(w http.ResponseWriter, r *http.Request, ws Workspace,
 }
 
 func cleanGrokCLISubcommandEnv(inherited []string) []string {
-	env := make([]string, 0, len(inherited)+1)
-	for _, entry := range inherited {
+	scrubbed := groklaunch.ScrubServeEnv(inherited)
+	env := make([]string, 0, len(scrubbed)+1)
+	for _, entry := range scrubbed {
 		key, _, ok := strings.Cut(entry, "=")
 		if !ok {
 			env = append(env, entry)
@@ -461,9 +478,10 @@ func (s *Server) runGrokMCP(w http.ResponseWriter, r *http.Request, ws Workspace
 // ── update check ────────────────────────────────────────────────────────────
 
 type updateCache struct {
-	mu      sync.Mutex
-	checked time.Time
-	latest  string
+	mu       sync.Mutex
+	checked  time.Time
+	latest   string
+	checking bool
 }
 
 const updateCheckInterval = 6 * time.Hour
@@ -476,14 +494,24 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	latest := ""
 	if s.latestVersion != nil {
 		s.update.mu.Lock()
-		if time.Since(s.update.checked) > updateCheckInterval {
-			s.update.checked = time.Now()
-			if version, err := s.latestVersion(); err == nil {
-				s.update.latest = version
-			}
+		shouldCheck := !s.update.checking && time.Since(s.update.checked) > updateCheckInterval
+		if shouldCheck {
+			s.update.checking = true
 		}
 		latest = s.update.latest
 		s.update.mu.Unlock()
+
+		if shouldCheck {
+			version, err := s.latestVersion()
+			s.update.mu.Lock()
+			s.update.checked = time.Now()
+			if err == nil {
+				s.update.latest = version
+			}
+			s.update.checking = false
+			latest = s.update.latest
+			s.update.mu.Unlock()
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"current": s.version,

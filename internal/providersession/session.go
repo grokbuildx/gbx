@@ -22,15 +22,28 @@ type Session struct {
 	closeOnce sync.Once
 }
 
+// PrepareOptions customizes the embedded provider runtime.
+type PrepareOptions struct {
+	// DisableHistoryCache skips the loopback previous_response_id cache when an
+	// outer gateway (such as codex.Gateway) already maintains conversation history.
+	DisableHistoryCache bool
+}
+
 // Prepare discovers any missing API-key gateway models and starts a Responses runtime.
 func Prepare(ctx context.Context, configured provider.Provider) (*Session, error) {
+	return PrepareWithOptions(ctx, configured, PrepareOptions{})
+}
+
+// PrepareWithOptions discovers any missing API-key gateway models and starts a
+// Responses runtime with the supplied options.
+func PrepareWithOptions(ctx context.Context, configured provider.Provider, options PrepareOptions) (*Session, error) {
 	if err := provider.ValidateRuntime(configured); err != nil {
 		return nil, err
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	resolved := configured
+	resolved := configured.Clone()
 	resolved.Type = provider.EffectiveType(resolved)
 
 	if strings.TrimSpace(resolved.OAuthProvider) == "" && strings.TrimSpace(resolved.Endpoint) == "" {
@@ -56,6 +69,7 @@ func Prepare(ctx context.Context, configured provider.Provider) (*Session, error
 		OAuthAccountCredential: resolved.OAuthAccountCredential,
 		ModelProtocols:         resolved.ModelProtocols,
 		ModelEndpoints:         resolved.ModelEndpoints,
+		DisableHistoryCache:    options.DisableHistoryCache,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start embedded provider runtime: %w", err)

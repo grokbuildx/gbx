@@ -198,9 +198,11 @@ func TestOAuthRuntimeType(t *testing.T) {
 	if got, ok := provider.OAuthRuntimeType("cursor"); !ok || got != "openai_responses" {
 		t.Fatalf("cursor = %q %v", got, ok)
 	}
-	got, ok = provider.OAuthRuntimeType("gemini")
-	if !ok || got != "openai" {
-		t.Fatalf("gemini = %q %v", got, ok)
+	if _, ok := provider.OAuthRuntimeType("gemini"); ok {
+		t.Fatal("the retired gemini name is still accepted")
+	}
+	if _, ok := provider.OAuthRuntimeType("antigravity"); ok {
+		t.Fatal("the retired antigravity name is still accepted")
 	}
 	got, ok = provider.OAuthRuntimeType("grok")
 	if !ok || got != "openai_responses" {

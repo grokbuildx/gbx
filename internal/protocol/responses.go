@@ -36,11 +36,11 @@ func ProbeOpenAIResponsesStatusContext(parent context.Context, endpoint, apiKey,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	resp, err := newProbeHTTPClient(timeout).Do(req)
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxProbeDiscardBytes))
 	return resp.StatusCode, nil
 }

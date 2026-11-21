@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/grokbuildx/gbx/internal/modelsdev"
@@ -33,6 +34,9 @@ var (
 	kimiAPIBaseURL = "https://api.kimi.com/coding/v1"
 	// kimiTokenURL is the OAuth refresh endpoint. A var so tests can stub it.
 	kimiTokenURL = "https://auth.kimi.com/api/oauth/token"
+
+	kimiHostnameOnce  sync.Once
+	kimiHostnameValue string
 )
 
 // kimiOAuthAuthorizer resolves and refreshes a Kimi OAuth credential written by
@@ -41,6 +45,9 @@ var (
 type kimiOAuthAuthorizer struct {
 	path   string
 	client *http.Client
+
+	mu       sync.Mutex
+	deviceID string
 }
 
 type kimiOAuthCredential struct {
@@ -89,7 +96,7 @@ func (a *kimiOAuthAuthorizer) listAuths() []*AuthInfo {
 	}
 	return []*AuthInfo{{
 		ID: filepath.Base(a.path), Provider: ProviderKimi, FileName: a.path, Label: credential.email,
-		Status: status, Disabled: credential.disabled, Metadata: credential.metadata,
+		Status: status, Disabled: credential.disabled, Metadata: safeAuthMetadata(credential.metadata),
 	}}
 }
 
@@ -110,9 +117,13 @@ func (a *kimiOAuthAuthorizer) load() (*kimiOAuthCredential, error) {
 		return nil, fmt.Errorf("credential %s is type %q, not Kimi", filepath.Base(a.path), credentialType)
 	}
 	disabled, _ := metadata["disabled"].(bool)
+	deviceID := firstMetadataString(metadata, "device_id")
+	a.mu.Lock()
+	a.deviceID = deviceID
+	a.mu.Unlock()
 	return &kimiOAuthCredential{
 		metadata: metadata, accessToken: firstMetadataString(metadata, "access_token"),
-		refreshToken: firstMetadataString(metadata, "refresh_token"), deviceID: firstMetadataString(metadata, "device_id"),
+		refreshToken: firstMetadataString(metadata, "refresh_token"), deviceID: deviceID,
 		email: firstMetadataString(metadata, "email"), expiresAt: parseCodexExpiry(firstMetadataString(metadata, "expired")),
 		disabled: disabled,
 	}, nil
@@ -139,7 +150,7 @@ func (a *kimiOAuthAuthorizer) refresh(ctx context.Context, credential *kimiOAuth
 			request.Header.Add(key, value)
 		}
 	}
-	response, err := a.client.Do(request)
+	response, err := doCredentialRequest(a.client, request)
 	if err != nil {
 		return nil, fmt.Errorf("refresh Kimi token: %w", err)
 	}
@@ -217,9 +228,15 @@ func kimiCommonHeaders(deviceID, deviceModel string) http.Header {
 	return header
 }
 
-// deviceIDFromFile reads the persisted device identity; atomic credential writes
-// keep this read complete while a concurrent refresh replaces the file.
+// deviceIDFromFile returns the device identity cached by the latest credential
+// load, falling back to reading the file only when not yet populated.
 func (a *kimiOAuthAuthorizer) deviceIDFromFile() string {
+	a.mu.Lock()
+	deviceID := a.deviceID
+	a.mu.Unlock()
+	if deviceID != "" {
+		return deviceID
+	}
 	credential, err := a.load()
 	if err != nil {
 		return ""
@@ -228,11 +245,15 @@ func (a *kimiOAuthAuthorizer) deviceIDFromFile() string {
 }
 
 func kimiHostname() string {
-	hostname, err := os.Hostname()
-	if err != nil {
-		return "unknown"
-	}
-	return hostname
+	kimiHostnameOnce.Do(func() {
+		hostname, err := os.Hostname()
+		if err != nil || strings.TrimSpace(hostname) == "" {
+			kimiHostnameValue = "unknown"
+			return
+		}
+		kimiHostnameValue = hostname
+	})
+	return kimiHostnameValue
 }
 
 // kimiExecutorDeviceModel returns the raw "<GOOS> <GOARCH>" format required by
@@ -567,7 +588,7 @@ func startKimiOAuth(parent context.Context, modelSpec, credentialFile string) (*
 	path := filepath.Join(authDir, filepath.Base(credentialFile))
 	authorizer := &kimiOAuthAuthorizer{
 		path:   path,
-		client: &http.Client{Transport: newUpstreamTransport(30 * time.Second)},
+		client: newCredentialHTTPClient(30 * time.Second),
 	}
 	credential, err := authorizer.load()
 	if err != nil {

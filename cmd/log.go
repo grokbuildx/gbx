@@ -135,7 +135,7 @@ func printLogLocation(out io.Writer) {
 	base := oauthproxy.ResolveLogTemplatePath()
 	extension := filepath.Ext(base)
 	fmt.Fprintf(out, "Filename template: %s (not created)\n", base)
-	fmt.Fprintf(out, "Per session: %s-claude_<id>%s\n", strings.TrimSuffix(base, extension), extension)
+	fmt.Fprintf(out, "Per session: %s-grok_<id>%s\n", strings.TrimSuffix(base, extension), extension)
 }
 
 func init() {

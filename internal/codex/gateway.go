@@ -69,7 +69,8 @@ type Gateway struct {
 	routes           map[string]Route
 	models           []Model
 	modelSnapshot    atomic.Pointer[catalogSnapshot]
-	catalogMu        sync.Mutex
+	catalogMu        sync.RWMutex
+	reloadMu         sync.Mutex
 	options          Options
 	history          responseHistory
 	migrations       responseHistory
@@ -79,6 +80,7 @@ type Gateway struct {
 	legacyCompaction map[string]Route
 	closeOnce        sync.Once
 	startOnce        sync.Once
+	closed           bool
 	generation       *runtimeGeneration
 	nativeCatalog    Catalog
 }
@@ -142,6 +144,16 @@ func (g *Gateway) Start() {
 
 // buildModels only prepares an unpublished route/catalog pair.
 func (g *Gateway) buildModels(runtime *oauthproxy.Runtime, configured provider.Provider) error {
+	models, routes, err := buildProviderCatalog(runtime, configured)
+	if err != nil {
+		return err
+	}
+	g.models = models
+	g.routes = routes
+	return nil
+}
+
+func buildProviderCatalog(runtime *oauthproxy.Runtime, configured provider.Provider) ([]Model, map[string]Route, error) {
 	var err error
 	p := configured
 	p.Type = provider.EffectiveType(p)
@@ -155,8 +167,10 @@ func (g *Gateway) buildModels(runtime *oauthproxy.Runtime, configured provider.P
 	details = withGPTReasoningDefaults(models, details)
 	details, err = withModelsDevMetadata(models, details, names, p, !native)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
+	routes := make(map[string]Route, len(models))
+	catalogModels := make([]Model, 0, len(models))
 	for _, model := range models {
 		alias := "gbx/" + url.PathEscape(p.Name) + "/" + model
 		_, info, _ := lookupModelInfo(details, model)
@@ -165,25 +179,25 @@ func (g *Gateway) buildModels(runtime *oauthproxy.Runtime, configured provider.P
 			modelProtocol = p.ModelProtocols[strings.TrimSuffix(strings.ToLower(model), "[1m]")]
 		}
 		modelNative := native || mixed && provider.IsOpenAIResponsesType(modelProtocol)
-		g.routes[alias] = Route{Provider: p.Name, Alias: alias, Model: model, NativeResponses: modelNative, CodexNativeTools: codexOAuth, MaxOutputTokens: info.MaxOutputTokens}
+		routes[alias] = Route{Provider: p.Name, Alias: alias, Model: model, NativeResponses: modelNative, CodexNativeTools: codexOAuth, MaxOutputTokens: info.MaxOutputTokens}
 		entry := newModel(alias, model, details, names)
 		if modelNative && !codexOAuth {
 			entry["supports_search_tool"] = false
 		}
 		applyProviderContext(entry, model, p)
-		g.models = append(g.models, entry)
+		catalogModels = append(catalogModels, entry)
 	}
 	if p.OAuthProvider == oauthproxy.ProviderWorkBuddy || p.OAuthProvider == oauthproxy.ProviderWorkBuddyCN {
-		g.models = uniqueWorkBuddyModels(g.models, g.routes)
+		catalogModels = uniqueWorkBuddyModels(catalogModels, routes)
 	}
-	disambiguateModelNames(g.models, g.routes)
-	if len(g.models) == 0 {
-		return fmt.Errorf("provider %q has no models for Codex", p.Name)
+	disambiguateModelNames(catalogModels, routes)
+	if len(catalogModels) == 0 {
+		return nil, nil, fmt.Errorf("provider %q has no models for Codex", p.Name)
 	}
 	if def := provider.StripContextSuffix(provider.NormalizeModelID(p.DefaultModel)); def != "" {
-		promoteDefaultCatalogModel(g.models, g.routes, names, def)
+		promoteDefaultCatalogModel(catalogModels, routes, names, def)
 	}
-	return nil
+	return catalogModels, routes, nil
 }
 
 func promoteDefaultCatalogModel(models []Model, routes map[string]Route, names map[string]string, def string) {
@@ -214,12 +228,11 @@ func (g *Gateway) Close() {
 		_ = g.listener.Close()
 		g.client.CloseIdleConnections()
 		g.catalogMu.Lock()
+		g.closed = true
 		gen := g.currentLocked().generation
-		closeRuntime := retireGeneration(gen)
+		gen.retire()
 		g.catalogMu.Unlock()
-		if closeRuntime != nil {
-			closeRuntime()
-		}
+		gen.maybeClose()
 	})
 }
 
@@ -359,9 +372,18 @@ func (g *Gateway) callRuntime(r *http.Request, body []byte, path string) (*http.
 	return g.client.Do(request)
 }
 
+func isBearerToken(header, token string) bool {
+	header = strings.TrimSpace(header)
+	if len(header) < len("Bearer ") || !strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
+		return false
+	}
+	candidate := strings.TrimSpace(header[len("Bearer "):])
+	return subtle.ConstantTimeCompare([]byte(candidate), []byte(token)) == 1
+}
+
 func (g *Gateway) serveNative(w http.ResponseWriter, r *http.Request, body []byte, path string) {
-	auth := r.Header.Get("Authorization")
-	if auth == "" || auth == "Bearer "+g.token {
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if auth == "" || isBearerToken(auth, g.token) {
 		writeError(w, http.StatusUnauthorized, "authentication_error", "native OpenAI models require Codex's own login", "")
 		return
 	}

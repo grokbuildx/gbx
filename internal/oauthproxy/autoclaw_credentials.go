@@ -24,8 +24,6 @@ const (
 	autoclawRefreshAppID       = "100003"
 	autoclawRefreshAppKey      = "38d2391985e2369a5fb8227d8e6cd5e5"
 	autoclawRefreshMaxBodySize = int64(1 << 20)
-	autoclawRefreshLockPoll    = 50 * time.Millisecond
-	autoclawRefreshLockStale   = 45 * time.Second
 	autoclawRefreshCoalesce    = 30 * time.Second
 )
 
@@ -61,13 +59,16 @@ type autoClawCredential struct {
 	disabled     bool
 }
 
+const autoClawVersionCacheTTL = 5 * time.Minute
+
 type autoClawOAuthAuthorizer struct {
-	path      string
-	client    *http.Client
-	version   string
-	sessionID string
-	agentID   string
-	mu        sync.Mutex
+	path             string
+	client           *http.Client
+	version          string
+	versionCheckedAt time.Time
+	sessionID        string
+	agentID          string
+	mu               sync.Mutex
 }
 
 func newAutoClawOAuthAuthorizer(credentialFile string) (*autoClawOAuthAuthorizer, error) {
@@ -83,14 +84,45 @@ func newAutoClawOAuthAuthorizer(credentialFile string) (*autoClawOAuthAuthorizer
 		path:      filepath.Join(authDir, fileName),
 		sessionID: uuid.NewString(),
 		agentID:   "auto-coder",
-		client:    &http.Client{Transport: newUpstreamTransport(30 * time.Second)},
+		client:    newCredentialHTTPClient(30 * time.Second),
 	}
 	credential, err := authorizer.load()
 	if err != nil {
 		return nil, err
 	}
-	authorizer.version = autoClawEffectiveVersion(credential.version)
+	authorizer.refreshVersion(credential.version)
 	return authorizer, nil
+}
+
+func (a *autoClawOAuthAuthorizer) setVersion(version string) {
+	a.mu.Lock()
+	a.version = version
+	a.versionCheckedAt = time.Now()
+	a.mu.Unlock()
+}
+
+func (a *autoClawOAuthAuthorizer) refreshVersion(stored string) string {
+	a.mu.Lock()
+	if strings.TrimSpace(a.version) != "" && time.Since(a.versionCheckedAt) < autoClawVersionCacheTTL {
+		v := strings.TrimSpace(a.version)
+		a.mu.Unlock()
+		return v
+	}
+	a.mu.Unlock()
+	v := autoClawEffectiveVersion(stored)
+	a.setVersion(v)
+	return strings.TrimSpace(v)
+}
+
+func (a *autoClawOAuthAuthorizer) currentVersion() string {
+	a.mu.Lock()
+	v := strings.TrimSpace(a.version)
+	fresh := v != "" && time.Since(a.versionCheckedAt) < autoClawVersionCacheTTL
+	a.mu.Unlock()
+	if fresh {
+		return v
+	}
+	return a.refreshVersion(v)
 }
 
 func (a *autoClawOAuthAuthorizer) isOAuth() bool { return true }
@@ -127,13 +159,7 @@ func (a *autoClawOAuthAuthorizer) decorateHeader(header http.Header, converted *
 	header.Set("X-Product", "autoclaw")
 	header.Set("X-Harness-Type", "zcode")
 	header.Set("X-Tm", autoClawPlatformName())
-	a.mu.Lock()
-	version := strings.TrimSpace(a.version)
-	a.mu.Unlock()
-	if version == "" {
-		version = autoClawInstalledVersion()
-	}
-	if version != "" {
+	if version := a.currentVersion(); version != "" {
 		header.Set("X-Version", version)
 	}
 	header.Set("X-Lang", "zh-CN")
@@ -149,13 +175,11 @@ func (a *autoClawOAuthAuthorizer) decorateHeader(header http.Header, converted *
 }
 
 func (a *autoClawOAuthAuthorizer) authorize(ctx context.Context, forceRefresh bool) (string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	credential, err := a.load()
 	if err != nil {
 		return "", err
 	}
-	a.version = autoClawEffectiveVersion(credential.version)
+	a.refreshVersion(credential.version)
 	if credential.disabled {
 		return "", fmt.Errorf("AutoClaw credential %s is disabled", credential.fileName)
 	}
@@ -219,8 +243,6 @@ func (a *autoClawOAuthAuthorizer) load() (*autoClawCredential, error) {
 func (a *autoClawOAuthAuthorizer) fileName() string { return filepath.Base(a.path) }
 
 func (a *autoClawOAuthAuthorizer) listAuths() []*AuthInfo {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	credential, err := a.load()
 	if err != nil {
 		return nil
@@ -229,19 +251,10 @@ func (a *autoClawOAuthAuthorizer) listAuths() []*AuthInfo {
 	if credential.disabled {
 		status = StatusDisabled
 	}
-	public := make(map[string]any, len(credential.metadata))
-	for key, value := range credential.metadata {
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "access_token", "token", "refresh_token", "refreshtoken", "device_id", "deviceid":
-			continue
-		default:
-			public[key] = value
-		}
-	}
 	return []*AuthInfo{{
 		ID: credential.fileName, Provider: ProviderAutoClaw, FileName: credential.path,
 		Label:  firstMetadataString(credential.metadata, "email", "name", "user_id"),
-		Status: status, Disabled: credential.disabled, Metadata: public,
+		Status: status, Disabled: credential.disabled, Metadata: safeAuthMetadata(credential.metadata),
 	}}
 }
 
@@ -272,7 +285,7 @@ func (a *autoClawOAuthAuthorizer) refresh(ctx context.Context, observed *autoCla
 	}
 	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	release, err := acquireAutoClawRefreshLock(refreshCtx, a.path)
+	release, err := lockOAuthCredential(refreshCtx, a.path)
 	if err != nil {
 		return nil, fmt.Errorf("lock AutoClaw credential refresh: %w", err)
 	}
@@ -288,24 +301,22 @@ func (a *autoClawOAuthAuthorizer) refresh(ctx context.Context, observed *autoCla
 	if err != nil {
 		return nil, err
 	}
+	version := autoClawEffectiveVersion(credential.version)
+	a.setVersion(version)
 	if observed != nil && credential.accessToken != observed.accessToken && !autoClawTokenNeedsRefresh(credential) {
-		a.version = autoClawEffectiveVersion(credential.version)
 		return credential, nil
 	}
 	if forced && !autoClawTokenNeedsRefresh(credential) && autoClawRecentlyRefreshed(credential, autoclawRefreshCoalesce) {
-		a.version = autoClawEffectiveVersion(credential.version)
 		return credential, nil
 	}
 	if !forced && !autoClawTokenNeedsRefresh(credential) {
-		a.version = autoClawEffectiveVersion(credential.version)
 		return credential, nil
 	}
 	if strings.TrimSpace(credential.refreshToken) == "" {
 		return nil, fmt.Errorf("AutoClaw credential %s has no refresh token; run `gbx oauth autoclaw` again", credential.fileName)
 	}
 	timestamp := time.Now().Unix()
-	a.version = autoClawEffectiveVersion(credential.version)
-	headers := autoClawSignedHeaders(timestamp, a.version)
+	headers := autoClawSignedHeaders(timestamp, version)
 	headers.Set("Authorization", "Bearer "+credential.accessToken)
 	payload := map[string]string{
 		"source_id":     "autoclaw",
@@ -341,7 +352,7 @@ func (a *autoClawOAuthAuthorizer) refresh(ctx context.Context, observed *autoCla
 	credential.metadata["access_token"] = credential.accessToken
 	credential.metadata["refresh_token"] = credential.refreshToken
 	credential.metadata["device_id"] = credential.deviceID
-	credential.metadata["app_version"] = a.version
+	credential.metadata["app_version"] = version
 	refreshedAt := time.Now().UTC()
 	credential.metadata["last_refresh"] = refreshedAt.Format(time.RFC3339Nano)
 	if expiresAt := autoclawJWTExpiry(credential.accessToken); !expiresAt.IsZero() {
@@ -375,48 +386,6 @@ func autoClawRecentlyRefreshed(credential *autoClawCredential, window time.Durat
 	}
 	age := time.Since(refreshedAt)
 	return age >= 0 && age <= window
-}
-
-// acquireAutoClawRefreshLock serializes refresh-token rotation across GBX
-// processes. O_EXCL is portable and atomic on the local filesystems where the
-// credential lives. The owner marker prevents an old process from removing a
-// replacement lock after stale-lock recovery.
-func acquireAutoClawRefreshLock(ctx context.Context, credentialPath string) (func(), error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	lockPath := credentialPath + ".refresh.lock"
-	owner := uuid.NewString()
-	for {
-		file, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			if _, writeErr := file.WriteString(owner); writeErr != nil {
-				_ = file.Close()
-				_ = os.Remove(lockPath)
-				return nil, writeErr
-			}
-			if closeErr := file.Close(); closeErr != nil {
-				_ = os.Remove(lockPath)
-				return nil, closeErr
-			}
-			return func() {
-				current, readErr := os.ReadFile(lockPath)
-				if readErr == nil && strings.TrimSpace(string(current)) == owner {
-					_ = os.Remove(lockPath)
-				}
-			}, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > autoclawRefreshLockStale {
-			_ = os.Remove(lockPath)
-			continue
-		}
-		if waitErr := sleepContext(ctx, autoclawRefreshLockPoll); waitErr != nil {
-			return nil, waitErr
-		}
-	}
 }
 
 type autoClawRefreshResult struct {
@@ -475,7 +444,7 @@ func autoClawRefreshRequest(ctx context.Context, client *http.Client, endpoint s
 			request.Header.Add(key, value)
 		}
 	}
-	response, err := client.Do(request)
+	response, err := doCredentialRequest(client, request)
 	if err != nil {
 		return result, err
 	}

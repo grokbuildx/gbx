@@ -13,14 +13,13 @@ type anthropicStreamBlock struct {
 	id        string
 	name      string
 	input     strings.Builder
-	signature string
+	signature strings.Builder
 	thinking  bool // whether thinking text reached the assembler
 }
 
 type anthropicStreamState struct {
 	assembler    *responseAssembler
 	blocks       map[int]*anthropicStreamBlock
-	retained     int
 	terminalSeen bool
 }
 
@@ -123,7 +122,10 @@ func (s *anthropicStreamState) process(payload []byte) error {
 			}
 			return a.addThinking(delta.Thinking)
 		case "signature_delta":
-			state.signature += delta.Signature
+			if err := a.retain(len(delta.Signature)); err != nil {
+				return err
+			}
+			state.signature.WriteString(delta.Signature)
 		case "input_json_delta":
 			if err := a.retain(len(delta.PartialJSON)); err != nil {
 				return err
@@ -138,17 +140,28 @@ func (s *anthropicStreamState) process(payload []byte) error {
 		}
 		switch state.kind {
 		case "tool_use":
+			// Tool JSON bytes were already retained on input_json_delta; credit back
+			// before addToolUse retains the final payload so the cap is not halved.
+			if n := state.input.Len(); n > 0 && a.retainedBytes >= n {
+				a.retainedBytes -= n
+			}
 			return a.addToolUse(state.id, state.name, state.input.String())
 		case "thinking":
-			if state.signature == "" {
+			sig := state.signature.String()
+			if sig == "" {
 				return nil
 			}
 			if state.thinking && a.activeType == blockThinking && a.activeIndex >= 0 {
-				a.blocks[a.activeIndex].Signature = anthropicSignaturePrefix + state.signature
+				a.blocks[a.activeIndex].Signature = anthropicSignaturePrefix + sig
 				return a.closeActive()
 			}
+			// Signature bytes were already retained on signature_delta; credit
+			// back before addOpaqueReasoning retains the final payload.
+			if n := state.signature.Len(); n > 0 && a.retainedBytes >= n {
+				a.retainedBytes -= n
+			}
 			// Thinking with no visible text still has to be replayed.
-			return a.addOpaqueReasoning(anthropicSignaturePrefix + state.signature)
+			return a.addOpaqueReasoning(anthropicSignaturePrefix + sig)
 		}
 	case "message_delta":
 		var delta struct {

@@ -56,6 +56,7 @@ type workspaceSet struct {
 	locked    bool
 
 	mu       sync.Mutex
+	gen      uint64
 	cached   []Workspace
 	cachedAt time.Time
 }
@@ -130,6 +131,7 @@ func (w *workspaceSet) loadAdded(path string, locked bool) {
 			w.added = append(w.added, workspace)
 		}
 	}
+	w.gen++
 	w.cached = nil
 }
 
@@ -164,6 +166,7 @@ func (w *workspaceSet) add(path string) (Workspace, error) {
 	defer w.mu.Unlock()
 	workspace.Added = true
 	w.added = append(w.added, workspace)
+	w.gen++
 	w.cached = nil
 	if err := w.saveAddedLocked(); err != nil {
 		w.added = w.added[:len(w.added)-1]
@@ -179,6 +182,7 @@ func (w *workspaceSet) remove(id string) bool {
 	for i, workspace := range w.added {
 		if workspace.ID == id {
 			w.added = append(w.added[:i:i], w.added[i+1:]...)
+			w.gen++
 			w.cached = nil
 			_ = w.saveAddedLocked()
 			return true
@@ -197,19 +201,26 @@ func (w *workspaceSet) isLocked() bool {
 // root's subdirectories by name. Hidden directories are not workspaces.
 func (w *workspaceSet) list() []Workspace {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.cached != nil && time.Since(w.cachedAt) < rootRescan {
-		return w.cached
+		cached := w.cached
+		w.mu.Unlock()
+		return cached
 	}
+	fixed := append([]Workspace(nil), w.fixed...)
+	added := append([]Workspace(nil), w.added...)
+	roots := append([]string(nil), w.roots...)
+	gen := w.gen
+	w.mu.Unlock()
+
 	out := []Workspace{}
 	seen := map[string]bool{}
-	for _, workspace := range append(append([]Workspace(nil), w.fixed...), w.added...) {
+	for _, workspace := range append(fixed, added...) {
 		if !seen[workspace.real] {
 			seen[workspace.real] = true
 			out = append(out, workspace)
 		}
 	}
-	for _, root := range w.roots {
+	for _, root := range roots {
 		entries, err := os.ReadDir(root)
 		if err != nil {
 			continue
@@ -229,7 +240,12 @@ func (w *workspaceSet) list() []Workspace {
 		sort.Slice(found, func(i, j int) bool { return strings.ToLower(found[i].Name) < strings.ToLower(found[j].Name) })
 		out = append(out, found...)
 	}
-	w.cached, w.cachedAt = out, time.Now()
+
+	w.mu.Lock()
+	if w.gen == gen {
+		w.cached, w.cachedAt = out, time.Now()
+	}
+	w.mu.Unlock()
 	return out
 }
 

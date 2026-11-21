@@ -48,7 +48,7 @@ func newQoderCredentialPool(authDir, credentialFile string) *qoderCredentialPool
 	return &qoderCredentialPool{
 		authDir:        authDir,
 		credentialFile: strings.TrimSpace(credentialFile),
-		client:         &http.Client{Transport: newUpstreamTransport(90 * time.Second), CheckRedirect: checkCredentialRedirect},
+		client:         newCredentialHTTPClient(90 * time.Second),
 	}
 }
 
@@ -151,7 +151,9 @@ func (pool *qoderCredentialPool) refresh(ctx context.Context, credential *qoderC
 	if err != nil {
 		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, qoderRefreshURL(), bytes.NewReader(body))
+	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(refreshCtx, http.MethodPost, qoderRefreshURL(), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +223,7 @@ func (pool *qoderCredentialPool) listAuths() []*AuthInfo {
 			Label:    firstMetadataString(credential.metadata, "email", "name", "user_id"),
 			Status:   status,
 			Disabled: credential.disabled,
-			Metadata: credential.metadata,
+			Metadata: safeAuthMetadata(credential.metadata),
 		})
 	}
 	return auths

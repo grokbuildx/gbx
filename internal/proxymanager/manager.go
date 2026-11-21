@@ -26,6 +26,7 @@ import (
 	"github.com/grokbuildx/gbx/internal/fsutil"
 	"github.com/grokbuildx/gbx/internal/modelsdev"
 	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/paths"
 	"github.com/grokbuildx/gbx/internal/provider"
 )
 
@@ -67,11 +68,11 @@ type Manager struct {
 const proxyVersion = 17
 
 func Default() (*Manager, error) {
-	home, err := os.UserHomeDir()
+	dir, err := paths.ProxyDir()
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{Dir: filepath.Join(home, ".gbx", "proxy")}, nil
+	return &Manager{Dir: dir}, nil
 }
 
 func (m *Manager) statePath() string { return filepath.Join(m.Dir, "state.json") }
@@ -446,6 +447,8 @@ func (m *Manager) Run(ctx context.Context, p provider.Provider, id string) (runE
 		return fmt.Errorf("apply Codex proxy configuration: %w", err)
 	}
 	codexGateway.Start()
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 	stop := make(chan struct{})
 	var stopOnce sync.Once
 	reloads := make(chan reloadRequest)
@@ -489,7 +492,10 @@ func (m *Manager) Run(ctx context.Context, p provider.Provider, id string) (runE
 			w.Header().Set("Content-Length", strconv.Itoa(len(id)))
 			_, _ = io.WriteString(w, id)
 			_ = http.NewResponseController(w).Flush()
-			stopOnce.Do(func() { close(stop) })
+			stopOnce.Do(func() {
+				cancelRun()
+				close(stop)
+			})
 			return
 		}
 		http.NotFound(w, r)
@@ -506,11 +512,11 @@ func (m *Manager) Run(ctx context.Context, p provider.Provider, id string) (runE
 	for {
 		select {
 		case <-ticker.C:
-			if err := refresh.update(ctx, m, codexGateway, s, false, "", nil); err != nil {
+			if err := refresh.update(runCtx, m, codexGateway, s, false, "", nil); err != nil {
 				oauthproxy.LogWarnEvent("catalog_refresh_failed", "component", "codex", "error", err)
 			}
 		case request := <-reloads:
-			request.result <- refresh.update(ctx, m, codexGateway, s, true, request.Provider, request.Additional)
+			request.result <- refresh.update(runCtx, m, codexGateway, s, true, request.Provider, request.Additional)
 		case <-ctx.Done():
 			return nil
 		case <-stop:

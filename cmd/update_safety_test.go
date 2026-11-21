@@ -14,13 +14,15 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/grokbuildx/gbx/internal/selfupdate"
 )
 
 func TestUpdateRejectsInvalidDownload(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("<html>maintenance</html>")) }))
 	defer server.Close()
 	path := filepath.Join(t.TempDir(), "download")
-	if err := downloadReleaseBinary(context.Background(), server.URL, path, ""); err == nil {
+	if err := selfupdate.DownloadReleaseBinary(context.Background(), server.URL, path, ""); err == nil {
 		t.Fatal("HTML accepted as executable")
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -38,7 +40,7 @@ func TestUpdatePreservesPreviousExecutable(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build release fixture: %v %s", err, output)
 	}
-	if err := validateReleaseBinary(downloaded); err != nil {
+	if err := selfupdate.ValidateReleaseBinary(downloaded); err != nil {
 		t.Fatal(err)
 	}
 	target := filepath.Join(dir, "gbx")
@@ -49,20 +51,20 @@ func TestUpdatePreservesPreviousExecutable(t *testing.T) {
 	if err := os.WriteFile(invalid, []byte("html"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := installReleaseBinary(target, invalid); err == nil {
+	if _, err := selfupdate.InstallReleaseBinary(target, invalid); err == nil {
 		t.Fatal("invalid replacement accepted")
 	}
 	if data, _ := os.ReadFile(target); string(data) != "old executable" {
 		t.Fatal("invalid update modified current executable")
 	}
-	backup, err := installReleaseBinary(target, downloaded)
+	backup, err := selfupdate.InstallReleaseBinary(target, downloaded)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if data, _ := os.ReadFile(backup); string(data) != "old executable" {
 		t.Fatal("old executable was not retained")
 	}
-	if err := validateReleaseBinary(target); err != nil {
+	if err := selfupdate.ValidateReleaseBinary(target); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,10 +80,10 @@ func TestUpdatePreservesPreviousExecutable(t *testing.T) {
 	if err := os.Remove(target); err != nil {
 		t.Fatal(err)
 	}
-	if backup, err := installReleaseBinary(target, downloaded); err != nil || backup != "" {
+	if backup, err := selfupdate.InstallReleaseBinary(target, downloaded); err != nil || backup != "" {
 		t.Fatalf("recover removed target: backup=%q error=%v", backup, err)
 	}
-	if err := validateReleaseBinary(target); err != nil {
+	if err := selfupdate.ValidateReleaseBinary(target); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -119,8 +121,8 @@ func TestUpdateDownloadsAndUnpacksTheGzipArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(dir, "download")
-	if err := downloadReleaseBinary(context.Background(), serveBytes(t, gzipBytes(t, raw)), dest, ""); err != nil {
-		t.Fatalf("downloadReleaseBinary() = %v", err)
+	if err := selfupdate.DownloadReleaseBinary(context.Background(), serveBytes(t, gzipBytes(t, raw)), dest, ""); err != nil {
+		t.Fatalf("DownloadReleaseBinary() = %v", err)
 	}
 	got, err := os.ReadFile(dest)
 	if err != nil || !bytes.Equal(got, raw) {
@@ -128,7 +130,7 @@ func TestUpdateDownloadsAndUnpacksTheGzipArchive(t *testing.T) {
 	}
 
 	// The old raw asset is no longer a valid download: it is not gzip.
-	if err := downloadReleaseBinary(context.Background(), serveBytes(t, raw), dest, ""); err == nil ||
+	if err := selfupdate.DownloadReleaseBinary(context.Background(), serveBytes(t, raw), dest, ""); err == nil ||
 		!strings.Contains(err.Error(), "not a gzip release archive") {
 		t.Fatalf("raw binary error = %v", err)
 	}
@@ -142,20 +144,20 @@ func TestUpdateDownloadsAndUnpacksTheGzipArchive(t *testing.T) {
 func TestUpdateRejectsUnusableArchives(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "download")
 
-	if err := downloadReleaseBinary(context.Background(), serveBytes(t, gzipBytes(t, []byte("<html>maintenance</html>"))), dest, ""); err == nil {
+	if err := selfupdate.DownloadReleaseBinary(context.Background(), serveBytes(t, gzipBytes(t, []byte("<html>maintenance</html>"))), dest, ""); err == nil {
 		t.Fatal("a gzip archive of HTML was accepted")
 	}
 
 	archive := gzipBytes(t, bytes.Repeat([]byte("x"), 4096))
-	if err := downloadReleaseBinary(context.Background(), serveBytes(t, archive[:len(archive)/2]), dest, ""); err == nil ||
+	if err := selfupdate.DownloadReleaseBinary(context.Background(), serveBytes(t, archive[:len(archive)/2]), dest, ""); err == nil ||
 		!strings.Contains(err.Error(), "decompress release archive") {
 		t.Fatalf("truncated archive error = %v", err)
 	}
 
-	previous := maxReleaseBinaryBytes
-	maxReleaseBinaryBytes = 1024
-	t.Cleanup(func() { maxReleaseBinaryBytes = previous })
-	if err := downloadReleaseBinary(context.Background(), serveBytes(t, archive), dest, ""); err == nil ||
+	previous := selfupdate.MaxReleaseBinaryBytes
+	selfupdate.MaxReleaseBinaryBytes = 1024
+	t.Cleanup(func() { selfupdate.MaxReleaseBinaryBytes = previous })
+	if err := selfupdate.DownloadReleaseBinary(context.Background(), serveBytes(t, archive), dest, ""); err == nil ||
 		!strings.Contains(err.Error(), "expands beyond") {
 		t.Fatalf("oversized archive error = %v", err)
 	}
@@ -165,15 +167,15 @@ func TestUpdateRejectsUnusableArchives(t *testing.T) {
 }
 
 func TestDownloadProgressCountsCompressedBytes(t *testing.T) {
-	progress := &downloadProgress{reader: strings.NewReader("abcdef"), total: 6}
+	progress := &selfupdate.DownloadProgress{Reader: strings.NewReader("abcdef"), Total: 6}
 	buf := make([]byte, 4)
 	n, _ := progress.Read(buf)
-	if n != 4 || progress.done != 4 {
-		t.Fatalf("first read = %d, done = %d", n, progress.done)
+	if n != 4 || progress.Done != 4 {
+		t.Fatalf("first read = %d, done = %d", n, progress.Done)
 	}
 	n, _ = progress.Read(buf)
-	if n != 2 || progress.done != 6 {
-		t.Fatalf("second read = %d, done = %d", n, progress.done)
+	if n != 2 || progress.Done != 6 {
+		t.Fatalf("second read = %d, done = %d", n, progress.Done)
 	}
 }
 
@@ -191,11 +193,11 @@ func TestUpdateVerifiesTheReleaseChecksum(t *testing.T) {
 	good := hex.EncodeToString(sum[:])
 	dest := filepath.Join(dir, "download")
 
-	if err := downloadReleaseBinary(context.Background(), serveBytes(t, archive), dest, good); err != nil {
+	if err := selfupdate.DownloadReleaseBinary(context.Background(), serveBytes(t, archive), dest, good); err != nil {
 		t.Fatalf("matching checksum rejected: %v", err)
 	}
 	bad := strings.Repeat("0", 64)
-	if err := downloadReleaseBinary(context.Background(), serveBytes(t, archive), dest, bad); err == nil ||
+	if err := selfupdate.DownloadReleaseBinary(context.Background(), serveBytes(t, archive), dest, bad); err == nil ||
 		!strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("mismatched checksum error = %v", err)
 	}
@@ -206,13 +208,13 @@ func TestUpdateVerifiesTheReleaseChecksum(t *testing.T) {
 
 func TestChecksumForParsesSHA256SUMS(t *testing.T) {
 	sums := strings.Repeat("a", 64) + "  gbx-darwin-arm64.gz\n" + strings.Repeat("b", 64) + " *gbx-linux-amd64.gz\n"
-	if got, err := checksumFor(sums, "gbx-darwin-arm64.gz"); err != nil || got != strings.Repeat("a", 64) {
+	if got, err := selfupdate.ChecksumFor(sums, "gbx-darwin-arm64.gz"); err != nil || got != strings.Repeat("a", 64) {
 		t.Fatalf("darwin = %q, %v", got, err)
 	}
-	if got, err := checksumFor(sums, "gbx-linux-amd64.gz"); err != nil || got != strings.Repeat("b", 64) {
+	if got, err := selfupdate.ChecksumFor(sums, "gbx-linux-amd64.gz"); err != nil || got != strings.Repeat("b", 64) {
 		t.Fatalf("binary-mode entry = %q, %v", got, err)
 	}
-	if _, err := checksumFor(sums, "gbx-win32-x64.exe.gz"); err == nil {
+	if _, err := selfupdate.ChecksumFor(sums, "gbx-win32-x64.exe.gz"); err == nil {
 		t.Fatal("a missing entry was accepted")
 	}
 }
@@ -224,8 +226,8 @@ func TestInstallMethodForPath(t *testing.T) {
 		"/usr/local/bin/gbx":  "self",
 		"/custom/gobin/gbx":   "go",
 	} {
-		if got := installMethodForPath(path, []string{"/Users/u/go/bin", "/custom/gobin"}); got != want {
-			t.Fatalf("installMethodForPath(%q) = %q, want %q", path, got, want)
+		if got := selfupdate.InstallMethodForPath(path, []string{"/Users/u/go/bin", "/custom/gobin"}); got != want {
+			t.Fatalf("InstallMethodForPath(%q) = %q, want %q", path, got, want)
 		}
 	}
 }

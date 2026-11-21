@@ -452,6 +452,9 @@ func (h *responseHistory) get(id, route, owner string) ([]map[string]any, bool) 
 	return items, true
 }
 func (h *responseHistory) put(id, route, owner string, items []map[string]any) {
+	if id == "" {
+		return
+	}
 	raw, err := json.Marshal(items)
 	if err != nil || len(raw) > maxBodyBytes {
 		return
@@ -460,6 +463,10 @@ func (h *responseHistory) put(id, route, owner string, items []map[string]any) {
 	defer h.Unlock()
 	if h.entries == nil {
 		h.entries = make(map[string]historyEntry)
+	}
+	if existing, ok := h.entries[id]; ok {
+		h.bytes -= len(existing.Items)
+		delete(h.entries, id)
 	}
 	for len(h.entries) >= 64 || h.bytes+len(raw) > 128<<20 {
 		var oldest string

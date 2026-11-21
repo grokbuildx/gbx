@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { ArrowDown, Check, ChevronRight, Copy, FileText, LoaderCircle, Volume2, VolumeX } from "lucide-react";
 import type { ThreadItem } from "../thread";
 import { toolActive } from "../thread";
@@ -243,7 +243,7 @@ function Thinking({ text, streaming }: { text: string; streaming: boolean }) {
   );
 }
 
-function Item({ item, streaming, attachmentURL, renderItems, onPermission }: {
+const Item = memo(function Item({ item, streaming, attachmentURL, renderItems, onPermission }: {
   item: ThreadItem;
   streaming: boolean;
   attachmentURL: (id: string) => string;
@@ -316,4 +316,4 @@ function Item({ item, streaming, attachmentURL, renderItems, onPermission }: {
       );
     }
   }
-}
+});

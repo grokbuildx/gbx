@@ -65,7 +65,7 @@ func newWorkBuddyCredentialStore(deployment workbuddyDeployment, authDir, creden
 		deployment:     deployment,
 		authDir:        authDir,
 		credentialFile: filepath.Base(strings.TrimSpace(credentialFile)),
-		client:         &http.Client{Transport: newUpstreamTransport(90 * time.Second), CheckRedirect: checkCredentialRedirect},
+		client:         newCredentialHTTPClient(90 * time.Second),
 	}
 }
 
@@ -126,7 +126,9 @@ func (s *workbuddyCredentialStore) authorize(ctx context.Context, forceRefresh b
 	headers.Set("X-Auth-Refresh-Source", "plugin")
 	LogDebugEvent("token_refresh_start", "component", "workbuddy", "credential", credential.fileName, "forced", forceRefresh)
 	started := time.Now()
-	envelope, err := workbuddyJSON[workbuddyToken](ctx, s.client, http.MethodPost, refreshURL, []byte(`{}`), headers)
+	refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancelRefresh()
+	envelope, err := workbuddyJSON[workbuddyToken](refreshCtx, s.client, http.MethodPost, refreshURL, []byte(`{}`), headers)
 	if err != nil {
 		LogErrorEvent("token_refresh_failed", "component", "workbuddy", "credential", credential.fileName,
 			"duration", logDuration(started), "error", err)
@@ -187,7 +189,7 @@ func (s *workbuddyCredentialStore) listAuths() []*AuthInfo {
 		Label:    firstMetadataString(credential.metadata, "nickname", "email", "user_id"),
 		Status:   status,
 		Disabled: credential.disabled,
-		Metadata: credential.metadata,
+		Metadata: safeAuthMetadata(credential.metadata),
 	}}
 }
 
@@ -226,16 +228,31 @@ func metadataInt64(metadata map[string]any, key string) int64 {
 	return 0
 }
 
-type workbuddyGateway struct {
-	endpoint       string
-	key            string
+type workbuddyUpstream struct {
 	store          *workbuddyCredentialStore
-	server         *http.Server
-	done           chan struct{}
 	conversationID string
 }
 
+func newWorkBuddyUpstream(store *workbuddyCredentialStore) *workbuddyUpstream {
+	return &workbuddyUpstream{
+		store:          store,
+		conversationID: uuid.NewString(),
+	}
+}
+
+type workbuddyGateway struct {
+	*workbuddyUpstream
+	endpoint string
+	key      string
+	server   *http.Server
+	cancel   context.CancelFunc
+	done     chan struct{}
+}
+
 func startWorkBuddyGateway(parent context.Context, store *workbuddyCredentialStore) (*workbuddyGateway, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	listener, err := net.Listen("tcp", runtimeLoopbackHost+":0")
 	if err != nil {
 		return nil, fmt.Errorf("start WorkBuddy gateway listener: %w", err)
@@ -245,18 +262,19 @@ func startWorkBuddyGateway(parent context.Context, store *workbuddyCredentialSto
 		_ = listener.Close()
 		return nil, fmt.Errorf("generate WorkBuddy gateway key: %w", err)
 	}
+	runCtx, cancel := context.WithCancel(parent)
 	gateway := &workbuddyGateway{
-		endpoint:       "http://" + listener.Addr().String(),
-		key:            gatewayKey,
-		store:          store,
-		done:           make(chan struct{}),
-		conversationID: uuid.NewString(),
+		workbuddyUpstream: newWorkBuddyUpstream(store),
+		endpoint:          "http://" + listener.Addr().String(),
+		key:               gatewayKey,
+		cancel:            cancel,
+		done:              make(chan struct{}),
 	}
 	gateway.server = &http.Server{
 		Handler:           http.HandlerFunc(gateway.serveHTTP),
 		ReadHeaderTimeout: 15 * time.Second,
 		BaseContext: func(net.Listener) context.Context {
-			return parent
+			return runCtx
 		},
 	}
 	go func() {
@@ -266,12 +284,24 @@ func startWorkBuddyGateway(parent context.Context, store *workbuddyCredentialSto
 		}
 		close(gateway.done)
 	}()
+	go func() {
+		select {
+		case <-runCtx.Done():
+			ctx, stop := context.WithTimeout(context.Background(), runtimeStopTimeout)
+			_ = gateway.server.Shutdown(ctx)
+			stop()
+		case <-gateway.done:
+		}
+	}()
 	return gateway, nil
 }
 
 func (g *workbuddyGateway) Stop() {
 	if g == nil || g.server == nil {
 		return
+	}
+	if g.cancel != nil {
+		g.cancel()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), runtimeStopTimeout)
 	_ = g.server.Shutdown(ctx)
@@ -285,7 +315,7 @@ func (g *workbuddyGateway) Stop() {
 func (g *workbuddyGateway) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	requestCtx, requestID := withRequestLogID(request.Context())
 	started := time.Now()
-	if strings.TrimSpace(strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")) != g.key {
+	if !keyMatches(strings.TrimSpace(strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")), g.key) {
 		LogWarnEvent("request_rejected", "component", "workbuddy", "request_id", requestID,
 			"path", request.URL.Path, "method", request.Method, "status", http.StatusUnauthorized,
 			"reason", "invalid_gateway_key")
@@ -311,7 +341,7 @@ func (g *workbuddyGateway) serveHTTP(writer http.ResponseWriter, request *http.R
 	model := requestModelID(body)
 	LogDebugEvent("request_received", "component", "workbuddy", "request_id", requestID,
 		"method", request.Method, "path", request.URL.Path, "model", model, "body_bytes", len(body))
-	response, err := g.do(requestCtx, workbuddyUpstreamPath(request.URL.Path), request.URL.RawQuery, request.Header, body)
+	response, err := g.do(requestCtx, workbuddyUpstreamPath(request.URL.Path), request.URL.RawQuery, request.Header, body, false)
 	if err != nil {
 		LogErrorEvent("request_failed", "component", "workbuddy", "request_id", requestID,
 			"path", request.URL.Path, "model", model, "status", http.StatusBadGateway,
@@ -328,16 +358,15 @@ func (g *workbuddyGateway) serveHTTP(writer http.ResponseWriter, request *http.R
 	copyGatewayResponse(writer, response.Body)
 }
 
-// do is the inner hop of the two-hop WorkBuddy path: this loopback gateway
-// proxies to the real WorkBuddy API on behalf of the outer chat/responses
-// services. The fast-retry loop in retry.go must NOT wrap this hop — the outer
-// service already owns it, and nesting the two would retry 3×3 = 9 times.
-func (g *workbuddyGateway) do(ctx context.Context, path, rawQuery string, headers http.Header, body []byte) (*http.Response, error) {
-	credential, err := g.store.authorize(ctx, false)
+// do sends one authenticated request to WorkBuddy, retrying once after a token
+// refresh on 401/403 (unless the account itself is restricted). Outer
+// chatCompletionsService owns fastRetry so retries are never nested.
+func (u *workbuddyUpstream) do(ctx context.Context, path, rawQuery string, headers http.Header, body []byte, sanitized bool) (*http.Response, error) {
+	credential, err := u.store.authorize(ctx, false)
 	if err != nil {
 		return nil, err
 	}
-	response, err := g.doOne(ctx, path, rawQuery, headers, body, credential)
+	response, err := u.doOne(ctx, path, rawQuery, headers, body, credential, sanitized)
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +382,7 @@ func (g *workbuddyGateway) do(ctx context.Context, path, rawQuery string, header
 	status := response.StatusCode
 	LogWarnEvent("upstream_auth_retry", "component", "workbuddy", "request_id", requestLogID(ctx),
 		"path", path, "status", status, "credential", credential.fileName)
-	refreshed, refreshErr := g.store.authorize(withRejectedOAuthToken(ctx, credential.token().AccessToken), true)
+	refreshed, refreshErr := u.store.authorize(withRejectedOAuthToken(ctx, credential.token().AccessToken), true)
 	if refreshErr != nil {
 		LogWarnEvent("upstream_auth_retry_skipped", "component", "workbuddy", "request_id", requestLogID(ctx),
 			"path", path, "status", status, "credential", credential.fileName, "error", refreshErr)
@@ -362,7 +391,7 @@ func (g *workbuddyGateway) do(ctx context.Context, path, rawQuery string, header
 		return response, nil
 	}
 	closeGatewayResponse(response)
-	return g.doOne(ctx, path, rawQuery, headers, body, refreshed)
+	return u.doOne(ctx, path, rawQuery, headers, body, refreshed, sanitized)
 }
 
 var (
@@ -530,14 +559,16 @@ func filterWorkBuddyOutboundHeaders(header http.Header) {
 	}
 }
 
-func (g *workbuddyGateway) doOne(ctx context.Context, path, rawQuery string, headers http.Header, body []byte, credential *workbuddyCredential) (*http.Response, error) {
-	sanitized, err := sanitizeWorkBuddyPayload(body)
-	if err != nil {
-		return nil, fmt.Errorf("sanitize WorkBuddy payload: %w", err)
+func (u *workbuddyUpstream) doOne(ctx context.Context, path, rawQuery string, headers http.Header, body []byte, credential *workbuddyCredential, sanitized bool) (*http.Response, error) {
+	if !sanitized {
+		cleaned, err := sanitizeWorkBuddyPayload(body)
+		if err != nil {
+			return nil, fmt.Errorf("sanitize WorkBuddy payload: %w", err)
+		}
+		body = cleaned
 	}
-	body = sanitized
 
-	target := strings.TrimRight(g.store.deployment.baseURL, "/") + path
+	target := strings.TrimRight(u.store.deployment.baseURL, "/") + path
 	if rawQuery != "" {
 		target += "?" + rawQuery
 	}
@@ -549,7 +580,7 @@ func (g *workbuddyGateway) doOne(ctx context.Context, path, rawQuery string, hea
 	filterWorkBuddyOutboundHeaders(request.Header)
 	token := credential.token()
 	account := credential.account()
-	for name, values := range g.store.deployment.authenticatedHeaders(token, account) {
+	for name, values := range u.store.deployment.authenticatedHeaders(token, account) {
 		request.Header.Del(name)
 		for _, value := range values {
 			request.Header.Add(name, value)
@@ -558,7 +589,7 @@ func (g *workbuddyGateway) doOne(ctx context.Context, path, rawQuery string, hea
 	traceID := strings.ReplaceAll(uuid.NewString(), "-", "")
 	request.Header.Set("Accept", "application/json, text/event-stream")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Conversation-ID", g.conversationID)
+	request.Header.Set("X-Conversation-ID", u.conversationID)
 	request.Header.Set("X-Conversation-Request-ID", traceID)
 	request.Header.Set("X-Conversation-Message-ID", traceID)
 	request.Header.Set("X-Request-ID", traceID)
@@ -573,12 +604,12 @@ func (g *workbuddyGateway) doOne(ctx context.Context, path, rawQuery string, hea
 	request.Header.Set("x-codebuddy-request", "1")
 	model := requestModelID(body)
 	LogDebugEvent("upstream_request", "component", "workbuddy", "request_id", requestLogID(ctx),
-		"path", path, "model", model, "credential", credential.fileName, "conversation_id", g.conversationID)
+		"path", path, "model", model, "credential", credential.fileName, "conversation_id", u.conversationID)
 	if len(body) > 0 {
 		DebugHTTPBody(fmt.Sprintf("workbuddy request request_id=%s path=%s", requestLogID(ctx), path), body)
 	}
 	started := time.Now()
-	response, err := doCredentialRequest(g.store.client, request)
+	response, err := doCredentialRequest(u.store.client, request)
 	if err != nil {
 		return nil, err
 	}
@@ -659,23 +690,23 @@ type workbuddyProductConfig struct {
 	Models []workbuddyModel `json:"models"`
 }
 
-func (g *workbuddyGateway) discoverModels(ctx context.Context) ([]workbuddyModel, error) {
-	credential, err := g.store.authorize(ctx, false)
+func (u *workbuddyUpstream) discoverModels(ctx context.Context) ([]workbuddyModel, error) {
+	credential, err := u.store.authorize(ctx, false)
 	if err != nil {
 		return nil, err
 	}
-	endpoint := strings.TrimRight(g.store.deployment.baseURL, "/") + "/v3/config"
+	endpoint := strings.TrimRight(u.store.deployment.baseURL, "/") + "/v3/config"
 	started := time.Now()
-	envelope, err := workbuddyJSON[workbuddyProductConfig](ctx, g.store.client, http.MethodGet, endpoint, nil,
-		g.store.deployment.authenticatedHeaders(credential.token(), credential.account()))
+	envelope, err := workbuddyJSON[workbuddyProductConfig](ctx, u.store.client, http.MethodGet, endpoint, nil,
+		u.store.deployment.authenticatedHeaders(credential.token(), credential.account()))
 	var apiErr *workbuddyAPIError
 	if errors.As(err, &apiErr) && apiErr.Code != workbuddyRestrictedAccount &&
 		(apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden) {
-		refreshed, refreshErr := g.store.authorize(withRejectedOAuthToken(ctx, credential.token().AccessToken), true)
+		refreshed, refreshErr := u.store.authorize(withRejectedOAuthToken(ctx, credential.token().AccessToken), true)
 		if refreshErr == nil {
 			credential = refreshed
-			envelope, err = workbuddyJSON[workbuddyProductConfig](ctx, g.store.client, http.MethodGet, endpoint, nil,
-				g.store.deployment.authenticatedHeaders(credential.token(), credential.account()))
+			envelope, err = workbuddyJSON[workbuddyProductConfig](ctx, u.store.client, http.MethodGet, endpoint, nil,
+				u.store.deployment.authenticatedHeaders(credential.token(), credential.account()))
 		} else {
 			LogWarnEvent("model_discovery_auth_refresh_failed", "component", "workbuddy",
 				"credential", credential.fileName, "status", apiErr.Status, "error", refreshErr)
@@ -860,36 +891,34 @@ func startWorkBuddyOAuth(parent context.Context, providerName, modelSpec, creden
 		return nil, err
 	}
 	store := newWorkBuddyCredentialStore(deployment, authDir, credentialFile)
+	closeStore := true
+	defer func() {
+		if closeStore {
+			closeIdleClients(store.client)()
+		}
+	}()
 	if _, err := store.authorize(parent, false); err != nil {
 		return nil, err
 	}
-	gateway, err := startWorkBuddyGateway(parent, store)
-	if err != nil {
-		return nil, err
-	}
-	stopGateway := true
-	defer func() {
-		if stopGateway {
-			gateway.Stop()
-		}
-	}()
-	catalog, err := gateway.discoverModels(parent)
+	upstream := newWorkBuddyUpstream(store)
+	catalog, err := upstream.discoverModels(parent)
 	if err != nil {
 		return nil, err
 	}
 	routes, models, names, details := buildWorkBuddyRoutes(modelSpec, catalog)
 	enrichWorkBuddyModelDetails(details)
-	// The gateway verifies a per-runtime token on the internal hop before it
-	// attaches the user's subscription credential.
-	proxyRuntime, err := startOpenAIChatRuntimeService(parent, gateway.endpoint, routes, &chatStaticAuthorizer{token: gateway.key}, func(service *chatCompletionsService) {
+	proxyRuntime, err := startOpenAIChatRuntimeService(parent, deployment.baseURL, routes, nil, func(service *chatCompletionsService) {
 		service.normalizeBody = sanitizeWorkBuddyPayload
 		service.modelDetails = details
+		service.roundTrip = func(ctx context.Context, converted *chatCompletionsConvertedRequest) (*http.Response, error) {
+			return upstream.do(ctx, "/v2/chat/completions", "", nil, converted.body, true)
+		}
 	})
 	if err != nil {
 		return nil, err
 	}
-	stopGateway = false
-	proxyRuntime.cleanup = append(proxyRuntime.cleanup, gateway.Stop)
+	closeStore = false
+	proxyRuntime.cleanup = append(proxyRuntime.cleanup, closeIdleClients(store.client))
 	proxyRuntime.listAuths = store.listAuths
 	proxyRuntime.models = append([]string(nil), models...)
 	proxyRuntime.modelNames = names

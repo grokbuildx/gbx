@@ -120,7 +120,7 @@ func (a *xaiOAuthAuthorizer) listAuths() []*AuthInfo {
 	}
 	return []*AuthInfo{{
 		ID: filepath.Base(a.path), Provider: backendXAI, FileName: a.path, Label: credential.email,
-		Status: status, Disabled: credential.disabled, Metadata: credential.metadata,
+		Status: status, Disabled: credential.disabled, Metadata: safeAuthMetadata(credential.metadata),
 	}}
 }
 
@@ -143,6 +143,12 @@ func (a *xaiOAuthAuthorizer) load() (*xaiOAuthCredential, error) {
 	tokenEndpoint := firstMetadataString(metadata, "token_endpoint")
 	if tokenEndpoint == "" {
 		tokenEndpoint = xaiDefaultTokenURL
+	} else {
+		validated, err := validateXaiAuthEndpoint(tokenEndpoint)
+		if err != nil {
+			return nil, fmt.Errorf("xAI credential %s has invalid token_endpoint: %w", filepath.Base(a.path), err)
+		}
+		tokenEndpoint = validated
 	}
 	disabled, _ := metadata["disabled"].(bool)
 	return &xaiOAuthCredential{
@@ -159,19 +165,23 @@ func (a *xaiOAuthAuthorizer) refresh(ctx context.Context, credential *xaiOAuthCr
 	if credential.refreshToken == "" {
 		return nil, fmt.Errorf("xAI credential %s has no refresh token", filepath.Base(a.path))
 	}
+	tokenEndpoint, err := validateXaiAuthEndpoint(credential.tokenEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("refresh xAI token: invalid token_endpoint: %w", err)
+	}
 	form := url.Values{
 		"grant_type": {"refresh_token"}, "client_id": {xaiOAuthClientID},
 		"refresh_token": {credential.refreshToken},
 	}
 	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(refreshCtx, http.MethodPost, credential.tokenEndpoint, strings.NewReader(form.Encode()))
+	request, err := http.NewRequestWithContext(refreshCtx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
-	response, err := a.client.Do(request)
+	response, err := doCredentialRequest(a.client, request)
 	if err != nil {
 		return nil, fmt.Errorf("refresh xAI token: %w", err)
 	}
@@ -242,7 +252,7 @@ func startXaiOAuth(parent context.Context, modelSpec, credentialFile string) (*R
 	path := filepath.Join(authDir, filepath.Base(credentialFile))
 	authorizer := &xaiOAuthAuthorizer{
 		path:   path,
-		client: &http.Client{Transport: newUpstreamTransport(30 * time.Second)},
+		client: newCredentialHTTPClient(30 * time.Second),
 	}
 	credential, err := authorizer.load()
 	if err != nil {

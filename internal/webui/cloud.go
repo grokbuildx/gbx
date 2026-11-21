@@ -5,12 +5,14 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/grokbuildx/gbx/internal/cloudsync"
+	"github.com/grokbuildx/gbx/internal/groklaunch"
 )
 
 // Cloud sync from the page. Reading (remotes and their status) goes through
@@ -59,7 +61,7 @@ func (s *Server) handleCloud(w http.ResponseWriter, r *http.Request) {
 	action, id, _ := strings.Cut(rest, "/")
 	switch {
 	case rest == "" && r.Method == http.MethodGet:
-		s.cloudOverview(w)
+		s.cloudOverview(w, r)
 	case action == "login" && id == "" && r.Method == http.MethodPost:
 		s.cloudLogin(w, r)
 	case action == "login" && id != "":
@@ -71,7 +73,7 @@ func (s *Server) handleCloud(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) cloudOverview(w http.ResponseWriter) {
+func (s *Server) cloudOverview(w http.ResponseWriter, r *http.Request) {
 	infos, err := cloudsync.ListRemotes()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -84,7 +86,7 @@ func (s *Server) cloudOverview(w http.ResponseWriter) {
 			SignedIn: info.SignedIn, AccountHint: info.AccountHint,
 		}
 		if info.SignedIn {
-			status, err := remoteStatus(info.Alias)
+			status, err := remoteStatus(r.Context(), info.Alias)
 			if err != nil {
 				remote.Error = err.Error()
 			} else {
@@ -110,27 +112,21 @@ func (s *Server) cloudOverview(w http.ResponseWriter) {
 
 // remoteStatus reads one remote's status, giving up after cloudStatusTimeout:
 // a provider that does not answer must not hold the settings page.
-func remoteStatus(alias string) (cloudsync.Status, error) {
-	type result struct {
-		status cloudsync.Status
-		err    error
-	}
-	done := make(chan result, 1)
-	go func() {
-		manager, err := cloudsync.LoadRemote(alias)
-		if err != nil {
-			done <- result{err: err}
-			return
+func remoteStatus(ctx context.Context, alias string) (cloudsync.Status, error) {
+	statusCtx, cancel := context.WithTimeout(ctx, cloudStatusTimeout)
+	defer cancel()
+	manager, err := cloudsync.LoadRemoteContext(statusCtx, alias)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return cloudsync.Status{}, errors.New("the cloud provider did not answer in time")
 		}
-		status, err := manager.Status()
-		done <- result{status, err}
-	}()
-	select {
-	case got := <-done:
-		return got.status, got.err
-	case <-time.After(cloudStatusTimeout):
+		return cloudsync.Status{}, err
+	}
+	status, err := manager.Status()
+	if err != nil && errors.Is(err, context.DeadlineExceeded) {
 		return cloudsync.Status{}, errors.New("the cloud provider did not answer in time")
 	}
+	return status, err
 }
 
 func (s *Server) cloudLogin(w http.ResponseWriter, r *http.Request) {
@@ -266,6 +262,7 @@ func (s *Server) cloudCommand(w http.ResponseWriter, r *http.Request, action str
 	ctx, cancel := context.WithTimeout(r.Context(), cloudCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, s.selfBinary, args...)
+	cmd.Env = groklaunch.ScrubServeEnv(os.Environ())
 	if workspace, ok := s.workspaces.fallback(); ok {
 		cmd.Dir = workspace.Path
 	}
@@ -280,6 +277,9 @@ func (s *Server) cloudCommand(w http.ResponseWriter, r *http.Request, action str
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	default:
+		if action == "pull" {
+			s.invalidateAllProviderCatalogs()
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"output": text})
 	}
 }

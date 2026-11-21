@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -84,6 +83,7 @@ type codexResponsesService struct {
 	models         []string
 	modelDetails   map[string]protocol.ModelInfo
 	modelRoute     map[string]string
+	modelEndpoint  map[string]string
 	authorizer     codexResponsesAuthorizer
 	client         *http.Client
 	usage          *UsageTracker
@@ -135,7 +135,7 @@ func startCodexOAuth(parent context.Context, modelSpec, credentialFile string) (
 	path := filepath.Join(authDir, filepath.Base(credentialFile))
 	authorizer := &codexOAuthAuthorizer{
 		path:   path,
-		client: &http.Client{Transport: newUpstreamTransport(30 * time.Second)},
+		client: newCredentialHTTPClient(30 * time.Second),
 	}
 	credential, err := authorizer.load()
 	if err != nil {
@@ -210,42 +210,14 @@ func startCodexResponsesRuntimeWithService(parent context.Context, endpoint, mod
 	if err != nil {
 		return nil, err
 	}
-	listener, err := net.Listen("tcp", runtimeLoopbackHost+":0")
-	if err != nil {
-		return nil, fmt.Errorf("listen for Responses runtime: %w", err)
-	}
 	usage := NewUsageTracker()
 	service := makeService(apiKey, endpoint, routes, authorizer, usage)
-	runCtx, cancel := context.WithCancel(parent)
-	server := &http.Server{
-		Handler: service.handler(), ReadHeaderTimeout: 15 * time.Second,
-		BaseContext: func(net.Listener) context.Context { return runCtx },
+	runtime, err := startLoopbackServer(parent, "Responses runtime", service.handlerForContext(parent), apiKey, usage)
+	if err != nil {
+		return nil, err
 	}
-	started := make(chan struct{})
-	close(started)
-	runtime := &Runtime{
-		endpoint: "http://" + listener.Addr().String() + "/v1", apiKey: apiKey,
-		httpServer: server, cancel: cancel, done: make(chan struct{}), runErr: make(chan error, 1),
-		started: started, models: append([]string(nil), service.models...), usage: usage,
-	}
+	runtime.models = append([]string(nil), service.models...)
 	runtime.cleanup = append(runtime.cleanup, closeIdleClients(service.client, authorizerHTTPClient(authorizer)))
-	go func() {
-		err := server.Serve(listener)
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
-		runtime.runErr <- err
-		close(runtime.done)
-	}()
-	go func() {
-		select {
-		case <-runCtx.Done():
-			ctx, stop := context.WithTimeout(context.Background(), runtimeStopTimeout)
-			_ = server.Shutdown(ctx)
-			stop()
-		case <-runtime.done:
-		}
-	}()
 	return runtime, nil
 }
 
@@ -275,12 +247,51 @@ func newResponsesService(apiKey, endpoint string, routes []runtimeModelRoute, au
 		apiKey: apiKey, endpoint: endpoint, models: models, modelRoute: modelRoute,
 		authorizer: authorizer, usage: usage, installationID: uuidString(), windowID: uuidString(),
 		xai: xai, flattenTools: xai,
-		client: &http.Client{Transport: newUpstreamTransport(90 * time.Second)},
+		client: newCredentialHTTPClient(90 * time.Second),
 	}
 }
 
+func (s *codexResponsesService) setModelEndpoints(routes []runtimeModelRoute, endpoints map[string]string) {
+	if len(endpoints) == 0 {
+		return
+	}
+	resolved := make(map[string]string)
+	for _, route := range routes {
+		for _, id := range []string{route.Alias, route.Name, stripContextModelSuffix(route.Name)} {
+			if base := strings.TrimSpace(endpoints[strings.ToLower(id)]); base != "" {
+				resolved[strings.ToLower(route.Alias)] = base
+				resolved[strings.ToLower(route.Name)] = base
+				break
+			}
+		}
+	}
+	if len(resolved) > 0 {
+		s.modelEndpoint = resolved
+	}
+}
+
+func (s *codexResponsesService) responsesURL(model string) string {
+	base := ""
+	if len(s.modelEndpoint) > 0 {
+		for _, id := range []string{model, stripContextModelSuffix(model)} {
+			if candidate := s.modelEndpoint[strings.ToLower(strings.TrimSpace(id))]; candidate != "" {
+				base = candidate
+				break
+			}
+		}
+	}
+	if base == "" {
+		base = s.endpoint
+	}
+	return protocol.NormalizeOpenAIResponsesURL(base)
+}
+
 func (s *codexResponsesService) handler() http.Handler {
-	return loopbackFrontMux(s.apiKey, s.handleModels, s.handleResponses)
+	return s.handlerForContext(context.Background())
+}
+
+func (s *codexResponsesService) handlerForContext(ctx context.Context) http.Handler {
+	return loopbackFrontMuxForContext(ctx, s.apiKey, s.handleModels, s.handleResponses)
 }
 
 func (s *codexResponsesService) authorized(request *http.Request) bool {
@@ -432,14 +443,14 @@ func (s *codexResponsesService) call(ctx context.Context, body []byte, sessionID
 			return nil, err
 		}
 	}
-	return retryUpstream(ctx, "codex_responses", func() (*http.Response, error) {
+	if !s.xai && ctx.Value(codexCompactRequest{}) != true {
 		var err error
-		if !s.xai && ctx.Value(codexCompactRequest{}) != true {
-			body, err = s.addClientMetadata(body, sessionID)
-			if err != nil {
-				return nil, err
-			}
+		body, err = s.addClientMetadata(body, sessionID)
+		if err != nil {
+			return nil, err
 		}
+	}
+	return retryUpstream(ctx, "codex_responses", func() (*http.Response, error) {
 		auth, err := s.authorizer.authorize(ctx, false)
 		if err != nil {
 			return nil, err
@@ -479,7 +490,7 @@ func (s *codexResponsesService) call(ctx context.Context, body []byte, sessionID
 }
 
 func (s *codexResponsesService) callOnce(ctx context.Context, body []byte, sessionID string, auth codexResponsesAuthorization, dumpPayload bool) (*http.Response, error) {
-	target := protocol.NormalizeOpenAIResponsesURL(s.endpoint)
+	target := s.responsesURL(codexResponsesModel(body))
 	if ctx.Value(codexCompactRequest{}) == true {
 		target = strings.TrimRight(target, "/") + "/compact"
 	}
@@ -515,7 +526,7 @@ func (s *codexResponsesService) callOnce(ctx context.Context, body []byte, sessi
 	started := time.Now()
 	trace, traceSnapshot := newCodexHTTPTrace(started)
 	request = request.WithContext(httptrace.WithClientTrace(request.Context(), trace))
-	response, err := s.client.Do(request)
+	response, err := doCredentialRequest(s.client, request)
 	if err != nil {
 		timings := traceSnapshot()
 		LogWarnEvent("upstream_transport_failed", "component", "codex_responses", "request_id", requestLogID(ctx),
@@ -770,7 +781,10 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.WriteHeader(response.StatusCode)
 	observer := &responsesUsageObserver{}
-	defer func() { s.recordObservedUsage(model, observer) }()
+	defer func() {
+		observer.finish()
+		s.recordObservedUsage(model, observer)
+	}()
 	buffer := make([]byte, 32<<10)
 	for {
 		n, err := response.Body.Read(buffer)
@@ -814,7 +828,14 @@ func sanitizePassthroughResponsesInput(payload map[string]any) {
 		if strings.HasPrefix(id, gbxReasoningIDPrefix) {
 			if strings.HasPrefix(enc, codexReasoningSignaturePrefix) {
 				if unwrapped, err := codexReasoningFromSignature(enc); err == nil {
-					if unwrappedMap, isObj := unwrapped.(map[string]any); isObj && strings.TrimSpace(stringValue(unwrappedMap["encrypted_content"])) != "" {
+					var unwrappedMap map[string]any
+					switch typed := unwrapped.(type) {
+					case map[string]any:
+						unwrappedMap = typed
+					case json.RawMessage:
+						_ = json.Unmarshal(typed, &unwrappedMap)
+					}
+					if unwrappedMap != nil && strings.TrimSpace(stringValue(unwrappedMap["encrypted_content"])) != "" {
 						filtered = append(filtered, unwrappedMap)
 					}
 				}
@@ -843,14 +864,21 @@ const responsesUsageObserverMaxEvent = 8 << 20
 func (o *responsesUsageObserver) observe(data []byte) {
 	o.pending = append(o.pending, data...)
 	for {
-		end := bytes.Index(o.pending, []byte("\n\n"))
+		end, sepLen := nextSSEFrameBoundary(o.pending)
 		if end < 0 {
 			break
 		}
 		o.event(o.pending[:end])
-		o.pending = o.pending[end+2:]
+		o.pending = o.pending[end+sepLen:]
 	}
 	if len(o.pending) > responsesUsageObserverMaxEvent {
+		o.pending = nil
+	}
+}
+
+func (o *responsesUsageObserver) finish() {
+	if len(o.pending) > 0 {
+		o.event(o.pending)
 		o.pending = nil
 	}
 }
@@ -949,7 +977,7 @@ func (a *codexOAuthAuthorizer) refresh(ctx context.Context, credential *codexOAu
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
-	response, err := a.client.Do(request)
+	response, err := doCredentialRequest(a.client, request)
 	if err != nil {
 		return nil, fmt.Errorf("refresh Codex token: %w", err)
 	}
@@ -1023,7 +1051,7 @@ func (a *codexOAuthAuthorizer) listAuths() []*AuthInfo {
 	}
 	return []*AuthInfo{{
 		ID: filepath.Base(a.path), Provider: ProviderCodex, FileName: a.path, Label: credential.email,
-		Status: status, Disabled: credential.disabled, Metadata: credential.metadata,
+		Status: status, Disabled: credential.disabled, Metadata: safeAuthMetadata(credential.metadata),
 	}}
 }
 

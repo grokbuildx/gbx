@@ -4,13 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
+
+	"github.com/grokbuildx/gbx/internal/paths"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 const (
 	ProviderCodex     = "codex"
-	ProviderGemini    = "gemini"
 	ProviderChatGPT   = "gpt"
 	ProviderGrok      = "grok"
 	ProviderQoder     = "qoder"
@@ -47,11 +48,7 @@ type LoginResult struct {
 }
 
 func AuthDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(home, ".gbx", "auth"), nil
+	return paths.AuthDir()
 }
 
 func ensureAuthDir() (string, error) {
@@ -87,8 +84,6 @@ func Login(ctx context.Context, providerName string, opts LoginOptions) (LoginRe
 		return loginWorkBuddy(ctx, authDir, target, opts)
 	case ProviderChatGPT:
 		return loginCodex(ctx, authDir, opts)
-	case ProviderGemini:
-		return loginGemini(ctx, authDir, opts)
 	case ProviderGrok:
 		return loginXai(ctx, authDir, opts)
 	case ProviderKimi:
@@ -126,39 +121,23 @@ func ImportCredential(ctx context.Context, providerName string) (LoginResult, er
 // AutoClaw runs its Google browser flow and stores a refreshable managed-proxy credential.
 func ValidateLoginProvider(providerName string) (string, error) {
 	target := strings.ToLower(strings.TrimSpace(providerName))
-	switch target {
-	case "claude", "zed":
+	if provider.IsRetiredOAuthProvider(target) {
 		return "", fmt.Errorf("OAuth provider %q has been retired", target)
-	case ProviderChatGPT, ProviderGemini, ProviderGrok, ProviderQoder, ProviderKimi, ProviderKiro, ProviderWorkBuddy, ProviderWorkBuddyCN, ProviderAutoClaw, ProviderCursor:
-		return target, nil
-	default:
-		return "", fmt.Errorf("unsupported auth provider %q (use gpt, gemini, grok, qoder, kimi, kiro, workbuddy, workbuddycn, autoclaw, or cursor)", providerName)
 	}
+	if spec, ok := provider.LookupPublicOAuthSpec(target); ok {
+		return spec.PublicName, nil
+	}
+	return "", fmt.Errorf("unsupported auth provider %q (use gpt, grok, qoder, kimi, kiro, workbuddy, workbuddycn, autoclaw, or cursor)", providerName)
 }
 
 func BackendProvider(providerName string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(providerName)) {
-	case ProviderCodex, ProviderChatGPT:
-		return ProviderCodex, nil
-	case ProviderQoder:
-		return ProviderQoder, nil
-	case ProviderGemini:
-		return "antigravity", nil
-	case ProviderGrok, backendXAI:
-		return backendXAI, nil
-	case ProviderKimi:
-		return ProviderKimi, nil
-	case ProviderKiro:
-		return ProviderKiro, nil
-	case ProviderWorkBuddy:
-		return ProviderWorkBuddy, nil
-	case ProviderWorkBuddyCN:
-		return ProviderWorkBuddyCN, nil
-	case ProviderAutoClaw:
-		return ProviderAutoClaw, nil
-	case ProviderCursor:
-		return ProviderCursor, nil
-	default:
+	target := strings.ToLower(strings.TrimSpace(providerName))
+	if provider.IsRetiredOAuthProvider(target) {
+		return "", fmt.Errorf("OAuth provider %q has been retired", target)
+	}
+	spec, ok := provider.LookupOAuthSpec(target)
+	if !ok {
 		return "", fmt.Errorf("unsupported OAuth provider %q", providerName)
 	}
+	return spec.Backend, nil
 }

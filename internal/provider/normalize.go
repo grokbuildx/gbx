@@ -1,10 +1,6 @@
 package provider
 
-import (
-	"strings"
-
-	"github.com/grokbuildx/gbx/internal/modelrouting"
-)
+import "strings"
 
 // Context preset spellings persisted in Provider.ContextPreset.
 const (
@@ -95,54 +91,7 @@ func NormalizeProvider(p *Provider) bool {
 		p.DefaultModel = def
 		changed = true
 	}
-	if migrateRetiredGeminiModels(p) {
-		changed = true
-	}
 	return changed
-}
-
-// migrateRetiredGeminiModels rewrites the retired generated Gemini model ID.
-// The live catalog does not contain it, so leaving the old default in place
-// makes that one model 404. Any other value is a user choice and stays.
-func migrateRetiredGeminiModels(p *Provider) bool {
-	if p == nil || !strings.EqualFold(strings.TrimSpace(p.OAuthProvider), "gemini") {
-		return false
-	}
-	changed := false
-	if updated, ok := replaceCSVModel(p.Model, retiredGeminiHaikuModel, geminiFlashReplacement); ok {
-		p.Model = updated
-		changed = true
-	}
-	if strings.EqualFold(stripContextSuffix(p.DefaultModel), retiredGeminiHaikuModel) {
-		p.DefaultModel = replaceModelKeepingContext(p.DefaultModel, geminiFlashReplacement)
-		changed = true
-	}
-	return changed
-}
-
-func replaceCSVModel(pool, from, to string) (string, bool) {
-	models := modelrouting.SplitCSV(pool)
-	if len(models) == 0 {
-		return pool, false
-	}
-	changed := false
-	for i, model := range models {
-		if strings.EqualFold(stripContextSuffix(model), from) {
-			models[i] = replaceModelKeepingContext(model, to)
-			changed = true
-		}
-	}
-	if !changed {
-		return pool, false
-	}
-	return strings.Join(models, ","), true
-}
-
-func replaceModelKeepingContext(model, replacement string) string {
-	if strings.HasSuffix(strings.TrimSpace(model), "[1m]") {
-		return replacement + "[1m]"
-	}
-	return replacement
 }
 
 // Clone returns a deep copy of p: its maps are not shared with the original.
@@ -151,6 +100,7 @@ func (p Provider) Clone() Provider {
 	cloned.Env = cloneStringMap(p.Env)
 	cloned.ModelProtocols = cloneStringMap(p.ModelProtocols)
 	cloned.ModelEndpoints = cloneStringMap(p.ModelEndpoints)
+	cloned.ModelLabels = cloneStringMap(p.ModelLabels)
 	return cloned
 }
 

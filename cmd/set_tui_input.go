@@ -13,35 +13,6 @@ import (
 	"github.com/grokbuildx/gbx/internal/provider"
 )
 
-// rowClickLabels maps a configuration row to the label prefixes a click (or
-// the cursor-line lookup) must match on its rendered line. Both the English
-// and the Chinese rendering of each label are listed: the page renders labels
-// through locale.T, so in a Chinese session only the zh form appears on
-// screen and a single-language table would silently stop matching. Only rows
-// that make sense to click are listed.
-type rowClickLabel struct {
-	en, zh string
-}
-
-var rowClickLabels = map[configRowKind]rowClickLabel{
-	rowSource:       {en: "Source", zh: "来源"},
-	rowEndpoint:     {en: "Endpoint URL", zh: "端点 URL"},
-	rowAPIKey:       {en: "API Key"},
-	rowProvider:     {en: "Provider"},
-	rowTest:         {en: "Auto Configure"},
-	rowProtocol:     {en: "Protocol", zh: "协议"},
-	rowFast:         {en: "Fast"},
-	rowDefaultModel: {en: "Default Model", zh: "默认模型"},
-	rowTestModels:   {en: "Check", zh: "检查"},
-	rowContext:      {en: "Context & Compact", zh: "上下文与压缩"},
-	rowActive:       {en: "Set as active provider", zh: "设为当前激活 Provider"},
-	// The Save button also renders as "Save Provider" when activation is not
-	// chosen; matchRowLabel matches prefixes, so the shorter shared prefix of
-	// both variants ("Save ") is what must stay clickable.
-	rowSave:   {en: "Save & Activate", zh: "保存并激活"},
-	rowCancel: {en: "Cancel", zh: "取消"},
-}
-
 // handleModelsDevPickerKey handles a key press while the models.dev overlay is
 // open. Enter applies the selected provider and closes the overlay; esc/ctrl+c
 // cancel; ↑↓ move the cursor; any other printable key filters the list.
@@ -152,7 +123,7 @@ func (m *AdvancedConfigModel) activateRow(kind configRowKind) {
 		m.openDefaultModelPicker()
 	case rowProvider:
 		m.openModelsDevPicker()
-		fetchModelsDevAsync(m.mdDone)
+		fetchModelsDevAsync(m.lifecycleCtx(), m.mdDone)
 	case rowSource:
 		m.switchSource(m.otherSource())
 	case rowTest:
@@ -180,15 +151,25 @@ func (m *AdvancedConfigModel) activateRow(kind configRowKind) {
 			m.live().detecting = true
 			m.live().detectProgress = 5
 			m.live().detectFrame = 0
-			setDebugf("autoclaw detection skipped: built-in catalog endpoint=%q", m.live().probeEndpoint)
+			probeEndpoint := m.live().probeEndpoint
+			probeAPIKey := m.live().probeAPIKey
+			providerType := m.p.Type
+			detectedEndpoint := m.p.Endpoint
+			done := m.fetchDone
+			fetchCtx := m.nextFetchCtx()
+			setDebugf("autoclaw detection skipped: built-in catalog endpoint=%q", probeEndpoint)
 			go func() {
-				m.fetchDone <- modelFetchDoneMsg{
-					endpoint:            m.live().probeEndpoint,
-					apiKey:              m.live().probeAPIKey,
-					detectedType:        m.p.Type,
-					detectedEndpoint:    m.p.Endpoint,
+				msg := modelFetchDoneMsg{
+					endpoint:            probeEndpoint,
+					apiKey:              probeAPIKey,
+					detectedType:        providerType,
+					detectedEndpoint:    detectedEndpoint,
 					discoveredModelsRaw: strings.Join(oauthproxy.AutoClawModelIDs(), ","),
 					modelInfos:          oauthproxy.AutoClawModelCatalog(),
+				}
+				select {
+				case done <- msg:
+				case <-fetchCtx.Done():
 				}
 			}()
 			return
@@ -198,9 +179,9 @@ func (m *AdvancedConfigModel) activateRow(kind configRowKind) {
 		m.live().detectFrame = 0
 		setDebugf("start detection endpoint=%q api_key_len=%d oauth=%t", m.live().probeEndpoint, len(m.live().probeAPIKey), m.usesOAuth())
 		if m.canSelectCustomProtocol() {
-			fetchModelsAsync(m.fetchDone, m.live().probeEndpoint, m.live().probeAPIKey, m.p.Type)
+			fetchModelsAsync(m.nextFetchCtx(), m.fetchDone, m.live().probeEndpoint, m.live().probeAPIKey, m.p.Type)
 		} else {
-			fetchModelsAsync(m.fetchDone, m.live().probeEndpoint, m.live().probeAPIKey)
+			fetchModelsAsync(m.nextFetchCtx(), m.fetchDone, m.live().probeEndpoint, m.live().probeAPIKey)
 		}
 	case rowTestModels:
 		if !m.connectionReady() || m.usesModelsDev() && !m.live().keyVerified {
@@ -210,9 +191,13 @@ func (m *AdvancedConfigModel) activateRow(kind configRowKind) {
 			setDebugf("model availability test skipped: empty pool")
 			return
 		}
+		if m.modelTestCancel != nil {
+			m.modelTestCancel()
+			m.modelTestCancel = nil
+		}
 		m.modelTestID++
 		testID := m.modelTestID
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(m.lifecycleCtx())
 		m.modelTesting = true
 		m.modelTestCancel = cancel
 		m.modelTestFrame = 0
@@ -336,6 +321,7 @@ func (m *AdvancedConfigModel) handleKey(ke tui.KeyEvent) {
 	// 等待结束。ctrl+c 已在上面处理。
 	if m.live().detecting && !m.usesModelsDev() {
 		if ke.Key == tui.KeyEscape {
+			m.cancelFetch()
 			m.live().detecting = false
 			m.live().detectionError = fmt.Errorf("%s", locale.T("已取消连接检查", "connection check canceled"))
 			m.focusDetectionAction()
@@ -462,14 +448,9 @@ func (m *AdvancedConfigModel) handleKey(ke tui.KeyEvent) {
 			m.markDirty()
 			return
 		}
-		// The API key textarea inserts newlines with Enter, so while it is
-		// focused the key must fall through to the text routing below rather
-		// than advance the page cursor.
-		if !m.keyFocused {
-			m.handleEnter()
-			m.markDirty()
-			return
-		}
+		m.handleEnter()
+		m.markDirty()
+		return
 
 	case tui.KeyTab:
 		if inputHasKeyboard && ke.IsRune() {
@@ -480,30 +461,19 @@ func (m *AdvancedConfigModel) handleKey(ke tui.KeyEvent) {
 			return
 		}
 		wasKeyRow := m.usesModelsDev() && m.currentRow() == rowAPIKey
-		m.cursor = (m.cursor + 1) % len(rows)
+		if ke.Mod == tui.ModShift {
+			m.cursor--
+			if m.cursor < 0 {
+				m.cursor = len(rows) - 1
+			}
+		} else {
+			m.cursor = (m.cursor + 1) % len(rows)
+		}
 		m.urlFocused, m.keyFocused = false, false
 		m.keepCursorVisible()
 		if wasKeyRow {
 			m.startModelsDevVerification()
 		}
-		m.markDirty()
-		return
-	}
-
-	// shift+tab：主页面反向移动光标。
-	if ke.Key == tui.KeyTab && ke.Mod == tui.ModShift {
-		if inputHasKeyboard && ke.IsRune() {
-			return
-		}
-		rows := m.visibleRows()
-		if len(rows) == 0 {
-			return
-		}
-		m.cursor--
-		if m.cursor < 0 {
-			m.cursor = len(rows) - 1
-		}
-		m.keepCursorVisible()
 		m.markDirty()
 		return
 	}
@@ -599,9 +569,7 @@ func (m *AdvancedConfigModel) handleNavAlias(ke tui.KeyEvent, inputHasKeyboard b
 	return true
 }
 
-// handleEnter performs the Enter action of the row under the cursor. It runs
-// only when no text input owns the keyboard (the key textarea inserts
-// newlines instead).
+// handleEnter performs the Enter action of the row under the cursor.
 func (m *AdvancedConfigModel) handleEnter() {
 	switch m.currentRow() {
 	case rowSource:
@@ -648,179 +616,6 @@ func (m *AdvancedConfigModel) handleEnter() {
 	m.keepCursorVisible()
 }
 
-// rowAtLineAt resolves a clicked screen row to a configuration row kind. x is
-// the column offset (-1 to ignore). The X column disambiguates multiple labels
-// on one rendered line (Save & Activate vs Cancel): the click maps to whichever
-// label's character range contains it.
-func rowAtLineAt(lines []string, y, x int) (configRowKind, bool) {
-	if y < 0 || y >= len(lines) {
-		return rowCancel, false
-	}
-	for _, off := range []int{0, -1} {
-		row := y + off
-		if row < 0 || row >= len(lines) {
-			continue
-		}
-		// Strip ANSI only; keep the leading border/space columns so label
-		// offsets line up with the click's X column.
-		text := stripANSI(lines[row])
-		// Copy rows (key / URL value) are only hit when clicked directly on their
-		// own row; the off-by-one fallback (a value-row click resolving to its
-		// label row) must not trigger them.
-		kind, ok := matchRowLabel(text, x, off == 0)
-		if ok {
-			return kind, true
-		}
-	}
-	return rowCancel, false
-}
-
-// stripANSI removes SGR/CSI escape sequences from a rendered line, leaving the
-// printable text. go-tui renders through its own escape builder, so the panel
-// code owns a minimal stripper instead of pulling in x/ansi.
-func stripANSI(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		if s[i] == '\x1b' && i+1 < len(s) {
-			// CSI sequences: ESC [ ... letter
-			if s[i+1] == '[' {
-				j := i + 2
-				for j < len(s) && !isANSIFinalByte(s[j]) {
-					j++
-				}
-				if j < len(s) {
-					j++ // include the final byte
-				}
-				i = j
-				continue
-			}
-			// Two-byte escapes (ESC c, ESC \, ...)
-			i += 2
-			continue
-		}
-		b.WriteByte(s[i])
-		i++
-	}
-	return b.String()
-}
-
-// isANSIFinalByte reports whether c terminates a CSI sequence (ANSI "final"
-// byte range 0x40-0x7E).
-func isANSIFinalByte(c byte) bool {
-	return c >= 0x40 && c <= 0x7e
-}
-
-// matchRowLabel matches a rendered line against the clickable labels. A label
-// matches only when it begins a field — the line, after stripping the leading
-// border/cursor/space/checkbox prefix, starts with the label. This keeps prose
-// like "detection uses the API Key you entered" from matching. The label's
-// start column is kept so a click's X can disambiguate Save vs Cancel, which
-// share one line.
-func matchRowLabel(text string, x int, allowButton bool) (configRowKind, bool) {
-	// Strip leading border, cursor arrow, and whitespace to find the first field.
-	trimmed := strings.TrimLeft(text, " │|>")
-	lead := tui.StringWidth(text[:len(text)-len(trimmed)])
-	// Account for a checkbox "[x] "/"[ ] " before the label.
-	rest := trimmed
-	if strings.HasPrefix(rest, "[") {
-		if idx := strings.Index(rest, "] "); idx >= 0 {
-			rest = rest[idx+2:]
-			lead = tui.StringWidth(text[:len(text)-len(rest)])
-		}
-	}
-	// Find every label that starts the trimmed field. Both the English and the
-	// Chinese rendering of a label can lead the field, so both count as the row.
-	var matched configRowKind
-	var matchedIdx int
-	hasMatch := false
-	for kind := range rowClickLabels {
-		for _, label := range rowClickLabelPrefixes(kind) {
-			if strings.HasPrefix(rest, label) {
-				idx := lead
-				if !hasMatch || idx < matchedIdx {
-					matched = kind
-					matchedIdx = idx
-					hasMatch = true
-				}
-				break
-			}
-		}
-	}
-	if !hasMatch {
-		// No leading label: a value row. The endpoint value copies the URL; the
-		// API key value (now plaintext and possibly spanning multiple lines)
-		// copies the key. Both only respond to a direct click (allowButton), not
-		// the off-by-one label fallback. The leading border/space is already
-		// stripped in rest. Prose and hints must never resolve to a copy row,
-		// so only URL prefixes and dense credential tokens (a key, after the
-		// textarea's trailing padding is trimmed) count as value rows.
-		if !allowButton {
-			return rowCancel, false
-		}
-		if strings.HasPrefix(rest, "http://") || strings.HasPrefix(rest, "https://") {
-			return rowCopyURL, true
-		}
-		key := strings.TrimSpace(rest)
-		if key != "" && (strings.HasPrefix(key, "sk-") || strings.HasPrefix(key, "-----BEGIN") || !strings.ContainsAny(key, " \t")) {
-			return rowCopyKey, true
-		}
-		return rowCancel, false
-	}
-	// A single label at the field start is unambiguous.
-	if x < 0 {
-		return matched, true
-	}
-	// With column info, Save and Cancel on the same line are distinct. The click
-	// belongs to the label whose field start is at or before x (Save then Cancel).
-	best := matched
-	bestIdx := matchedIdx
-	for kind := range rowClickLabels {
-		for _, label := range rowClickLabelPrefixes(kind) {
-			if kind == matched {
-				break
-			}
-			idx := strings.Index(rest, label)
-			if idx < 0 {
-				continue
-			}
-			absIdx := lead + tui.StringWidth(rest[:idx])
-			if absIdx <= x && (bestIdx > x || absIdx > bestIdx) {
-				best = kind
-				bestIdx = absIdx
-			}
-			break
-		}
-	}
-	return best, true
-}
-
-// rowClickLabelPrefixes returns every rendered label variant for a row kind.
-func rowClickLabelPrefixes(kind configRowKind) []string {
-	label, ok := rowClickLabels[kind]
-	if !ok {
-		return nil
-	}
-	prefixes := make([]string, 0, 3)
-	if label.en != "" {
-		prefixes = append(prefixes, label.en)
-	}
-	if label.zh != "" {
-		prefixes = append(prefixes, label.zh)
-	}
-	// "Save Provider" is the other rendering of the Save button.
-	if kind == rowSave {
-		prefixes = append(prefixes, "Save Provider", "保存 Provider")
-	}
-	if kind == rowContext {
-		prefixes = append(prefixes, "Context", "上下文")
-	}
-	if kind == rowDefaultModel {
-		prefixes = append(prefixes, "Default")
-	}
-	return prefixes
-}
-
 // KeyMap routes every key through handleKey. go-tui matches one binding per
 // event, so a single AnyKey stop binding covers the whole page (the picker,
 // the modals, and the inputs are disambiguated inside handleKey).
@@ -833,12 +628,13 @@ func (m *AdvancedConfigModel) KeyMap() tui.KeyMap {
 	}
 }
 
-// HandleMouse maps a click to the configuration row under the pointer. The
-// rendered frame is re-rendered offline (tui.Sprint at the current terminal
-// width) so the hit test works on exactly what the user sees. Only left-button
-// presses are handled; the wheel is deliberately ignored (the page anchors its
-// scroll window to the cursor instead).
+// HandleMouse maps a click to the configuration row under the pointer using
+// structured bodyLines() metadata and shared bodyLayoutGeometry() coordinates
+// (no offline tui.Sprint re-render or ANSI text scraping).
 func (m *AdvancedConfigModel) HandleMouse(me tui.MouseEvent) bool {
+	if m.modelsDevPicker || m.defaultModelPicker || (m.live().detecting && !m.usesModelsDev()) || m.modelTesting {
+		return false
+	}
 	if me.Button == tui.MouseWheelUp || me.Button == tui.MouseWheelDown {
 		key := tui.KeyUp
 		if me.Button == tui.MouseWheelDown {
@@ -847,16 +643,29 @@ func (m *AdvancedConfigModel) HandleMouse(me tui.MouseEvent) bool {
 		m.handleKey(tui.KeyEvent{Key: key})
 		return true
 	}
-	if m.modelsDevPicker || m.defaultModelPicker {
-		return false
-	}
 	if me.Button != tui.MouseLeft || me.Action != tui.MousePress {
 		return false
 	}
-	lines := strings.Split(tui.Sprint(m.Render(nil), tui.WithPrintWidth(max(m.width, 1))), "\n")
-	row, ok := rowAtLineAt(lines, me.Y, me.X)
-	if !ok {
+	lines := m.bodyLines()
+	topY, leftX, offset, visibleCount := m.bodyLayoutGeometry(len(lines))
+	if me.X < leftX || me.X >= leftX+m.bodyWidth() {
 		return false
+	}
+	visIdx := me.Y - topY
+	if visIdx < 0 || visIdx >= visibleCount {
+		return false
+	}
+	bodyIdx := offset + visIdx
+	if bodyIdx < 0 || bodyIdx >= len(lines) {
+		return false
+	}
+	l := lines[bodyIdx]
+	if !l.hasKind {
+		return false
+	}
+	row := l.kind
+	if l.hasSecondary && me.X >= leftX+l.secondaryCol {
+		row = l.secondaryKind
 	}
 	m.handleFocusRow(row)
 	return true

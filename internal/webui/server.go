@@ -99,14 +99,27 @@ type Server struct {
 	projects *projectStore
 	version  string
 
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	runtimePool *runtimePool
+
+	defaultsMu       sync.RWMutex
 	defaults         metaDefaults
 	explicitProvider bool
+	configSaveMu     sync.Mutex
 	sandboxMu        sync.RWMutex
 	sandbox          string
 
-	catalogMu       sync.Mutex
-	catalogs        map[string]providerRuntimeCatalog
-	catalogInflight map[string]*catalogRefreshCall
+	catalogMu        sync.Mutex
+	catalogs         map[string]providerRuntimeCatalog
+	catalogInflight  map[string]*catalogRefreshCall
+	catalogGen       map[string]uint64
+	catalogGlobalGen uint64
+
+	fileCacheMu  sync.Mutex
+	fileCache    map[string]cachedFileList
+	fileCacheGen map[string]uint64
 
 	// subscribers wakes open SSE streams when an event is appended.
 	mu          sync.Mutex
@@ -219,9 +232,15 @@ func New(cfg Config) (*Server, error) {
 		concurrency = 3
 	}
 	runner := NewRunner(concurrency)
+	pool := newRuntimePool()
 	if cfg.Launch != nil {
 		runner.Prepare = cfg.Launch
+	} else {
+		runner.Prepare = func(ctx context.Context, spec LaunchSpec) (*exec.Cmd, func(), error) {
+			return defaultLauncherWithPool(ctx, spec, pool)
+		}
 	}
+	serverCtx, serverCancel := context.WithCancel(context.Background())
 	server := &Server{
 		workspaces:       workspaces,
 		projects:         loadProjects(filepath.Join(root, "projects.json")),
@@ -230,10 +249,16 @@ func New(cfg Config) (*Server, error) {
 		timeline:         NewTimeline(),
 		token:            token,
 		version:          cfg.Version,
+		ctx:              serverCtx,
+		cancel:           serverCancel,
+		runtimePool:      pool,
 		sandbox:          sandbox,
 		explicitProvider: strings.TrimSpace(cfg.DefaultProvider) != "",
 		catalogs:         make(map[string]providerRuntimeCatalog),
 		catalogInflight:  make(map[string]*catalogRefreshCall),
+		catalogGen:       make(map[string]uint64),
+		fileCache:        make(map[string]cachedFileList),
+		fileCacheGen:     make(map[string]uint64),
 		subscribers:      make(map[string][]chan struct{}),
 		selfBinary:       cfg.SelfBinary,
 		latestVersion:    cfg.LatestVersion,
@@ -262,14 +287,35 @@ func New(cfg Config) (*Server, error) {
 		defProvider = provider.DefaultProvider
 	}
 	store.OnAppend = server.notify
+	store.CanEvict = func(id string) bool {
+		return !server.timeline.Running(id) && !server.hasSubscribers(id)
+	}
 	server.defaults = metaDefaults{
 		Provider:       defProvider,
 		Model:          strings.TrimSpace(cfg.DefaultModel),
 		Effort:         strings.ToLower(strings.TrimSpace(cfg.DefaultEffort)),
 		PermissionMode: permissionMode,
 	}
-	go server.runSchedules()
+	go server.runSchedules(server.ctx)
 	return server, nil
+}
+
+func (s *Server) defaultPermissionMode() string {
+	s.defaultsMu.RLock()
+	defer s.defaultsMu.RUnlock()
+	return s.defaults.PermissionMode
+}
+
+func (s *Server) setDefaultPermissionMode(mode string) {
+	s.defaultsMu.Lock()
+	s.defaults.PermissionMode = mode
+	s.defaultsMu.Unlock()
+}
+
+func (s *Server) hasSubscribers(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.subscribers[id]) > 0
 }
 
 func (s *Server) effectiveDefaultProvider() string {
@@ -300,6 +346,9 @@ var ErrClosing = errors.New("gbx serve is shutting down")
 // its result, so Close waits for that until ctx ends.
 func (s *Server) Close(ctx context.Context) error {
 	s.closing.Store(true)
+	if s.cancel != nil {
+		s.cancel()
+	}
 	s.logins.mu.Lock()
 	for _, login := range s.logins.logins {
 		if !login.Done {
@@ -309,6 +358,14 @@ func (s *Server) Close(ctx context.Context) error {
 	}
 	s.logins.mu.Unlock()
 	s.closeTerminals()
+	defer func() {
+		if s.runtimePool != nil {
+			s.runtimePool.Close()
+		}
+		if s.store != nil {
+			s.store.Close()
+		}
+	}()
 	for _, done := range s.timeline.CancelAll() {
 		select {
 		case <-done:
@@ -536,13 +593,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	sessions, _ := s.store.List()
+	count := s.store.Count()
 	defaultWorkspace, _ := s.workspaces.fallback()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":          true,
 		"version":     s.version,
 		"grokVersion": grokVersion(),
-		"sessions":    len(sessions),
+		"sessions":    count,
 		// workspace is the default one, for clients that know only one.
 		"workspace":  defaultWorkspace.Path,
 		"workspaces": s.workspaces.list(),
@@ -946,7 +1003,16 @@ func (s *Server) handleSessionMeta(w http.ResponseWriter, r *http.Request, sessi
 		writeJSON(w, http.StatusOK, s.view(meta))
 
 	case http.MethodDelete:
+		if err := session.beginDelete(); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				writeError(w, http.StatusNotFound, "session not found")
+				return
+			}
+			writeError(w, http.StatusConflict, ErrBusy.Error())
+			return
+		}
 		if s.timeline.Running(session.ID()) {
+			session.cancelDelete()
 			writeError(w, http.StatusConflict, ErrBusy.Error())
 			return
 		}
@@ -955,12 +1021,14 @@ func (s *Server) handleSessionMeta(w http.ResponseWriter, r *http.Request, sessi
 		if meta := session.Meta(); meta.Worktree != nil {
 			if workspace, ok := s.workspaces.byPath(meta.Workspace); ok {
 				if err := s.removeWorktree(r.Context(), workspace, *meta.Worktree, r.URL.Query().Get("force") == "1"); err != nil {
+					session.cancelDelete()
 					writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "worktreeDirty": true})
 					return
 				}
 			}
 		}
 		if err := s.store.Delete(session.ID()); err != nil {
+			session.cancelDelete()
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -1029,6 +1097,14 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request, session *
 			}
 		})
 		if err != nil {
+			if errors.Is(err, ErrBusy) {
+				writeError(w, http.StatusConflict, err.Error())
+				return
+			}
+			if errors.Is(err, ErrNotFound) {
+				writeError(w, http.StatusNotFound, "session not found")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -1037,6 +1113,10 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request, session *
 	if _, err := s.startMessageTurn(r.Context(), session, text, attachments, body.Steer); err != nil {
 		if errors.Is(err, ErrBusy) || errors.Is(err, ErrWorkspaceNotServed) || errors.Is(err, ErrWorktreeMissing) {
 			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "session not found")
 			return
 		}
 		if errors.Is(err, ErrClosing) {
@@ -1062,14 +1142,6 @@ func (s *Server) startTurn(session *Session, text string, attachments []Attachme
 
 func (s *Server) startMessageTurn(ctx context.Context, session *Session, text string, attachments []Attachment, now bool) (*TurnHandle, error) {
 	meta := session.Meta()
-	if meta.Title == "" || meta.Title == "New conversation" {
-		title := text
-		if title == "" && len(attachments) > 0 {
-			title = attachments[0].Name
-		}
-		_, _ = session.UpdateMeta(func(meta *Meta) { meta.Title = TitleFrom(title) })
-	}
-
 	spec := LaunchSpec{
 		Provider:     meta.Provider,
 		Subscription: s.isSubscription(meta.Provider),
@@ -1080,7 +1152,7 @@ func (s *Server) startMessageTurn(ctx context.Context, session *Session, text st
 		Sandbox:      sessionSandbox(meta),
 		Prompt:       text,
 		// An empty mode follows the server default.
-		PermissionMode: firstNonEmpty(meta.PermissionMode, s.defaults.PermissionMode),
+		PermissionMode: firstNonEmpty(meta.PermissionMode, s.defaultPermissionMode()),
 	}
 	spec.Attachments = launchAttachments(session, attachments)
 	spec.attachmentViews = attachments
@@ -1113,6 +1185,17 @@ func (s *Server) startMessageTurn(ctx context.Context, session *Session, text st
 	}
 	if err != nil {
 		return nil, err
+	}
+	if meta.Title == "" || meta.Title == "New conversation" {
+		title := text
+		if title == "" && len(attachments) > 0 {
+			title = attachments[0].Name
+		}
+		_, _ = session.UpdateMeta(func(m *Meta) {
+			if m.Title == "" || m.Title == "New conversation" {
+				m.Title = TitleFrom(title)
+			}
+		})
 	}
 	go s.notifyOnDone(session.ID(), handle.Done)
 	return handle, nil
@@ -1219,7 +1302,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"slashCommands":         init.SlashCommands,
 		"mcpServers":            init.MCPServers,
-		"defaultPermissionMode": s.defaults.PermissionMode,
+		"defaultPermissionMode": s.defaultPermissionMode(),
 		"defaultSandbox":        s.SandboxMode(),
 		"defaultProvider":       defaultProvider,
 		"defaultModel":          defaultModel,
@@ -1365,7 +1448,11 @@ func parseSeq(value string) int64 {
 }
 
 func decodeBody(r *http.Request, target any) error {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	return decodeBodyLimit(r, target, 1<<20)
+}
+
+func decodeBodyLimit(r *http.Request, target any, limit int64) error {
+	decoder := json.NewDecoder(io.LimitReader(r.Body, limit))
 	if err := decoder.Decode(target); err != nil {
 		if errors.Is(err, io.EOF) {
 			return nil

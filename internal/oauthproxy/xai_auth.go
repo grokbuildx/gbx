@@ -48,6 +48,22 @@ type xaiDeviceToken struct {
 	ErrorDesc    string `json:"error_description"`
 }
 
+func validateXaiAuthEndpoint(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || strings.ContainsAny(trimmed, "\r\n\x00") {
+		return "", fmt.Errorf("empty or malformed endpoint")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.User != nil {
+		return "", fmt.Errorf("endpoint must use https without userinfo")
+	}
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	if host != "x.ai" && !strings.HasSuffix(host, ".x.ai") {
+		return "", fmt.Errorf("untrusted xAI auth host %q", host)
+	}
+	return parsed.String(), nil
+}
+
 // loginXai runs the xAI/Grok OAuth device-code flow (RFC 8628) and persists a
 // credential the xaiOAuthAuthorizer reads (access_token/refresh_token/
 // token_endpoint). GBX owns this authenticator and its persisted credential format.
@@ -55,7 +71,7 @@ func loginXai(ctx context.Context, authDir string, opts LoginOptions) (LoginResu
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := newTimedCredentialHTTPClient(30 * time.Second)
 	discovery, err := fetchXaiDiscovery(ctx, client)
 	if err != nil {
 		return LoginResult{}, err
@@ -118,7 +134,7 @@ func fetchXaiDiscovery(ctx context.Context, client *http.Client) (xaiDiscovery, 
 		return xaiDiscovery{}, fmt.Errorf("xAI OIDC discovery: create request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
-	response, err := client.Do(request)
+	response, err := doCredentialRequest(client, request)
 	if err != nil {
 		return xaiDiscovery{}, fmt.Errorf("xAI OIDC discovery: %w", err)
 	}
@@ -137,6 +153,16 @@ func fetchXaiDiscovery(ctx context.Context, client *http.Client) (xaiDiscovery, 
 	if strings.TrimSpace(discovery.DeviceAuthorizationEndpoint) == "" || strings.TrimSpace(discovery.TokenEndpoint) == "" {
 		return xaiDiscovery{}, fmt.Errorf("xAI OIDC discovery: missing device_authorization_endpoint or token_endpoint")
 	}
+	deviceEndpoint, err := validateXaiAuthEndpoint(discovery.DeviceAuthorizationEndpoint)
+	if err != nil {
+		return xaiDiscovery{}, fmt.Errorf("xAI OIDC discovery: invalid device_authorization_endpoint: %w", err)
+	}
+	tokenEndpoint, err := validateXaiAuthEndpoint(discovery.TokenEndpoint)
+	if err != nil {
+		return xaiDiscovery{}, fmt.Errorf("xAI OIDC discovery: invalid token_endpoint: %w", err)
+	}
+	discovery.DeviceAuthorizationEndpoint = deviceEndpoint
+	discovery.TokenEndpoint = tokenEndpoint
 	return discovery, nil
 }
 
@@ -148,7 +174,7 @@ func requestXaiDeviceCode(ctx context.Context, client *http.Client, endpoint str
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
-	response, err := client.Do(request)
+	response, err := doCredentialRequest(client, request)
 	if err != nil {
 		return xaiDeviceCode{}, fmt.Errorf("xAI device code: %w", err)
 	}
@@ -220,7 +246,7 @@ func exchangeXaiDeviceToken(ctx context.Context, client *http.Client, tokenEndpo
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
-	response, err := client.Do(request)
+	response, err := doCredentialRequest(client, request)
 	if err != nil {
 		return xaiDeviceToken{}, 0, fmt.Errorf("xAI device token: %w", err)
 	}

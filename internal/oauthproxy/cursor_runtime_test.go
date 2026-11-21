@@ -249,9 +249,7 @@ func TestCursorStreamEmitsTextThenParksOnMcpCall(t *testing.T) {
 	if !strings.Contains(body, "event: response.output_item.added") {
 		t.Fatalf("stream has no output item:\n%s", body)
 	}
-	service.mu.Lock()
-	parked := service.parked
-	service.mu.Unlock()
+	parked := firstParkedSession(service)
 	if parked == nil {
 		t.Fatal("the stream was not parked for the tool result")
 	}
@@ -261,6 +259,15 @@ func TestCursorStreamEmitsTextThenParksOnMcpCall(t *testing.T) {
 	if stub.calls != 1 {
 		t.Fatalf("upstream calls = %d, want 1", stub.calls)
 	}
+}
+
+func firstParkedSession(service *cursorService) *cursorSession {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if len(service.parked) == 0 {
+		return nil
+	}
+	return service.parked[0]
 }
 
 func TestCursorResumesParkedStreamWithToolResult(t *testing.T) {
@@ -302,10 +309,7 @@ func TestCursorResumesParkedStreamWithToolResult(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the tool result never reached the upstream stream")
 	}
-	service.mu.Lock()
-	parked := service.parked
-	service.mu.Unlock()
-	if parked != nil {
+	if firstParkedSession(service) != nil {
 		t.Fatal("a completed stream stayed parked")
 	}
 }
@@ -383,9 +387,7 @@ func TestCursorQueuesExtraMcpCallsUntilTheirResults(t *testing.T) {
 	if strings.Contains(body, "toolu_2") {
 		t.Fatalf("the second call leaked into the first response:\n%s", body)
 	}
-	service.mu.Lock()
-	parked := service.parked
-	service.mu.Unlock()
+	parked := firstParkedSession(service)
 	if parked == nil || !parked.matches([]string{"toolu_1"}) {
 		t.Fatal("the first call must stay pending on the parked stream")
 	}
@@ -397,11 +399,15 @@ func TestCursorQueuesExtraMcpCallsUntilTheirResults(t *testing.T) {
 	if !strings.Contains(body, "toolu_2") {
 		t.Fatalf("the queued call was not surfaced on resume:\n%s", body)
 	}
-	service.mu.Lock()
-	parked = service.parked
-	service.mu.Unlock()
+	parked = firstParkedSession(service)
 	if parked == nil || !parked.matches([]string{"toolu_2"}) {
 		t.Fatal("the queued call must stay answerable")
+	}
+	parked.mu.Lock()
+	wasClosed := parked.closed
+	parked.mu.Unlock()
+	if wasClosed {
+		t.Fatal("re-parked stream was closed when resumed turn returned")
 	}
 }
 
@@ -581,20 +587,87 @@ func TestCursorTakeParkedDropsUnrelatedStream(t *testing.T) {
 		},
 		response: &http.Response{Body: closedReader{closed}},
 	}
-	service := &cursorService{parked: session, blobs: map[string][]byte{}}
-	if got := service.takeParked([]string{"other"}); got != nil {
+	service := &cursorService{parked: []*cursorSession{session}, blobs: map[string][]byte{}}
+	if got := service.takeParked("", []string{"other"}); got != nil {
 		t.Fatalf("takeParked returned an unrelated stream: %v", got)
 	}
-	service.mu.Lock()
-	parked := service.parked
-	service.mu.Unlock()
-	if parked != nil {
+	if firstParkedSession(service) != nil {
 		t.Fatal("an unrelated stream must not stay parked")
 	}
 	select {
 	case <-closed:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the dropped stream was not closed")
+	}
+}
+
+func TestCursorTakeParkedPreservesOtherConversationSessions(t *testing.T) {
+	closedA := make(chan struct{})
+	closedB := make(chan struct{})
+	_, writerA := io.Pipe()
+	_, writerB := io.Pipe()
+	sessionA := &cursorSession{
+		sessionKey: "conv-a",
+		writer:     writerA,
+		cancel:     func() {},
+		pending:    map[string]cursorPendingCall{"toolu_a": {msgID: 1, execID: "exec-a"}},
+		response:   &http.Response{Body: closedReader{closedA}},
+	}
+	sessionB := &cursorSession{
+		sessionKey: "conv-b",
+		writer:     writerB,
+		cancel:     func() {},
+		pending:    map[string]cursorPendingCall{"toolu_b": {msgID: 2, execID: "exec-b"}},
+		response:   &http.Response{Body: closedReader{closedB}},
+	}
+	service := &cursorService{parked: []*cursorSession{sessionA, sessionB}, blobs: map[string][]byte{}}
+	defer service.closeParked()
+
+	// Conversation B starting a fresh turn must not drop Conversation A's parked stream.
+	if got := service.takeParked("conv-b", nil); got != nil {
+		t.Fatalf("unexpected match: %v", got)
+	}
+	select {
+	case <-closedB:
+	case <-time.After(2 * time.Second):
+		t.Fatal("conversation B's stale stream was not closed")
+	}
+	if got := service.takeParked("conv-a", []string{"toolu_a"}); got != sessionA {
+		t.Fatalf("conversation A's parked stream was lost: %v", got)
+	}
+	select {
+	case <-closedA:
+		t.Fatal("conversation A's stream should still be open")
+	default:
+	}
+}
+
+func TestCursorStartRunStoresSystemPromptBlob(t *testing.T) {
+	newCursorStubUpstream(t, func(writer http.ResponseWriter, request *http.Request, frames <-chan cursorStubFrame) {
+		<-frames
+		writer.Header().Set("Content-Type", "application/connect+proto")
+		writer.WriteHeader(http.StatusOK)
+		writeCursorFrame(writer, cursorTestInteraction(cursorIUTextDelta, "ok"))
+		writeCursorFrame(writer, cursorTestTurnEnd())
+	})
+	service := newCursorTestService(t, cursorTestCredential(t, "access-token"))
+	defer service.closeParked()
+
+	payload := `{
+		"model":"composer-2",
+		"instructions":"You are a meticulous code reviewer.",
+		"stream":true,
+		"input":[{"role":"user","content":"hello"}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(payload))
+	req.Header.Set("x-api-key", service.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	if status, body := serveCursorTurn(t, service, req); status != http.StatusOK {
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+	systemJSON, _ := json.Marshal(map[string]string{"role": "system", "content": "You are a meticulous code reviewer."})
+	if got := service.blob(sha256SumBytes(systemJSON)); string(got) != string(systemJSON) {
+		t.Fatalf("system prompt blob = %q, want %q", got, systemJSON)
 	}
 }
 

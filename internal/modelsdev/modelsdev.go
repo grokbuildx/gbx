@@ -174,19 +174,15 @@ func Fetch(ctx context.Context) (map[string]Provider, error) {
 	return decodeCatalog(body)
 }
 
-func decodeCatalog(body []byte) (map[string]Provider, error) {
+func decodeAllProviders(body []byte) (map[string]Provider, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("decode models.dev catalog: %w", err)
 	}
-
 	providers := make(map[string]Provider, len(raw))
 	for id, entry := range raw {
 		var p Provider
 		if err := json.Unmarshal(entry, &p); err != nil {
-			continue
-		}
-		if strings.TrimSpace(p.API) == "" || len(p.Models) == 0 {
 			continue
 		}
 		if p.ID == "" {
@@ -197,10 +193,29 @@ func decodeCatalog(body []byte) (map[string]Provider, error) {
 		}
 		providers[id] = p
 	}
+	return providers, nil
+}
+
+func filterUsableProviders(all map[string]Provider) (map[string]Provider, error) {
+	providers := make(map[string]Provider, len(all))
+	for id, p := range all {
+		if strings.TrimSpace(p.API) == "" || len(p.Models) == 0 {
+			continue
+		}
+		providers[id] = p
+	}
 	if len(providers) == 0 {
 		return nil, fmt.Errorf("models.dev catalog contained no usable providers")
 	}
 	return providers, nil
+}
+
+func decodeCatalog(body []byte) (map[string]Provider, error) {
+	all, err := decodeAllProviders(body)
+	if err != nil {
+		return nil, err
+	}
+	return filterUsableProviders(all)
 }
 
 func fetchBody(ctx context.Context) ([]byte, error) {
@@ -213,6 +228,7 @@ func fetchBody(ctx context.Context) ([]byte, error) {
 			Proxy: http.ProxyFromEnvironment,
 		},
 	}
+	defer client.CloseIdleConnections()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build models.dev request: %w", err)
@@ -229,7 +245,7 @@ func fetchBody(ctx context.Context) ([]byte, error) {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 		return nil, fmt.Errorf("fetch models.dev catalog: HTTP %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	body, err := readCatalogBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read models.dev catalog: %w", err)
 	}

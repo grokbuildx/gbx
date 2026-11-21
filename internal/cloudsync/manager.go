@@ -149,8 +149,31 @@ func Load() (*Manager, error) {
 	return LoadRemote("")
 }
 
+// LoadContext loads the primary cloud remote using ctx for network requests.
+func LoadContext(ctx context.Context) (*Manager, error) {
+	return LoadRemoteContext(ctx, "")
+}
+
+// LoadLocal loads the primary cloud remote without contacting Google Drive,
+// suitable for local-only metadata updates such as `gbx cloud tag`.
+func LoadLocal() (*Manager, error) {
+	return loadRemote(context.Background(), "", false)
+}
+
 // LoadRemote loads a cloud remote. An empty alias selects the primary remote.
 func LoadRemote(alias string) (*Manager, error) {
+	return LoadRemoteContext(context.Background(), alias)
+}
+
+// LoadRemoteContext loads a cloud remote using ctx for network operations.
+func LoadRemoteContext(ctx context.Context, alias string) (*Manager, error) {
+	return loadRemote(ctx, alias, true)
+}
+
+func loadRemote(ctx context.Context, alias string, fetchRemote bool) (*Manager, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	localDir, err := gbxDirectory()
 	if err != nil {
 		return nil, err
@@ -181,18 +204,18 @@ func LoadRemote(alias string) (*Manager, error) {
 		return nil, err
 	}
 	var flushRemote func() error
-	if cfg.Provider == providerGoogleDrive {
+	if cfg.Provider == providerGoogleDrive && fetchRemote {
 		remote, remoteErr := loadAuthorizedGoogleDriveAt(
-			context.Background(), remoteAuthPath(localDir, remoteID), resolvedAlias,
+			ctx, remoteAuthPath(localDir, remoteID), resolvedAlias,
 		)
 		if remoteErr != nil {
 			return nil, remoteErr
 		}
-		if _, remoteErr = remote.downloadBundle(cfg.RemoteDir); remoteErr != nil {
+		if _, remoteErr = remote.downloadBundleContext(ctx, cfg.RemoteDir); remoteErr != nil {
 			return nil, remoteErr
 		}
 		flushRemote = func() error {
-			return remote.uploadBundle(cfg.RemoteDir)
+			return remote.uploadBundleLocked(context.Background(), cfg.RemoteDir)
 		}
 	}
 	keyMode := profileState.KeyMode
@@ -214,8 +237,10 @@ func LoadRemote(alias string) (*Manager, error) {
 		remoteStateFile:  remoteStatePath(localDir, remoteID),
 		flushRemote:      flushRemote,
 	}
-	if err := manager.verifyProfileKey(manager.profileID); err != nil {
-		return nil, fmt.Errorf("verify cloud profile for remote %q: %w", resolvedAlias, err)
+	if fetchRemote {
+		if err := manager.verifyProfileKey(manager.profileID); err != nil {
+			return nil, fmt.Errorf("verify cloud profile for remote %q: %w", resolvedAlias, err)
+		}
 	}
 	return manager, nil
 }

@@ -815,3 +815,121 @@ func TestDefaultModelStepperAndPickerFlow(t *testing.T) {
 		t.Fatalf("dropped DefaultModel = %q, want cleared empty", m.p.DefaultModel)
 	}
 }
+
+func TestHandleMouseStructuredHitTest(t *testing.T) {
+	savedLang := locale.Current()
+	t.Cleanup(func() { locale.SetLanguage(savedLang) })
+
+	findRenderedCoord := func(t *testing.T, m *AdvancedConfigModel, substr string) (x, y int) {
+		t.Helper()
+		rendered := tui.Sprint(m.Render(nil), tui.WithPrintWidth(max(m.width, 1)))
+		for row, raw := range strings.Split(rendered, "\n") {
+			plain := stripANSI(raw)
+			if idx := strings.Index(plain, substr); idx >= 0 {
+				return tui.StringWidth(plain[:idx]), row
+			}
+		}
+		t.Fatalf("rendered frame (%dx%d) missing %q:\n%s", m.width, m.height, substr, stripANSI(rendered))
+		return -1, -1
+	}
+
+	for _, tc := range []struct {
+		lang     string
+		endpoint string
+		check    string
+		save     string
+		cancel   string
+	}{
+		{lang: "en", endpoint: "Endpoint URL", check: "Check", save: "Save & Activate", cancel: "Cancel"},
+		{lang: "zh-CN", endpoint: "端点 URL", check: "检查", save: "保存并激活", cancel: "取消"},
+	} {
+		t.Run(tc.lang, func(t *testing.T) {
+			locale.SetLanguage(tc.lang)
+			p := providerFrom("demo", "https://example.test/v1", "openai")
+			p.APIKey = "sk-test-key"
+			m := NewAdvancedConfigModel(&p)
+			enterDetectedReview(m, "model-a", "model-b")
+			m.width = 100
+			m.height = 42
+
+			// Top padding / border row must not match any field.
+			if m.HandleMouse(tui.MouseEvent{Button: tui.MouseLeft, Action: tui.MousePress, X: 5, Y: 0}) {
+				t.Fatal("click on top padding unexpectedly matched a row")
+			}
+
+			// Click Endpoint label -> focuses URL input.
+			x, y := findRenderedCoord(t, m, tc.endpoint)
+			if !m.HandleMouse(tui.MouseEvent{Button: tui.MouseLeft, Action: tui.MousePress, X: x, Y: y}) {
+				t.Fatalf("click on %q at (%d,%d) was not handled", tc.endpoint, x, y)
+			}
+			if m.currentRow() != rowEndpoint || !m.urlFocused {
+				t.Fatalf("after clicking Endpoint: row=%v urlFocused=%t", m.currentRow(), m.urlFocused)
+			}
+
+			// Click API Key label -> focuses API Key input.
+			x, y = findRenderedCoord(t, m, "API Key")
+			if !m.HandleMouse(tui.MouseEvent{Button: tui.MouseLeft, Action: tui.MousePress, X: x, Y: y}) {
+				t.Fatalf("click on API Key at (%d,%d) was not handled", x, y)
+			}
+			if m.currentRow() != rowAPIKey || !m.keyFocused {
+				t.Fatalf("after clicking API Key: row=%v keyFocused=%t", m.currentRow(), m.keyFocused)
+			}
+
+			// Click Check row -> selects rowTestModels.
+			x, y = findRenderedCoord(t, m, tc.check)
+			if !m.HandleMouse(tui.MouseEvent{Button: tui.MouseLeft, Action: tui.MousePress, X: x, Y: y}) {
+				t.Fatalf("click on %q at (%d,%d) was not handled", tc.check, x, y)
+			}
+			if m.currentRow() != rowTestModels {
+				t.Fatalf("after clicking Check: row=%v, want rowTestModels", m.currentRow())
+			}
+
+			// Combined Save & Cancel row: X disambiguates Save vs Cancel.
+			sx, sy := findRenderedCoord(t, m, tc.save)
+			cx, cy := findRenderedCoord(t, m, tc.cancel)
+			if sy != cy {
+				t.Fatalf("expected Save and Cancel on same row at width %d, got y=%d vs y=%d", m.width, sy, cy)
+			}
+			if !m.HandleMouse(tui.MouseEvent{Button: tui.MouseLeft, Action: tui.MousePress, X: sx, Y: sy}) {
+				t.Fatalf("click on Save at (%d,%d) was not handled", sx, sy)
+			}
+			if m.currentRow() != rowSave {
+				t.Fatalf("after clicking Save: row=%v, want rowSave", m.currentRow())
+			}
+			// Moving the cursor off Check hides its hover hint line, shifting
+			// Save/Cancel up by one row in the next rendered frame.
+			cx, cy = findRenderedCoord(t, m, tc.cancel)
+			if !m.HandleMouse(tui.MouseEvent{Button: tui.MouseLeft, Action: tui.MousePress, X: cx, Y: cy}) {
+				t.Fatalf("click on Cancel at (%d,%d) was not handled", cx, cy)
+			}
+			if m.currentRow() != rowCancel {
+				t.Fatalf("after clicking Cancel: row=%v, want rowCancel", m.currentRow())
+			}
+
+			// Scrolled terminal (height=18) with scroll indicator at top.
+			m.height = 18
+			m.cursor = m.mainRowIndex(rowSave)
+			m.keepCursorVisible()
+			cx, cy = findRenderedCoord(t, m, tc.cancel)
+			if !m.HandleMouse(tui.MouseEvent{Button: tui.MouseLeft, Action: tui.MousePress, X: cx, Y: cy}) {
+				t.Fatalf("scrolled click on Cancel at (%d,%d) was not handled", cx, cy)
+			}
+			if m.currentRow() != rowCancel {
+				t.Fatalf("after scrolled Cancel click: row=%v, want rowCancel", m.currentRow())
+			}
+
+			// Short bare-panel terminal (height=17) and split actions (width=40).
+			m.width = 40
+			m.height = 17
+			m.cursor = m.mainRowIndex(rowSave)
+			m.keepCursorVisible()
+			cx, cy = findRenderedCoord(t, m, tc.cancel)
+			if !m.HandleMouse(tui.MouseEvent{Button: tui.MouseLeft, Action: tui.MousePress, X: cx, Y: cy}) {
+				t.Fatalf("short-terminal click on Cancel at (%d,%d) was not handled", cx, cy)
+			}
+			if m.currentRow() != rowCancel {
+				t.Fatalf("after short-terminal Cancel click: row=%v, want rowCancel", m.currentRow())
+			}
+		})
+	}
+}

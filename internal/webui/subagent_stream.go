@@ -83,24 +83,26 @@ func (c *acpTurnClient) translateChildLocked(child *acpChildSession, update acp.
 	})
 }
 
-// Flush parents first, including when a spawn's final input/result arrived after
-// its child started streaming. The caller holds c.mu through persistence.
-func (c *acpTurnClient) flushChildrenLocked() {
+// Drain parents first, including when a spawn's final input/result arrived
+// after its child started streaming, returning events to append after c.mu is
+// released.
+func (c *acpTurnClient) drainChildrenLocked(out []translatedEvent) []translatedEvent {
 	for _, child := range c.children {
-		c.flushChildLocked(child)
+		out = c.drainChildLocked(child, out)
 	}
+	return out
 }
 
-func (c *acpTurnClient) flushChildLocked(child *acpChildSession) {
+func (c *acpTurnClient) drainChildLocked(child *acpChildSession, out []translatedEvent) []translatedEvent {
 	if child.ownerScope != nil {
-		c.flushChildLocked(child.ownerScope)
+		out = c.drainChildLocked(child.ownerScope, out)
 		if child.ownerScope.parentID() == "" {
-			return
+			return out
 		}
 	}
 	parent := child.parentID()
 	if parent == "" {
-		return
+		return out
 	}
 	for _, event := range child.pending {
 		var payload any
@@ -132,12 +134,13 @@ func (c *acpTurnClient) flushChildLocked(child *acpChildSession) {
 		default:
 			continue
 		}
-		_, _ = c.session.Append(event.kind, payload)
+		out = append(out, translatedEvent{kind: event.kind, payload: payload})
 		if use, ok := payload.(ToolUsePayload); ok {
 			if sub := child.owner.subagents[child.subagentID]; sub != nil && !sub.finished {
-				_, _ = c.session.Append(EventTask, TaskPayload{ID: parent, Status: "running", LastTool: use.Name})
+				out = append(out, translatedEvent{kind: EventTask, payload: TaskPayload{ID: parent, Status: "running", LastTool: use.Name}})
 			}
 		}
 	}
 	child.pending = nil
+	return out
 }

@@ -1,6 +1,7 @@
 package oauthproxy
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"io"
@@ -13,7 +14,17 @@ import (
 
 // loopbackFrontMux serves Responses and adapts Chat Completions to it.
 func loopbackFrontMux(key string, models, responses http.HandlerFunc) *http.ServeMux {
-	statefulResponses := withResponsesHistory(key, responses)
+	return loopbackFrontMuxForContext(context.Background(), key, models, responses)
+}
+
+// loopbackFrontMuxForContext builds the loopback mux, bypassing the per-runtime
+// previous_response_id history cache when disabled on ctx (for example when
+// codex.Gateway already owns conversation history).
+func loopbackFrontMuxForContext(ctx context.Context, key string, models, responses http.HandlerFunc) *http.ServeMux {
+	statefulResponses := responses
+	if !historyCacheDisabled(ctx) {
+		statefulResponses = withResponsesHistory(key, responses)
+	}
 	chat := chatCompletionsFront(key, responses)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(writer http.ResponseWriter, _ *http.Request) {
@@ -147,10 +158,22 @@ func serveModelListWithRoutes(writer http.ResponseWriter, request *http.Request,
 	writeModelList(writer, data)
 }
 
+func hasGeminiEffortSuffix(lower string) bool {
+	if !strings.HasPrefix(lower, "gemini-") {
+		return false
+	}
+	for _, level := range []string{"-minimal", "-low", "-medium", "-high"} {
+		if strings.HasSuffix(lower, level) {
+			return true
+		}
+	}
+	return false
+}
+
 func resolveFallbackModelReasoning(index *modelsdev.Index, providerID, target, displayOrAlias string) ([]protocol.ReasoningLevel, string, bool) {
 	bare := strings.TrimSpace(stripContextModelSuffix(target))
 	lower := strings.ToLower(bare)
-	if _, level := geminiModelFamily(lower); level != "" {
+	if hasGeminiEffortSuffix(lower) {
 		return nil, "", true
 	}
 	if lower == "kimi-for-coding-highspeed" {
@@ -296,24 +319,26 @@ func applyModelEntryReasoning(entry map[string]any, levels []protocol.ReasoningL
 }
 
 func grokEffortOptionMeta(effort, customDesc string) (label, description string, ok bool) {
-	switch strings.ToLower(strings.TrimSpace(effort)) {
+	normalized := strings.ToLower(strings.TrimSpace(effort))
+	switch normalized {
 	case "minimal":
-		label, description = "Minimal Effort", "Minimal reasoning for fast responses"
+		label = "Minimal Effort"
 	case "low":
-		label, description = "Low Effort", "Fast responses with lighter reasoning"
+		label = "Low Effort"
 	case "medium":
-		label, description = "Medium Effort", "Balances speed and reasoning depth for everyday tasks"
+		label = "Medium Effort"
 	case "high":
-		label, description = "High Effort", "Greater reasoning depth for complex problems"
+		label = "High Effort"
 	case "xhigh":
-		label, description = "Extra High Effort", "Extra high reasoning depth for complex problems"
+		label = "Extra High Effort"
 	case "max":
-		label, description = "Max Effort", "Maximum reasoning depth for the hardest problems"
+		label = "Max Effort"
 	case "ultra":
 		return "", firstNonEmptyString(customDesc, "Maximum reasoning with automatic task delegation"), false
 	default:
 		return "", strings.TrimSpace(customDesc), false
 	}
+	description = protocol.EffortDescription(normalized)
 	if trimmed := strings.TrimSpace(customDesc); trimmed != "" && !strings.EqualFold(trimmed, effort) {
 		description = trimmed
 	}

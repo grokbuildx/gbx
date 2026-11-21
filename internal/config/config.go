@@ -8,12 +8,14 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/grokbuildx/gbx/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/paths"
 	"github.com/grokbuildx/gbx/internal/provider"
 	"gopkg.in/yaml.v3"
 )
@@ -27,11 +29,7 @@ func ConfigPath() string {
 }
 
 func configPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(home, ".gbx", "config.yaml"), nil
+	return paths.ConfigPath()
 }
 
 // Load reads the config and normalizes it in memory. It never writes; a
@@ -46,7 +44,7 @@ func read() (*provider.Config, error) {
 	if err != nil {
 		return cfg, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := fsutil.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			cfg.LogLevel = "off"
@@ -61,6 +59,24 @@ func read() (*provider.Config, error) {
 	}
 	normalize(cfg)
 	return cfg, nil
+}
+
+// AcquireLock holds the exclusive cross-process config lock (~/.gbx/.config.lock)
+// until the returned unlock function is called. Subsystems that atomically
+// replace config.yaml (such as cloud restore) use it to coordinate with Update.
+func AcquireLock(ctx context.Context) (func(), error) {
+	path, err := configPath()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	unlock, err := fsutil.AcquireFileLock(ctx, filepath.Join(filepath.Dir(path), ".config.lock"))
+	if err != nil {
+		return nil, fmt.Errorf("lock gbx config: %w", err)
+	}
+	return unlock, nil
 }
 
 // Update applies fn to the current config under the config lock and writes the
@@ -117,12 +133,9 @@ func withLock(fn func(path string) error) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	unlock, err := lockFile(filepath.Join(filepath.Dir(path), ".config.lock"))
+	unlock, err := AcquireLock(context.Background())
 	if err != nil {
-		return fmt.Errorf("lock gbx config: %w", err)
+		return err
 	}
 	defer unlock()
 	return fn(path)

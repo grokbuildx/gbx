@@ -110,7 +110,7 @@ func loginKiro(ctx context.Context, authDir string, opts LoginOptions) (LoginRes
 }
 
 func loginKiroBuilderID(ctx context.Context, authDir string, opts LoginOptions) (LoginResult, error) {
-	client := &http.Client{Timeout: kiroOAuthRequestLimit}
+	client := newTimedCredentialHTTPClient(kiroOAuthRequestLimit)
 	base := kiroOIDCEndpoint(kiroDefaultRegion)
 
 	var registered kiroRegisterClientResponse
@@ -341,7 +341,7 @@ func loginKiroSocial(ctx context.Context, authDir string, opts LoginOptions) (Lo
 		tokenRedirectURI += "?login_option=" + url.QueryEscape(callback.loginOption)
 	}
 
-	client := &http.Client{Timeout: kiroOAuthRequestLimit}
+	client := newTimedCredentialHTTPClient(kiroOAuthRequestLimit)
 	token, err := exchangeKiroSocialCode(waitCtx, client, callback.code, verifier, tokenRedirectURI)
 	if err != nil {
 		return LoginResult{}, err
@@ -451,7 +451,7 @@ func exchangeKiroSocialCode(ctx context.Context, client *http.Client, code, veri
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("User-Agent", "KiroIDE-"+kiroIDEVersion)
-	response, err := client.Do(request)
+	response, err := doCredentialRequest(client, request)
 	if err != nil {
 		return kiroSocialTokenResponse{}, fmt.Errorf("exchange Kiro Portal authorization code: %w", err)
 	}
@@ -540,7 +540,7 @@ func kiroPostJSONRaw(ctx context.Context, client *http.Client, endpoint string, 
 		return 0, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
+	resp, err := doCredentialRequest(client, req)
 	if err != nil {
 		return 0, nil, err
 	}

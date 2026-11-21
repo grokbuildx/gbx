@@ -158,13 +158,24 @@ func (c *kiroModelCatalog) fetchOnce(ctx context.Context, service *kiroService, 
 	c.inflight[candidate.path] = fetch
 	c.mu.Unlock()
 
-	fetch.models, fetch.err = c.fetchCredentialModels(ctx, service, candidate)
-	close(fetch.done)
+	go func() {
+		defer func() {
+			c.mu.Lock()
+			delete(c.inflight, candidate.path)
+			c.mu.Unlock()
+			close(fetch.done)
+		}()
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+		defer cancel()
+		fetch.models, fetch.err = c.fetchCredentialModels(fetchCtx, service, candidate)
+	}()
 
-	c.mu.Lock()
-	delete(c.inflight, candidate.path)
-	c.mu.Unlock()
-	return fetch.models, fetch.err
+	select {
+	case <-fetch.done:
+		return fetch.models, fetch.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // availableModels discovers the actual catalog for every credential selected by
@@ -437,7 +448,7 @@ func (c *kiroModelCatalog) bootstrapPortalSession(ctx context.Context, service *
 	addKiroPortalCookies(request, &credential, idp)
 	request.Header.Set("Accept", "text/html")
 	request.Header.Set("User-Agent", "gbx KiroWebPortal model discovery")
-	response, err := service.client.Do(request)
+	response, err := doCredentialRequest(service.client, request)
 	if err != nil {
 		return credential, true, fmt.Errorf("load Kiro Web Portal session: %w", err)
 	}
@@ -502,7 +513,7 @@ func (c *kiroModelCatalog) requestPortalModels(ctx context.Context, service *kir
 	}
 	addKiroPortalCookies(request, credential, kiroPortalIDP(credential))
 
-	response, err := service.client.Do(request)
+	response, err := doCredentialRequest(service.client, request)
 	if err != nil {
 		return nil, fmt.Errorf("call Kiro Web Portal ListAvailableModels: %w", err)
 	}
@@ -625,7 +636,7 @@ func (c *kiroModelCatalog) requestAvailableModels(ctx context.Context, service *
 		request.Header.Set("tokentype", "EXTERNAL_IDP")
 	}
 
-	response, err := service.client.Do(request)
+	response, err := doCredentialRequest(service.client, request)
 	if err != nil {
 		return nil, fmt.Errorf("call Kiro ListAvailableModels: %w", err)
 	}

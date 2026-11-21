@@ -242,7 +242,7 @@ func newCloudTagCommand() *cobra.Command {
 		Short: "Tag the current local configuration for the next push",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			manager, err := cloudsync.Load()
+			manager, err := cloudsync.LoadLocal()
 			if err != nil {
 				return err
 			}

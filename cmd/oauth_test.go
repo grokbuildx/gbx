@@ -21,7 +21,6 @@ func TestOAuthRuntimeTypeDefaults(t *testing.T) {
 		want     string
 	}{
 		{oauthproxy.ProviderChatGPT, "openai_responses"},
-		{oauthproxy.ProviderGemini, "openai"},
 		{oauthproxy.ProviderGrok, "openai_responses"},
 		{oauthproxy.ProviderKimi, "openai"},
 		{oauthproxy.ProviderKiro, "openai_responses"},
@@ -107,63 +106,23 @@ func TestRunAuthRejectsPublicCodexAlias(t *testing.T) {
 	}
 }
 
-func TestRunAuthGeminiUsesChatAndAntigravityBackend(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+func TestRunAuthRejectsRetiredGeminiOAuth(t *testing.T) {
+	called := false
 	originalLogin := oauthLogin
-	oauthLogin = func(_ context.Context, target string, _ oauthproxy.LoginOptions) (oauthproxy.LoginResult, error) {
-		return oauthproxy.LoginResult{Provider: target, Backend: "antigravity", Path: "antigravity-credential.json"}, nil
+	oauthLogin = func(_ context.Context, _ string, _ oauthproxy.LoginOptions) (oauthproxy.LoginResult, error) {
+		called = true
+		return oauthproxy.LoginResult{}, nil
 	}
 	t.Cleanup(func() { oauthLogin = originalLogin })
 
-	if err := runAuth(context.Background(), &bytes.Buffer{}, []string{"gemini"}, authOptions{}); err != nil {
-		t.Fatalf("runAuth() error: %v", err)
+	for _, name := range []string{"gemini", "antigravity", "gemini-cli"} {
+		err := runAuth(context.Background(), &bytes.Buffer{}, []string{name}, authOptions{})
+		if err == nil || !strings.Contains(err.Error(), "retired") {
+			t.Fatalf("runAuth(%q) = %v, want retired error", name, err)
+		}
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	p, ok := cfg.Providers["gemini-credential"]
-	if !ok {
-		t.Fatalf("no derived gemini-credential provider: %+v", cfg.Providers)
-	}
-	if p.Type != "openai" || p.Endpoint != "oauth://antigravity" || p.OAuthProvider != "gemini" {
-		t.Fatalf("Gemini provider = %+v", p)
-	}
-	if p.Model != "" {
-		t.Fatalf("Gemini should rely on live runtime discovery, got Model=%q", p.Model)
-	}
-}
-
-func TestRunAuthGeminiPreservesExistingModelPool(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	originalLogin := oauthLogin
-	oauthLogin = func(_ context.Context, target string, _ oauthproxy.LoginOptions) (oauthproxy.LoginResult, error) {
-		return oauthproxy.LoginResult{Provider: target, Backend: "antigravity", Path: "antigravity-credential.json"}, nil
-	}
-	t.Cleanup(func() { oauthLogin = originalLogin })
-
-	if err := config.Save(&provider.Config{
-		Providers: map[string]provider.Provider{
-			"work": {
-				Name:          "work",
-				OAuthProvider: "gemini",
-				Model:         "my-sonnet,gemini-3.8-flash",
-			},
-		},
-	}); err != nil {
-		t.Fatalf("save initial: %v", err)
-	}
-	if err := runAuth(context.Background(), &bytes.Buffer{}, []string{"gemini", "work"}, authOptions{}); err != nil {
-		t.Fatalf("runAuth() error: %v", err)
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	p := cfg.Providers["work"]
-	if p.Model != "my-sonnet,gemini-3.8-flash" {
-		t.Fatalf("existing model pool overwritten: %+v", p)
+	if called {
+		t.Fatal("retired Gemini OAuth invoked login flow")
 	}
 }
 
@@ -446,8 +405,8 @@ func TestProviderFastSummary(t *testing.T) {
 	if got := providerFastSummary(provider.Provider{FastMode: true, OAuthProvider: "gpt"}); got != "on" {
 		t.Fatalf("gpt fast = %q, want on", got)
 	}
-	if got := providerFastSummary(provider.Provider{FastMode: true, OAuthProvider: "gemini"}); got != "off" {
-		t.Fatalf("gemini fast = %q, want off", got)
+	if got := providerFastSummary(provider.Provider{FastMode: true, OAuthProvider: "grok"}); got != "off" {
+		t.Fatalf("grok fast = %q, want off", got)
 	}
 	if got := providerFastSummary(provider.Provider{FastMode: false, OAuthProvider: "gpt"}); got != "off" {
 		t.Fatalf("gpt off = %q, want off", got)

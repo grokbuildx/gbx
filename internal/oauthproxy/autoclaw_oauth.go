@@ -102,7 +102,7 @@ func loginAutoClaw(ctx context.Context, authDir string, opts LoginOptions) (Logi
 		return LoginResult{}, fmt.Errorf("create AutoClaw login nonce: %w", err)
 	}
 	version := autoClawInstalledVersion()
-	client := &http.Client{Timeout: autoclawOAuthRequestTimeout}
+	client := newTimedCredentialHTTPClient(autoclawOAuthRequestTimeout)
 	captchaConfig, err := fetchAutoClawCaptchaConfig(ctx, client, version)
 	if err != nil {
 		return LoginResult{}, err

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/grokbuildx/gbx/internal/modelsdev"
 	"github.com/grokbuildx/gbx/internal/protocol"
@@ -69,7 +70,7 @@ func discoverXaiModels(ctx context.Context, endpoint string, authorizer *xaiOAut
 
 func requestXaiModels(ctx context.Context, client *http.Client, endpoint string, auth codexResponsesAuthorization) ([]xaiModel, int, error) {
 	if client == nil {
-		client = http.DefaultClient
+		client = newTimedCredentialHTTPClient(30 * time.Second)
 	}
 	target := strings.TrimRight(normalizeOpenAIBaseURL(endpoint), "/") + "/models"
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -79,7 +80,7 @@ func requestXaiModels(ctx context.Context, client *http.Client, endpoint string,
 	applyXaiClientHeaders(request.Header, auth)
 	request.Header.Set("Authorization", "Bearer "+auth.token)
 	request.Header.Set("Accept", "application/json")
-	response, err := client.Do(request)
+	response, err := doCredentialRequest(client, request)
 	if err != nil {
 		return nil, 0, fmt.Errorf("discover Grok models: %w", err)
 	}

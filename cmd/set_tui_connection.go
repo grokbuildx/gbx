@@ -8,7 +8,6 @@ import (
 
 	"github.com/grokbuildx/gbx/internal/locale"
 	"github.com/grokbuildx/gbx/internal/modelsdev"
-	"github.com/grokbuildx/gbx/internal/oauthproxy"
 	"github.com/grokbuildx/gbx/internal/protocol"
 	"github.com/grokbuildx/gbx/internal/provider"
 )
@@ -58,7 +57,7 @@ func (m *AdvancedConfigModel) configureOAuthRuntime(endpoint, apiKey string, mod
 // catalog; now the panel renders first and the Local Proxy row shows a spinner
 // until the result lands.
 func (m *AdvancedConfigModel) beginOAuthRuntime(p provider.Provider) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(m.lifecycleCtx())
 	m.oauthCancel = cancel
 	m.runtimeLoading = true
 	m.runtimeReady = false
@@ -67,7 +66,10 @@ func (m *AdvancedConfigModel) beginOAuthRuntime(p provider.Provider) {
 		defer close(m.oauthStartDone)
 		runtimeProvider, runtime, cleanup, err := prepareProviderRuntime(ctx, p)
 		if err != nil {
-			m.oauthDone <- oauthRuntimeDoneMsg{err: err}
+			select {
+			case m.oauthDone <- oauthRuntimeDoneMsg{err: err}:
+			case <-ctx.Done():
+			}
 			return
 		}
 		m.runtimeCleanup = cleanup
@@ -76,21 +78,17 @@ func (m *AdvancedConfigModel) beginOAuthRuntime(p provider.Provider) {
 			// Qoder publishes account-specific credit multipliers on the local
 			// catalog. Preserve them alongside display names for the picker.
 			modelInfos = fetchModelInfosForProvider(runtimeProvider)
-		} else if strings.EqualFold(strings.TrimSpace(p.OAuthProvider), oauthproxy.ProviderGemini) {
-			details := runtime.ModelDetails()
-			for _, id := range runtime.Models() {
-				if info, ok := details[strings.ToLower(id)]; ok {
-					modelInfos = append(modelInfos, info)
-				}
-			}
 		}
-		m.oauthDone <- oauthRuntimeDoneMsg{
+		select {
+		case m.oauthDone <- oauthRuntimeDoneMsg{
 			endpoint:        runtimeProvider.Endpoint,
 			apiKey:          runtimeProvider.APIKey,
 			models:          runtime.Models(),
 			names:           runtime.ModelDisplayNames(),
 			modelInfos:      modelInfos,
 			catalogFallback: runtime.ModelCatalogIsFallback(),
+		}:
+		case <-ctx.Done():
 		}
 	}()
 }
@@ -100,6 +98,7 @@ func (m *AdvancedConfigModel) beginOAuthRuntime(p provider.Provider) {
 // exit path including an early return from app.Run. Session.Close and
 // Runtime.Stop are both idempotent.
 func (m *AdvancedConfigModel) stopOAuthRuntime() {
+	m.cancelAsync()
 	if m.oauthCancel == nil {
 		return
 	}
@@ -197,6 +196,8 @@ func (m *AdvancedConfigModel) switchSource(target connectionSource) {
 	if m.source == target || (m.live().detecting && !m.usesModelsDev()) {
 		return
 	}
+	m.cancelFetch()
+	m.cancelVerify()
 	if m.usesModelsDev() && m.live().detecting {
 		m.live().detecting = false
 		m.live().verifyGeneration++
@@ -233,6 +234,7 @@ func (m *AdvancedConfigModel) switchSource(target connectionSource) {
 // from metadata; only the API key remains to be entered.
 // The Custom draft is left untouched so the user can switch back.
 func (m *AdvancedConfigModel) applyModelsDevProvider(p modelsdev.Provider) {
+	m.cancelVerify()
 	draft, metadata := modelsDevProviderToDraft(p)
 	if name := strings.TrimSpace(m.providerName); name != "" && !m.NameGenerated {
 		draft.Name = name
@@ -287,7 +289,7 @@ func (m *AdvancedConfigModel) startAutoDetect() {
 		m.live().detecting = true
 		m.live().detectProgress = 5
 		m.live().detectFrame = 0
-		fetchModelsAsync(m.fetchDone, m.live().probeEndpoint, m.live().probeAPIKey, m.p.Type)
+		fetchModelsAsync(m.nextFetchCtx(), m.fetchDone, m.live().probeEndpoint, m.live().probeAPIKey, m.p.Type)
 	}
 }
 
@@ -314,16 +316,17 @@ func (m *AdvancedConfigModel) startModelsDevVerification() {
 		m.markDirty()
 		return
 	}
-	m.live().probeEndpoint = m.p.Endpoint
+	targetEndpoint := probeEndpointForModel(m.p.ModelEndpoints, model, m.p.Endpoint)
+	m.live().probeEndpoint = targetEndpoint
 	m.live().probeAPIKey = key
 	m.live().detectionError = nil
 	m.live().keyVerified = false
 	m.live().detecting = true
 	m.live().detectProgress = 5
 	m.live().detectFrame = 0
-	setDebugf("start models.dev key verify endpoint=%q api_key_len=%d model=%q proto=%q", m.p.Endpoint, len(key), model, proto)
+	setDebugf("start models.dev key verify endpoint=%q api_key_len=%d model=%q proto=%q", targetEndpoint, len(key), model, proto)
 	m.live().verifyGeneration++
-	keyVerifyAsync(m.verifyDone, probeEndpointForModel(m.p.ModelEndpoints, model, m.p.Endpoint), key, model, proto, m.live().verifyGeneration)
+	keyVerifyAsync(m.nextVerifyCtx(), m.verifyDone, targetEndpoint, key, model, proto, m.live().verifyGeneration)
 	m.markDirty()
 }
 
@@ -344,6 +347,7 @@ func (m *AdvancedConfigModel) retryModelsDevVerification() {
 // the probe baseline is resynced too, so a late keyVerifyDoneMsg cannot slip
 // past the guard and mark the unverified new key as connected.
 func (m *AdvancedConfigModel) invalidateModelsDevKeyIfChanged() {
+	m.cancelVerify()
 	if m.modelTesting && m.modelTestCancel != nil {
 		m.modelTestCancel()
 	}

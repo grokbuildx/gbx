@@ -109,7 +109,7 @@ func TestChatToolImagesFollowAllToolReplies(t *testing.T) {
 }
 
 func TestZeroFreshInputUsageIsAuthoritative(t *testing.T) {
-	for _, dialect := range []string{"chat", "responses", "gemini"} {
+	for _, dialect := range []string{"chat", "responses"} {
 		t.Run(dialect, func(t *testing.T) {
 			a := newResponseAssembler(&adapterRequest{inputTokens: 777}, nil)
 			switch dialect {
@@ -118,11 +118,6 @@ func TestZeroFreshInputUsageIsAuthoritative(t *testing.T) {
 			case "responses":
 				s := &codexResponsesStreamState{assembler: a}
 				if err := s.processTerminal("response.completed", map[string]any{"usage": map[string]any{"input_tokens": float64(100), "input_tokens_details": map[string]any{"cached_tokens": float64(100)}}}); err != nil {
-					t.Fatal(err)
-				}
-			case "gemini":
-				n := 0
-				if err := processGeminiChunk([]byte(`{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":100}}`), a, &n); err != nil {
 					t.Fatal(err)
 				}
 			}

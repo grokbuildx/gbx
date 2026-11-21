@@ -53,7 +53,7 @@ func newAnthropicMessagesService(apiKey, endpoint string, routes []runtimeModelR
 	s := &anthropicMessagesService{
 		apiKey: apiKey, endpoint: endpoint, upstreamKey: upstreamKey, usage: usage,
 		modelRoute: make(map[string]string, len(routes)), modelEndpoint: make(map[string]string),
-		client: &http.Client{Transport: newUpstreamTransport(90 * time.Second)},
+		client: newCredentialHTTPClient(90 * time.Second),
 	}
 	for _, route := range routes {
 		key := strings.ToLower(route.Alias)
@@ -188,7 +188,7 @@ func (s *anthropicMessagesService) callOnce(ctx context.Context, converted *anth
 		"method", http.MethodPost, "endpoint", SafeLogEndpoint(target),
 		"body_bytes", len(converted.body), "model", converted.model)
 	started := time.Now()
-	response, err := s.client.Do(request)
+	response, err := doCredentialRequest(s.client, request)
 	if err != nil {
 		return nil, fmt.Errorf("call Anthropic Messages upstream: %w", err)
 	}

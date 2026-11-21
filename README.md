@@ -6,7 +6,7 @@
 
 ## 中文
 
-`gbx` 是围绕 [Grok Build](https://x.ai/cli) 的启动器与 provider 代理：为 Grok Build 和 Codex 接入 OpenAI 兼容网关，以及 GPT、Gemini、Grok 等订阅账号，并通过本地代理转换协议。
+`gbx` 是围绕 [Grok Build](https://x.ai/cli) 的启动器与 provider 代理：为 Grok Build 和 Codex 接入 OpenAI 兼容网关，以及 GPT、Grok、Cursor 等订阅账号，并通过本地代理转换协议。
 
 ### 完全开源：你运行的 agent 就是你能读到的代码
 
@@ -107,7 +107,7 @@ gbx codex stop        # 恢复 Codex 原配置
 ```
 
 - 已绑定 provider 的配置变化会自动刷新模型目录和路由；新请求使用新 Runtime，正在进行的输出继续完成。客户端是否立即显示新模型由 Codex 决定，本地 JSON 目录不承诺进程内重载，必要时重启 Codex。
-- 多提供商接入：`gbx codex start deepseek --with-provider gemini --with-provider grok`。每个模型绑定各自账号，后续启动沿用这些额外绑定；`--with-provider ''` 清空。`gbx codex start --refresh` 主动重新获取模型。
+- 多提供商接入：`gbx codex start deepseek --with-provider gpt --with-provider grok`。每个模型绑定各自账号，后续启动沿用这些额外绑定；`--with-provider ''` 清空。`gbx codex start --refresh` 主动重新获取模型。
 - 默认使用本地目录。独立模式可试用 `gbx codex start --independent --catalog remote`；`--catalog local` 回退。Shared 模式不能把内置 OpenAI 的远程目录 URL 指向 localhost，因此继续使用合并 JSON。远程目录已验证获取与后台更新，但不承诺 Desktop 选择器即时刷新。所有模式都区分 GBX 路由/目录更新与客户端列表更新。
 - OpenAI 额度耗尽后要使用其他提供商，可运行 `gbx codex start --independent` 并重启 Codex。独立模式使用 GBX 自己的 provider 和会话凭据，列表只显示 GBX 模型；`gbx codex start --shared` 切回原生与 GBX 共用的列表。代理运行期间，后续启动、菜单切换沿用当前模式；停止后不保存模式，下次不带模式参数启动默认使用 shared。
 - Codex 会话绑定创建时的 model provider。独立模式会话使用 `gbx_proxy`，切回 shared 或停止代理后，该定义会移除，旧会话可能提示 provider 未配置或 `Model unavailable`。继续原会话需恢复 `gbx codex start --independent` 并重启 Codex；跨模式继续相同历史请分叉新会话，不要修改会话记录。参见 [OpenAI Docs](https://learn.chatgpt.com/docs/codex-sdk#resume-a-thread-without-loading-its-history)。
@@ -117,7 +117,6 @@ gbx codex stop        # 恢复 Codex 原配置
 - 转换协议的模型支持 Codex 客户端工具搜索：GBX 将搜索转换为普通函数调用，由 Codex 检索本地工具并返回选中的定义，避免一次发送全部延迟加载工具。实际工具仍由 Codex 执行并检查权限；模型需要能正确使用搜索函数和返回的工具定义。
 - 支持图片的模型按上游声明开放截图读取；转换模型沿用本机原生目录提供的客户端工具模式，computer use 仍由 Codex 客户端执行并检查权限。shared 模式内，常规对话可在转换模型与原生 GPT 之间切换；GPT 的原生加密压缩内容无法解密；转换模型会校验同一会话的本地记录与压缩项，再恢复有边界的可见历史摘录，并提示旧细节可能缺失。缺少匹配记录时明确报错。
 - 转换模型的 effort 档位来自 models.dev 元数据缓存，按模型匹配，不再统一为低、中、高。OAuth 登录和 `gbx set` 保存时按需刷新；也可运行 `gbx set --refresh-models` 单独更新。网络失败使用 `~/.gbx/cache/modelsdev.json`；未匹配或尚无缓存时保留兼容设置。运行中的代理会刷新元数据，本地 JSON 模式重启 Codex 加载新目录。原生 Responses 模型保留自身元数据。
-- `gbx oauth gemini` 接入 Google Antigravity。GBX 使用绑定账号的订阅档位获取目录，缓存真实模型 ID 与元数据；Gemini 4 Argon 等模型按账号实际返回的思考档位解析。目录请求失败时，先使用该账号缓存和已有配置，最后才使用静态兼容列表。Codex 网关每五分钟刷新目录，也可用 `--refresh` 主动刷新。
 - Codex 保留原生 OpenAI Provider 与登录。原生请求继续走原有 ChatGPT / OpenAI 服务，只有独立白名单中的 `gbx/<provider>/<model>` 发往 GBX；转发到 GBX 时移除 Codex 凭据，WebSocket 用 426 回退 HTTP Responses。
 - 原生模型信息来自现有目录或 `models_cache.json`，必要时读取已安装 Codex 的 `debug models --bundled`，不写死原生模型名称。缺少缓存时需安装较新的 Codex CLI，或让 GBX 能找到桌面 App 自带的 Codex。原有自定义 Provider 或默认 profile 的目录覆盖会明确报错，避免改变其路由。
 - macOS 状态栏菜单可切换配置或停止 Codex 接入。切换成功后同步更新 GBX 的当前选择；Codex 保持运行，需要手动重启以加载新目录。新配置启动失败会恢复原代理并提示错误。代理退出或异常停止后图标消失。无桌面环境可用 `GBX_PROXY_NO_MENUBAR=1` 关闭图标。
@@ -132,7 +131,6 @@ GBX 在 `127.0.0.1` 提供 Responses 和 Chat Completions。每个代理使用�
 |---|---|
 | OpenAI Chat 网关 / Kimi / WorkBuddy | Chat Completions |
 | OpenAI Responses 网关 / GPT / Grok | Responses，GBX 使用对应后端的请求标识 |
-| Gemini | Google Antigravity |
 | models.dev 混合网关 | 按模型选择：Responses、Chat Completions 或 Anthropic Messages（`@ai-sdk/anthropic` 模型，按 models.dev 的单模型地址发送） |
 | Cursor | Connect 双向 Agent 流 |
 | Kiro / Qoder | Amazon Q / COSY |
@@ -175,7 +173,7 @@ gbx 采用 MIT。Grok Build 采用 Apache-2.0（[`third_party/grok-build/LICENSE
 
 ## English
 
-`gbx` is a launcher and provider proxy built around [Grok Build](https://x.ai/cli). It connects Grok Build and Codex to OpenAI-compatible gateways and subscription accounts such as GPT, Gemini, and Grok, translating protocols through a local proxy.
+`gbx` is a launcher and provider proxy built around [Grok Build](https://x.ai/cli). It connects Grok Build and Codex to OpenAI-compatible gateways and subscription accounts such as GPT, Grok, and Cursor, translating protocols through a local proxy.
 
 ### Fully open source: the agent you run is the code you can read
 
@@ -276,7 +274,7 @@ gbx codex stop        # restores your original Codex settings
 ```
 
 - Bound provider edits automatically refresh the catalog and routes. New requests use new runtimes while existing responses finish. Codex decides when its picker refreshes; local JSON does not promise in-process reload, so restart Codex if its list is stale.
-- Attach multiple providers: `gbx codex start deepseek --with-provider gemini --with-provider grok`. Each route retains its own account. Later starts inherit additional bindings; `--with-provider ''` clears them. Use `gbx codex start --refresh` to rediscover models explicitly.
+- Attach multiple providers: `gbx codex start deepseek --with-provider gpt --with-provider grok`. Each route retains its own account. Later starts inherit additional bindings; `--with-provider ''` clears them. Use `gbx codex start --refresh` to rediscover models explicitly.
 - Local catalogs are the default. Independent mode can opt into `gbx codex start --independent --catalog remote`; `--catalog local` restores the fallback. Shared mode keeps merged JSON because built-in OpenAI rejects localhost remote catalog URLs. Remote fetching and background app-server updates are verified; immediate Desktop picker refresh is not promised. Gateway/catalog updates and client-picker reload are separate capabilities in every mode.
 - To use another provider after OpenAI quota is exhausted, run `gbx codex start --independent` and restart Codex. The custom GBX provider has its own session credential and a GBX-only picker. `gbx codex start --shared` restores the merged native/GBX picker. Starts and menu switches inherit the running mode; after stopping, a start without a mode flag defaults to shared.
 - Codex chats resume with their saved model provider. Independent chats use `gbx_proxy`; switching to shared or stopping removes that definition, so those chats can report an unconfigured provider or `Model unavailable`. Restore `gbx codex start --independent` and restart Codex to resume the original chat, or fork its history to use the other provider. Do not rewrite chat records. See [OpenAI Docs](https://learn.chatgpt.com/docs/codex-sdk#resume-a-thread-without-loading-its-history).
@@ -286,7 +284,6 @@ gbx codex stop        # restores your original Codex settings
 - Translated models support Codex client tool search: GBX adapts search to an ordinary function call, Codex searches local tools, and GBX loads the returned definitions instead of sending all deferred tools up front. Codex executes actual tools and enforces permissions. The model must be able to use the search function and the discovered definitions correctly.
 - Models that advertise image input can read screenshots. Translated models follow the installed native catalog's client tool mode; Codex still executes computer use and checks permissions. Within shared mode, normal conversation history can switch between translated models and native GPT. Native GPT compaction cannot be decrypted. Converted models can validate the matching local chat/checkpoint and recover a bounded visible-history excerpt with a notice that older details may be missing. Missing or mismatched records fail explicitly.
 - Translated models use per-model effort tiers from the models.dev metadata cache. OAuth login and confirmed `gbx set` saves refresh it; `gbx set --refresh-models` updates metadata alone. Network failures use `~/.gbx/cache/modelsdev.json`; missing/unmatched metadata retains compatibility settings. The running proxy refreshes metadata; restart Codex to reload a local JSON catalog. Native Responses models retain their own metadata.
-- `gbx oauth gemini` connects to Google Antigravity. Discovery uses the bound account's subscription tier and caches real wire IDs and metadata. Gemini 4 Argon and other families resolve only to thinking variants that account returned. Discovery failure uses its last good cache and saved models before the static compatibility fallback. The Codex gateway refreshes the catalog every five minutes or on `--refresh`.
 - Codex retains its native OpenAI provider and login. Native requests keep their original ChatGPT / OpenAI route; only the separate `gbx/<provider>/<model>` allow-list goes to GBX, with native credentials removed. WebSockets receive 426 to fall back to HTTP Responses.
 - Native metadata comes from an existing catalog or `models_cache.json`, with the installed Codex's `debug models --bundled` as fallback; native names are never hardcoded. Without a cache, install a recent Codex CLI or make the desktop app's bundled Codex discoverable. A conflicting custom provider or default-profile catalog override is reported instead of changing its routing.
 - macOS shows a menu bar icon with the checked current provider, configuration switching and Disconnect Codex. A switch updates the GBX selection and leaves Codex running; restart Codex yourself to load the new catalog. A failed proxy start restores the previous proxy and reports the error. The icon exits with the proxy, including crashes. Set `GBX_PROXY_NO_MENUBAR=1` in a headless environment to disable it.
@@ -301,7 +298,6 @@ GBX serves Responses and Chat Completions on `127.0.0.1` with a random per-sessi
 |---|---|
 | OpenAI Chat gateway / Kimi / WorkBuddy | Chat Completions |
 | OpenAI Responses gateway / GPT / Grok | Responses with backend-specific identity headers |
-| Gemini | Google Antigravity |
 | models.dev mixed gateway | Per model: Responses, Chat Completions, or Anthropic Messages (`@ai-sdk/anthropic` models, sent to the model's own models.dev base URL) |
 | Cursor | Connect bidirectional agent stream |
 | Kiro / Qoder | Amazon Q / COSY |

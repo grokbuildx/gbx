@@ -308,12 +308,12 @@ func (o *responsesHistoryObserver) Write(p []byte) (int, error) {
 func (o *responsesHistoryObserver) observeSSE(chunk []byte) {
 	o.pendingSSE = append(o.pendingSSE, chunk...)
 	for {
-		idx := bytes.Index(o.pendingSSE, []byte("\n\n"))
+		idx, sepLen := nextSSEFrameBoundary(o.pendingSSE)
 		if idx < 0 {
 			break
 		}
 		o.inspectSSEFrame(o.pendingSSE[:idx])
-		o.pendingSSE = o.pendingSSE[idx+2:]
+		o.pendingSSE = o.pendingSSE[idx+sepLen:]
 	}
 	if len(o.pendingSSE) > responsesHistoryMaxEntrySize {
 		o.pendingSSE = nil

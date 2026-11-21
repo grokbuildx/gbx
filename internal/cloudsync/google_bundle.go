@@ -112,8 +112,11 @@ func replaceCloudCache(cacheDir, cacheName string, bundle []byte) error {
 		}
 	}
 
-	backup := cacheDir + ".old"
-	_ = os.RemoveAll(backup)
+	suffix, err := randomDeviceID()
+	if err != nil {
+		return err
+	}
+	backup := cacheDir + ".old-" + suffix
 	hadCache := false
 	if _, err := os.Lstat(cacheDir); err == nil {
 		if err := os.Rename(cacheDir, backup); err != nil {
@@ -170,15 +173,16 @@ func extractGoogleBundle(destination string, bundle []byte) error {
 		if file.UncompressedSize64 > maxEncryptedSize {
 			return fmt.Errorf("Google Drive sync bundle entry %q exceeds the safety limit", file.Name)
 		}
-		total += int64(file.UncompressedSize64)
-		if total > maxBundleSize {
+		remaining := maxBundleSize - total
+		if remaining < 0 {
 			return fmt.Errorf("Google Drive sync bundle exceeds the %d MiB safety limit", maxBundleSize>>20)
 		}
+		readCap := min(int64(maxEncryptedSize), remaining)
 		input, err := file.Open()
 		if err != nil {
 			return err
 		}
-		data, readErr := io.ReadAll(io.LimitReader(input, maxEncryptedSize+1))
+		data, readErr := io.ReadAll(io.LimitReader(input, readCap+1))
 		closeErr := input.Close()
 		if readErr != nil {
 			return readErr
@@ -186,8 +190,12 @@ func extractGoogleBundle(destination string, bundle []byte) error {
 		if closeErr != nil {
 			return closeErr
 		}
-		if len(data) > maxEncryptedSize {
+		if int64(len(data)) > maxEncryptedSize {
 			return fmt.Errorf("Google Drive sync bundle entry %q exceeds the safety limit", file.Name)
+		}
+		total += int64(len(data))
+		if total > maxBundleSize {
+			return fmt.Errorf("Google Drive sync bundle exceeds the %d MiB safety limit", maxBundleSize>>20)
 		}
 		target := filepath.Join(destination, filepath.FromSlash(file.Name))
 		if err := writeAtomic(target, data, 0o600); err != nil {

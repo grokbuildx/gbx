@@ -2,29 +2,15 @@ package provider
 
 import "strings"
 
-// retiredGeminiHaikuModel is the Gemini default GBX used to write.
-// Neither Antigravity catalog still lists it, and requesting it returns 404.
-const (
-	retiredGeminiHaikuModel = "gemini-3.1-pro-low"
-	geminiFlashReplacement  = "gemini-3.8-flash"
-)
-
 // OAuthDefaultModels returns the fallback model pool for OAuth backends whose
 // startup path requires static model IDs before live /v1/models discovery.
 // Backends with eager live /models discovery return "".
 func OAuthDefaultModels(oauthProvider string) string {
-	switch strings.ToLower(strings.TrimSpace(oauthProvider)) {
-	case "kimi":
-		// Kimi Code exposes no public model-list endpoint, so the runtime needs
-		// its canonical upstream model IDs to start.
-		return "kimi-for-coding,kimi-for-coding-highspeed"
-	case "kiro":
-		// Kiro discovers /v1/models lazily on HTTP GET, so Runtime.Models() at
-		// startup reads the configured pool.
-		return "claude-opus-4-6,claude-sonnet-4-6,claude-haiku-4-5"
-	default:
+	spec, ok := LookupOAuthSpec(oauthProvider)
+	if !ok {
 		return ""
 	}
+	return spec.DefaultModels
 }
 
 // stripContextSuffix removes display-only context markers such as [1m] so

@@ -321,14 +321,12 @@ func enforceKiroContentBudget(body map[string]any, protectedHistoryPrefix, limit
 		} else {
 			conversationState["history"] = history
 		}
-		stats.finalBytes = kiroJSONSize(body)
 		stats.finalTokens = estimateKiroContentTokens(body)
 	}
 
 	// Tool pairs can become orphaned when an old turn is removed. Pair first,
 	// then remove messages that became empty and restore strict role alternation.
 	stats.droppedHistoryMessages += normalizeKiroBudgetHistory(conversationState)
-	stats.finalBytes = kiroJSONSize(body)
 	stats.finalTokens = estimateKiroContentTokens(body)
 
 	// Finally shrink the largest remaining textual fields. This covers a
@@ -348,7 +346,6 @@ func enforceKiroContentBudget(body map[string]any, protectedHistoryPrefix, limit
 		container[field] = truncated
 		stats.truncatedTexts++
 		stats.droppedTextBytes += dropped
-		stats.finalBytes = kiroJSONSize(body)
 		stats.finalTokens = estimateKiroContentTokens(body)
 	}
 
@@ -357,9 +354,8 @@ func enforceKiroContentBudget(body map[string]any, protectedHistoryPrefix, limit
 	if stats.finalTokens > limit {
 		context := kiroCurrentMessageContext(conversationState)
 		for _, value := range kiroAnySlice(context["tools"]) {
-			delete(kiroAnyMap(value), "description")
+			delete(kiroAnyMap(kiroAnyMap(value)["toolSpecification"]), "description")
 		}
-		stats.finalBytes = kiroJSONSize(body)
 		stats.finalTokens = estimateKiroContentTokens(body)
 		for stats.finalTokens > limit {
 			tools := kiroAnySlice(context["tools"])
@@ -371,10 +367,10 @@ func enforceKiroContentBudget(body map[string]any, protectedHistoryPrefix, limit
 			if len(tools) == 1 {
 				delete(context, "tools")
 			}
-			stats.finalBytes = kiroJSONSize(body)
 			stats.finalTokens = estimateKiroContentTokens(body)
 		}
 	}
+	stats.finalBytes = kiroJSONSize(body)
 	return stats
 }
 

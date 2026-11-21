@@ -80,31 +80,6 @@ func StaticProviderModelDetails(p provider.Provider) (models []string, labels ma
 		for id, info := range xaiModelDetails(modelSpec, fb) {
 			details[id] = info
 		}
-	case ProviderGemini, "antigravity":
-		modelsDevProviderID = "google"
-		if cat := loadCachedGeminiCatalog(p.OAuthAccountCredential); cat != nil {
-			catModels, catNames, catDetails := cat.publicModels()
-			models = mergeUniqueModels(runtimeModelAliases(modelSpec), catModels)
-			for id, name := range catNames {
-				labels[id] = name
-			}
-			for id, info := range catDetails {
-				details[id] = info
-			}
-		} else {
-			catalogInfos := GeminiModelCatalog()
-			catalogIDs := make([]string, 0, len(catalogInfos))
-			for _, info := range catalogInfos {
-				if id := strings.TrimSpace(info.ID); id != "" {
-					catalogIDs = append(catalogIDs, id)
-					if name := strings.TrimSpace(info.DisplayName); name != "" && name != id {
-						labels[id] = name
-					}
-					details[strings.ToLower(id)] = info
-				}
-			}
-			models = mergeUniqueModels(runtimeModelAliases(modelSpec), catalogIDs)
-		}
 	case ProviderKimi:
 		modelsDevProviderID = "kimi-for-coding"
 		spec := firstNonEmptyString(modelSpec, provider.OAuthDefaultModels(ProviderKimi))
@@ -211,44 +186,7 @@ func mergeUniqueModels(lists ...[]string) []string {
 }
 
 func promoteDefaultModelID(models []string, preferred string) []string {
-	preferred = provider.NormalizeModelID(preferred)
-	prefBase := stripContextModelSuffix(preferred)
-	if prefBase == "" {
-		return models
-	}
-	if len(models) == 0 {
-		return []string{preferred}
-	}
-	prefHas1M := provider.HasOneMSuffix(preferred)
-	matchIdx := -1
-	for i, m := range models {
-		if strings.EqualFold(strings.TrimSpace(m), preferred) {
-			matchIdx = i
-			break
-		}
-		if matchIdx < 0 && strings.EqualFold(stripContextModelSuffix(m), prefBase) {
-			matchIdx = i
-		}
-	}
-	if matchIdx < 0 {
-		return append([]string{preferred}, models...)
-	}
-	chosen := models[matchIdx]
-	if prefHas1M && !provider.HasOneMSuffix(chosen) {
-		chosen = preferred
-	}
-	if matchIdx == 0 && chosen == models[0] {
-		return models
-	}
-	out := make([]string, 0, len(models))
-	out = append(out, chosen)
-	for i, m := range models {
-		if i == matchIdx {
-			continue
-		}
-		out = append(out, m)
-	}
-	return out
+	return provider.PromoteDefaultModel(models, preferred, true)
 }
 
 func inferModelsDevProviderID(p provider.Provider) string {

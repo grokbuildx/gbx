@@ -120,7 +120,7 @@ func TestLoadDerivesTheOAuthProtocol(t *testing.T) {
 	cfg := &provider.Config{
 		Providers: map[string]provider.Provider{
 			"chatgpt": {Name: "chatgpt", Type: "openai", OAuthProvider: "gpt", Endpoint: "oauth://codex"},
-			"gemini":  {Name: "gemini", Type: "openai_responses", OAuthProvider: "gemini", Endpoint: "oauth://antigravity"},
+			"kimi":    {Name: "kimi", Type: "openai_responses", OAuthProvider: "kimi", Endpoint: "oauth://kimi"},
 		},
 	}
 	if err := Save(cfg); err != nil {
@@ -133,8 +133,8 @@ func TestLoadDerivesTheOAuthProtocol(t *testing.T) {
 	if loaded.Providers["chatgpt"].Type != "openai_responses" {
 		t.Fatalf("chatgpt type = %q", loaded.Providers["chatgpt"].Type)
 	}
-	if loaded.Providers["gemini"].Type != "openai" {
-		t.Fatalf("gemini type = %q", loaded.Providers["gemini"].Type)
+	if loaded.Providers["kimi"].Type != "openai" {
+		t.Fatalf("kimi type = %q", loaded.Providers["kimi"].Type)
 	}
 	// Second load should be stable.
 	loaded2, err := Load()

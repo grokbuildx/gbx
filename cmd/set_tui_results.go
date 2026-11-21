@@ -199,7 +199,7 @@ func (m *AdvancedConfigModel) handleVerifyDone(msg keyVerifyDoneMsg) {
 		m.live().modelsDevRefreshPending = false
 		catalogID := provider.ModelsDevCatalogID(*m.p)
 		setDebugf("models.dev refresh start provider=%q catalog=%q", m.p.Name, catalogID)
-		fetchModelsDevRefreshAsync(m.mdDone, catalogID)
+		fetchModelsDevRefreshAsync(m.lifecycleCtx(), m.mdDone, catalogID)
 	}
 	if index := m.mainRowIndex(selectedRow); index >= 0 {
 		m.cursor = index

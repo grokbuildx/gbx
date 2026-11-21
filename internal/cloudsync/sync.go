@@ -1,6 +1,7 @@
 package cloudsync
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,9 +9,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
+
+// maxRetainedUntaggedSnapshots bounds historical untagged snapshots kept in a
+// remote sync directory so Google Drive bundles do not grow monotonically until
+// hitting maxBundleSize. Tagged snapshots (including latest) are always kept.
+const maxRetainedUntaggedSnapshots = 32
 
 type preparedPush struct {
 	files     []snapshotFile
@@ -51,7 +58,7 @@ func (m *Manager) preparePush() (preparedPush, error) {
 	}
 	if state.PendingHash != "" && state.PendingHash != hash {
 		if state.ExplicitTag {
-			return preparedPush{}, fmt.Errorf("local configuration changed after tag %q was created; run `gbx tag %s` again", tag, tag)
+			return preparedPush{}, fmt.Errorf("local configuration changed after tag %q was created; run `gbx cloud tag %s` again", tag, tag)
 		}
 	}
 	createdAt := nowUTC()
@@ -128,6 +135,13 @@ func (m *Manager) planPush(prepared preparedPush, force bool) (*pushPlan, error)
 
 func (plan *pushPlan) commit(prepared preparedPush, clearPending bool) (PushResult, error) {
 	m := plan.manager
+	if m.provider == providerGoogleDrive && m.flushRemote != nil {
+		release, err := lockGoogleCache(context.Background(), m.remoteDir)
+		if err != nil {
+			return PushResult{}, fmt.Errorf("lock Google Drive sync cache: %w", err)
+		}
+		defer release()
+	}
 	if plan.upload || plan.indexChanged {
 		revision, err := m.remoteIndexRevision()
 		if err != nil {
@@ -165,10 +179,17 @@ func (plan *pushPlan) commit(prepared preparedPush, clearPending bool) (PushResu
 		plan.index.Tags[defaultTag] = prepared.id
 		plan.indexChanged = true
 	}
+	prunedPaths := m.pruneOldSnapshots(&plan.index, plan.resultID, plan.state.LastRemoteID)
+	if len(prunedPaths) > 0 {
+		plan.indexChanged = true
+	}
 	if plan.indexChanged {
 		if err := m.saveRemoteIndex(plan.index); err != nil {
 			return PushResult{}, fmt.Errorf("publish encrypted remote index: %w", err)
 		}
+	}
+	for _, victimPath := range prunedPaths {
+		_ = os.Remove(victimPath)
 	}
 	if (plan.upload || plan.indexChanged || profileChanged) && m.flushRemote != nil {
 		if err := m.flushRemote(); err != nil {
@@ -594,4 +615,51 @@ func (m *Manager) loadSnapshot(id string) (snapshotPayload, error) {
 		return snapshotPayload{}, err
 	}
 	return payload, nil
+}
+
+// pruneOldSnapshots removes older untagged snapshot index entries beyond
+// maxRetainedUntaggedSnapshots and returns their file paths for deletion after
+// the updated index is persisted. Every tagged snapshot and pinned ID is always
+// preserved.
+func (m *Manager) pruneOldSnapshots(index *remoteIndex, pinned ...string) []string {
+	if index == nil || len(index.Snapshots) <= maxRetainedUntaggedSnapshots {
+		return nil
+	}
+	keep := make(map[string]struct{}, len(index.Tags)+len(pinned))
+	for _, id := range index.Tags {
+		if id != "" {
+			keep[id] = struct{}{}
+		}
+	}
+	for _, id := range pinned {
+		if id != "" {
+			keep[id] = struct{}{}
+		}
+	}
+	type untagged struct {
+		id        string
+		createdAt time.Time
+	}
+	var candidates []untagged
+	for id, record := range index.Snapshots {
+		if _, protected := keep[id]; protected {
+			continue
+		}
+		candidates = append(candidates, untagged{id: id, createdAt: record.CreatedAt})
+	}
+	if len(candidates) <= maxRetainedUntaggedSnapshots {
+		return nil
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].createdAt.Equal(candidates[j].createdAt) {
+			return candidates[i].id > candidates[j].id
+		}
+		return candidates[i].createdAt.After(candidates[j].createdAt)
+	})
+	victims := make([]string, 0, len(candidates)-maxRetainedUntaggedSnapshots)
+	for _, victim := range candidates[maxRetainedUntaggedSnapshots:] {
+		delete(index.Snapshots, victim.id)
+		victims = append(victims, filepath.Join(m.remoteDir, snapshotsDirectory, victim.id+".gbx"))
+	}
+	return victims
 }

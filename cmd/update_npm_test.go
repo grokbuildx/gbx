@@ -9,32 +9,34 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/grokbuildx/gbx/internal/selfupdate"
 )
 
 func TestNpmUpdateArgsPinVersionAndIncludeOptional(t *testing.T) {
 	want := []string{"install", "-g", "@grokbuildx/gbx@1.6.7", "--include=optional", "--prefer-online"}
-	if got := npmUpdateArgs("v1.6.7"); !reflect.DeepEqual(got, want) {
+	if got := selfupdate.NpmUpdateArgs("v1.6.7"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("args = %v, want %v", got, want)
 	}
 }
 
 func TestNpmGlobalPaths(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "prefix", "lib", "node_modules")
-	paths, err := npmGlobalPaths(root+"\n", "linux")
+	paths, err := selfupdate.NpmGlobalPaths(root+"\n", "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if paths.binary != filepath.Join(root, "@grokbuildx", "gbx", "bin", "gbx.exe") ||
-		paths.command != filepath.Join(filepath.Dir(filepath.Dir(root)), "bin", "gbx") {
+	if paths.Binary != filepath.Join(root, "@grokbuildx", "gbx", "bin", "gbx.exe") ||
+		paths.Command != filepath.Join(filepath.Dir(filepath.Dir(root)), "bin", "gbx") {
 		t.Fatalf("unexpected paths: %+v", paths)
 	}
 	root = filepath.Join(t.TempDir(), "prefix", "node_modules")
-	paths, err = npmGlobalPaths(root, "windows")
-	if err != nil || paths.command != filepath.Join(filepath.Dir(root), "gbx.cmd") {
+	paths, err = selfupdate.NpmGlobalPaths(root, "windows")
+	if err != nil || paths.Command != filepath.Join(filepath.Dir(root), "gbx.cmd") {
 		t.Fatalf("Windows paths = %+v, %v", paths, err)
 	}
 	for _, root := range []string{"", "node_modules", t.TempDir()} {
-		if _, err := npmGlobalPaths(root, "linux"); err == nil {
+		if _, err := selfupdate.NpmGlobalPaths(root, "linux"); err == nil {
 			t.Fatalf("invalid npm root %q accepted", root)
 		}
 	}
@@ -61,7 +63,7 @@ func TestCompleteNpmUpdateHandlesSilentAndPostinstallFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			installs, verifies, repairs := 0, 0, 0
-			recovered, err := completeNpmUpdate(
+			recovered, err := selfupdate.CompleteNpmUpdate(
 				func() error { installs++; return tc.installErr },
 				func() error {
 					verifies++
@@ -97,15 +99,15 @@ func TestVerifyNpmInstallChecksOnlyNpmDestination(t *testing.T) {
 	if out, err := exec.Command("go", "build", "-o", binary, source).CombinedOutput(); err != nil {
 		t.Fatalf("build version fixture: %v\n%s", err, out)
 	}
-	if err := verifyNpmInstall(binary, "1.6.7"); err != nil {
+	if err := selfupdate.VerifyNpmInstall(binary, "1.6.7"); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyNpmInstall(binary, "v1.6.8"); err == nil || !strings.Contains(err.Error(), "expected") {
+	if err := selfupdate.VerifyNpmInstall(binary, "v1.6.8"); err == nil || !strings.Contains(err.Error(), "expected") {
 		t.Fatalf("old version accepted: %v", err)
 	}
 	// Another working gbx on PATH cannot mask a missing npm target.
 	t.Setenv("PATH", dir)
-	if err := verifyNpmInstall(filepath.Join(dir, "missing.exe"), "v1.6.7"); err == nil {
+	if err := selfupdate.VerifyNpmInstall(filepath.Join(dir, "missing.exe"), "v1.6.7"); err == nil {
 		t.Fatal("missing npm binary was accepted")
 	}
 }
@@ -120,7 +122,7 @@ func TestRunUpdateNpmRepairsPackageWhenBinaryIsAlreadyCurrent(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		root = filepath.Join(dir, "prefix", "node_modules")
 	}
-	paths, err := npmGlobalPaths(root, runtime.GOOS)
+	paths, err := selfupdate.NpmGlobalPaths(root, runtime.GOOS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,15 +163,15 @@ func main() {
 	t.Setenv("PATH", dir)
 	t.Setenv("GBX_TEST_NPM_ROOT", root)
 	t.Setenv("GBX_TEST_NPM_NATIVE", native)
-	t.Setenv("GBX_TEST_NPM_TARGET", paths.binary)
-	t.Setenv("GBX_TEST_NPM_COMMAND", paths.command)
+	t.Setenv("GBX_TEST_NPM_TARGET", paths.Binary)
+	t.Setenv("GBX_TEST_NPM_COMMAND", paths.Command)
 	argsPath := filepath.Join(dir, "npm-args")
 	t.Setenv("GBX_TEST_NPM_ARGS", argsPath)
 	if err := runUpdate("npm"); err != nil {
 		t.Fatal(err)
 	}
 	args, err := os.ReadFile(argsPath)
-	if err != nil || string(args) != strings.Join(npmUpdateArgs("v1.6.7"), "\n") {
+	if err != nil || string(args) != strings.Join(selfupdate.NpmUpdateArgs("v1.6.7"), "\n") {
 		t.Fatalf("npm repair was skipped or called incorrectly: %q, %v", args, err)
 	}
 }
@@ -179,46 +181,46 @@ func TestRestoreNpmCommandAfterInstallRemovedIt(t *testing.T) {
 		t.Skip("Windows recovery does not create symlinks")
 	}
 	root := filepath.Join(t.TempDir(), "lib", "node_modules")
-	paths, err := npmGlobalPaths(root, runtime.GOOS)
+	paths, err := selfupdate.NpmGlobalPaths(root, runtime.GOOS)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(paths.binary), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(paths.Binary), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(paths.binary, []byte("recovered executable"), 0o755); err != nil {
+	if err := os.WriteFile(paths.Binary, []byte("recovered executable"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := restoreNpmCommand(paths); err != nil {
+		if err := selfupdate.RestoreNpmCommand(paths); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if data, err := os.ReadFile(paths.command); err != nil || string(data) != "recovered executable" {
+	if data, err := os.ReadFile(paths.Command); err != nil || string(data) != "recovered executable" {
 		t.Fatalf("recovered command = %q, %v", data, err)
 	}
-	if err := os.Remove(paths.command); err != nil {
+	if err := os.Remove(paths.Command); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(paths.command, []byte("another install"), 0o755); err != nil {
+	if err := os.WriteFile(paths.Command, []byte("another install"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := restoreNpmCommand(paths); err == nil {
+	if err := selfupdate.RestoreNpmCommand(paths); err == nil {
 		t.Fatal("another installation was overwritten")
 	}
 }
 
 func TestPrereleaseTagsMatchTheirNpmVersion(t *testing.T) {
 	// Tag v1.0.0-0 is npm 1.0.0-0; both name one release.
-	if canonicalReleaseTag("v1.0.0-0") != canonicalReleaseTag("1.0.0-0") {
+	if selfupdate.CanonicalReleaseTag("v1.0.0-0") != selfupdate.CanonicalReleaseTag("1.0.0-0") {
 		t.Fatal("tag and npm version of one release compare unequal")
 	}
 	for in, want := range map[string]string{"v1.0.0-0": "1.0.0-0", "1.0.0-0": "1.0.0-0", "v2.1.3": "2.1.3"} {
-		if got := npmPackageVersion(in); got != want {
-			t.Fatalf("npmPackageVersion(%q) = %q, want %q", in, got, want)
+		if got := selfupdate.NpmPackageVersion(in); got != want {
+			t.Fatalf("NpmPackageVersion(%q) = %q, want %q", in, got, want)
 		}
 	}
-	if args := npmUpdateArgs("v1.0.0-1"); args[2] != "@grokbuildx/gbx@1.0.0-1" {
+	if args := selfupdate.NpmUpdateArgs("v1.0.0-1"); args[2] != "@grokbuildx/gbx@1.0.0-1" {
 		t.Fatalf("npm args = %v", args)
 	}
 }

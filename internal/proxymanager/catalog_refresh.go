@@ -22,12 +22,15 @@ import (
 )
 
 type catalogRefresh struct {
-	configStamp   string
-	initialized   bool
-	providers     []provider.Provider
-	runtimeHash   string
-	lastDiscovery time.Time
-	done          <-chan struct{}
+	configStamp     string
+	initialized     bool
+	providers       []provider.Provider
+	runtimeHash     string
+	lastDiscovery   time.Time
+	lastFailedStamp string
+	retryAfter      time.Time
+	failCount       int
+	done            <-chan struct{}
 }
 
 type reloadRequest struct {
@@ -108,7 +111,9 @@ func prepareBindings(ctx context.Context, providers []provider.Provider) ([]code
 	done := make(chan struct{})
 	var once sync.Once
 	for _, p := range providers {
-		session, err := providersession.Prepare(ctx, p)
+		// codex.Gateway already owns previous_response_id history tracking, so
+		// disable the duplicate per-runtime loopback cache.
+		session, err := providersession.PrepareWithOptions(ctx, p, providersession.PrepareOptions{DisableHistoryCache: true})
 		if err != nil {
 			cleanup()
 			return nil, nil, func() {}, fmt.Errorf("prepare Codex provider %q failed: %w", p.Name, err)
@@ -119,7 +124,7 @@ func prepareBindings(ctx context.Context, providers []provider.Provider) ([]code
 	return bindings, done, cleanup, nil
 }
 
-func (r *catalogRefresh) update(ctx context.Context, m *Manager, gateway *codex.Gateway, state *State, force bool, selected string, additional []string) error {
+func (r *catalogRefresh) update(ctx context.Context, m *Manager, gateway *codex.Gateway, state *State, force bool, selected string, additional []string) (retErr error) {
 	var stamp string
 	if info, err := os.Stat(config.ConfigPath()); err == nil {
 		stamp = fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
@@ -127,13 +132,39 @@ func (r *catalogRefresh) update(ctx context.Context, m *Manager, gateway *codex.
 	metadataStamp := modelsdev.CacheStamp()
 	discoveryDue := false
 	for _, p := range r.providers {
-		if p.OAuthProvider == "gemini" && time.Since(r.lastDiscovery) >= 5*time.Minute {
+		if spec, ok := provider.LookupOAuthSpec(p.OAuthProvider); ok && spec.DiscoveryInterval > 0 && time.Since(r.lastDiscovery) >= spec.DiscoveryInterval {
 			discoveryDue = true
+			break
 		}
 	}
 	if !force && r.initialized && stamp == r.configStamp && metadataStamp == state.MetadataStamp && !discoveryDue {
 		return nil
 	}
+	combinedStamp := stamp + "|" + metadataStamp
+	if !force && selected == "" && !discoveryDue && r.lastFailedStamp == combinedStamp && time.Now().Before(r.retryAfter) {
+		return nil
+	}
+	defer func() {
+		if retErr == nil {
+			r.lastFailedStamp = ""
+			r.failCount = 0
+			r.retryAfter = time.Time{}
+			return
+		}
+		if !force && selected == "" && !discoveryDue {
+			if r.lastFailedStamp == combinedStamp {
+				r.failCount++
+			} else {
+				r.lastFailedStamp = combinedStamp
+				r.failCount = 1
+			}
+			backoff := 5 * time.Second << min(r.failCount-1, 4)
+			if backoff > 60*time.Second {
+				backoff = 60 * time.Second
+			}
+			r.retryAfter = time.Now().Add(backoff)
+		}
+	}()
 	latest := r.providers
 	primary := state.Provider
 	names := state.AdditionalProviders
@@ -164,10 +195,17 @@ func (r *catalogRefresh) update(ctx context.Context, m *Manager, gateway *codex.
 	updated.AdditionalProviders = append([]string(nil), names...)
 	updated.ConfigHash = providersHash(latest)
 	updated.MetadataStamp = metadataStamp
+	// Short-circuit unrelated config.yaml edits (e.g. changing an unbound
+	// provider) without rewriting state.json or config.toml.
+	if !force && !discoveryDue && selected == "" && updated.ConfigHash == state.ConfigHash && metadataStamp == state.MetadataStamp {
+		r.configStamp = stamp
+		r.initialized = true
+		return nil
+	}
 	// Roll back the catalog file if journaling fails. No new route is published
 	// until both the owned catalog and recovery state have been persisted.
 	persist := func(models []codex.Model, replace bool) error {
-		before, err := os.ReadFile(state.Codex.CatalogPath)
+		before, err := fsutil.ReadRegularFileLimited(state.Codex.CatalogPath, 16<<20)
 		if err != nil {
 			return err
 		}
@@ -205,6 +243,11 @@ func (r *catalogRefresh) update(ctx context.Context, m *Manager, gateway *codex.
 	if force || discoveryDue || nextRuntimeHash != r.runtimeHash {
 		bindings, done, cleanup, err := prepareBindings(ctx, latest)
 		if err != nil {
+			if discoveryDue && !force && nextRuntimeHash == r.runtimeHash {
+				// Prevent a 1-second retry storm when periodic discovery fails
+				// during an upstream outage.
+				r.lastDiscovery = time.Now()
+			}
 			return err
 		}
 		// A failed rediscovery must not withdraw the running account's last good
@@ -256,7 +299,7 @@ func reloadControl(ctx context.Context, state *State, primary string, additional
 	request.Header.Set("Content-Type", "application/json")
 	transport := &http.Transport{Proxy: nil}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{Timeout: 30 * time.Second, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Do(request)
 	if err != nil {
 		return err

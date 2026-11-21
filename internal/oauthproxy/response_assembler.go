@@ -431,6 +431,9 @@ func (a *responseAssembler) addOpaqueReasoning(data string) error {
 	if data == "" {
 		return nil
 	}
+	if err := a.start(); err != nil {
+		return err
+	}
 	if err := a.closeActive(); err != nil {
 		return err
 	}
@@ -448,9 +451,26 @@ func (a *responseAssembler) addOpaqueReasoning(data string) error {
 	return a.emit("response.output_item.done", map[string]any{"output_index": index, "item": a.item(index, true)})
 }
 
+// validateToolUseName checks whether name resolves to a declared tool before
+// any tool block in a batch is emitted.
+func (a *responseAssembler) validateToolUseName(name string) error {
+	if original := a.request.toolNameMap[name]; original != "" {
+		name = original
+	}
+	if a.request.tools != nil {
+		if _, declared := a.request.tools[name]; !declared {
+			return fmt.Errorf("provider called a tool outside the declared tool list: %q", safeToolNameForError(name))
+		}
+	}
+	return nil
+}
+
 // addToolUse emits one complete tool call. name is the name the upstream
 // returned; it is mapped back to the client's own declaration.
 func (a *responseAssembler) addToolUse(id, name, partialJSON string) error {
+	if err := a.start(); err != nil {
+		return err
+	}
 	if err := a.closeActive(); err != nil {
 		return err
 	}

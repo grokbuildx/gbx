@@ -405,7 +405,7 @@ func encodeCursorHeartbeat() []byte {
 	return cursorAppendBytes(nil, cursorACMClientHeartbeat, nil)
 }
 
-func encodeCursorRunRequest(p cursorRunParams) []byte {
+func encodeCursorRunRequest(p *cursorRunParams) []byte {
 	if p.Blobs == nil {
 		p.Blobs = make(map[string][]byte)
 	}
@@ -993,7 +993,14 @@ func cursorProtobufValueToJSONDepth(data []byte, depth int) (json.RawMessage, bo
 				return json.RawMessage("null"), false
 			}
 			bits := binary.LittleEndian.Uint64(data[:8])
-			raw, _ := json.Marshal(math.Float64frombits(bits))
+			f := math.Float64frombits(bits)
+			if math.IsNaN(f) || math.IsInf(f, 0) {
+				return json.RawMessage("null"), true
+			}
+			raw, err := json.Marshal(f)
+			if err != nil {
+				return json.RawMessage("null"), true
+			}
 			return raw, true
 		case num == 3 && typ == cursorWireBytes:
 			val, n := cursorConsumeBytes(data)
@@ -1035,6 +1042,9 @@ func cursorProtobufValueToJSONDepth(data []byte, depth int) (json.RawMessage, bo
 }
 
 func cursorProtobufStructToJSON(data []byte, depth int) json.RawMessage {
+	if depth > cursorProtobufValueMaxDepth {
+		return json.RawMessage("{}")
+	}
 	object := make(map[string]json.RawMessage)
 	for len(data) > 0 {
 		num, typ, n := cursorConsumeTag(data)
@@ -1059,7 +1069,11 @@ func cursorProtobufStructToJSON(data []byte, depth int) json.RawMessage {
 		if key == "" {
 			continue
 		}
-		object[key] = cursorProtobufValueToJSON(value)
+		raw, _ := cursorProtobufValueToJSONDepth(value, depth+1)
+		if len(raw) == 0 {
+			raw = json.RawMessage("null")
+		}
+		object[key] = raw
 	}
 	raw, err := json.Marshal(object)
 	if err != nil {
@@ -1069,6 +1083,9 @@ func cursorProtobufStructToJSON(data []byte, depth int) json.RawMessage {
 }
 
 func cursorProtobufListToJSON(data []byte, depth int) json.RawMessage {
+	if depth > cursorProtobufValueMaxDepth {
+		return json.RawMessage("[]")
+	}
 	var list []json.RawMessage
 	for len(data) > 0 {
 		num, typ, n := cursorConsumeTag(data)
@@ -1089,7 +1106,11 @@ func cursorProtobufListToJSON(data []byte, depth int) json.RawMessage {
 			break
 		}
 		data = data[n:]
-		list = append(list, cursorProtobufValueToJSON(val))
+		raw, _ := cursorProtobufValueToJSONDepth(val, depth+1)
+		if len(raw) == 0 {
+			raw = json.RawMessage("null")
+		}
+		list = append(list, raw)
 	}
 	if list == nil {
 		list = []json.RawMessage{}

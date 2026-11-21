@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -100,11 +101,16 @@ func (s *scheduler) due(now time.Time) []Schedule {
 }
 
 // runSchedules sends due messages; it runs for the life of the server.
-func (s *Server) runSchedules() {
+func (s *Server) runSchedules(ctx context.Context) {
 	ticker := time.NewTicker(scheduleTick)
 	defer ticker.Stop()
-	for range ticker.C {
-		s.sendDue(time.Now())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.sendDue(time.Now())
+		}
 	}
 }
 
@@ -124,7 +130,11 @@ func (s *Server) sendDue(now time.Time) {
 		if !s.schedules.remove("", item.ID) {
 			continue // cancelled meanwhile
 		}
-		_, _ = s.startTurn(session, item.Text, nil)
+		if _, err := s.startTurn(session, item.Text, nil); errors.Is(err, ErrBusy) {
+			// A manual turn started between the Running check and startTurn;
+			// put the scheduled message back so it fires on the next tick.
+			_ = s.schedules.add(item)
+		}
 	}
 }
 

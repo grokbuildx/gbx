@@ -30,12 +30,8 @@ func withModelsDevMetadata(models []string, details map[string]protocol.ModelInf
 		if provider.IsModelsDevType(configured.Type) {
 			providerID = provider.ModelsDevCatalogID(configured)
 		} else {
-			providerID = modelsDevOAuthProviderID(configured.OAuthProvider)
+			providerID = provider.OAuthModelsDevProviderID(configured.OAuthProvider)
 		}
-	}
-	descriptions := map[string]string{"minimal": "Minimal reasoning for fast responses"}
-	for _, level := range protocol.GPTReasoningLevels() {
-		descriptions[level.Effort] = level.Description
 	}
 	for _, id := range models {
 		key, info, _ := lookupModelInfo(details, id)
@@ -56,9 +52,7 @@ func withModelsDevMetadata(models []string, details map[string]protocol.ModelInf
 				modified = true
 			}
 		}
-		// Gemini's account inventory defines the callable thinking variants.
-		// Public metadata must not add tiers this bound account cannot route.
-		if !includeReasoning || (strings.EqualFold(strings.TrimSpace(configured.OAuthProvider), "gemini") && info.ReasoningKnown) {
+		if !includeReasoning {
 			if modified {
 				details[key] = info
 			}
@@ -76,7 +70,7 @@ func withModelsDevMetadata(models []string, details map[string]protocol.ModelInf
 		chosen := strings.ToLower(strings.TrimSpace(info.DefaultReasoningLevel))
 		validDefault := false
 		for _, effort := range efforts {
-			info.ReasoningLevels = append(info.ReasoningLevels, protocol.ReasoningLevel{Effort: effort, Description: descriptions[effort]})
+			info.ReasoningLevels = append(info.ReasoningLevels, protocol.ReasoningLevel{Effort: effort, Description: protocol.EffortDescription(effort)})
 			validDefault = validDefault || effort == chosen
 		}
 		if !validDefault {
@@ -95,17 +89,4 @@ func withModelsDevMetadata(models []string, details map[string]protocol.ModelInf
 		details[key] = info
 	}
 	return details, nil
-}
-
-func modelsDevOAuthProviderID(oauth string) string {
-	switch strings.ToLower(strings.TrimSpace(oauth)) {
-	case "grok", "xai":
-		return "xai"
-	case "gpt", "codex":
-		return "openai"
-	case "gemini":
-		return "google"
-	default:
-		return oauth
-	}
 }

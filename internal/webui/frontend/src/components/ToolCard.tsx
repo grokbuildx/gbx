@@ -48,38 +48,40 @@ export const ToolCard = memo(function ToolCard({ tool, renderItems }: { tool: To
           {stopped && <span className="shrink-0 text-[12px]">· {t("stopped")}</span>}
           <ChevronRight size={14} className="shrink-0 transition [details[open]>summary>&]:rotate-90" />
         </summary>
-        <div className="mt-1.5 space-y-2 rounded-[10px] border border-line px-2 pb-2 pt-1.5">
-          <div className="px-1 text-[13px] text-ink-2">{tool.name}</div>
-          {edits ? (
-            edits.map((edit, index) => <DiffView key={index} {...edit} />)
-          ) : (
-            tool.summary &&
-            !agent && (
-              <pre className="whitespace-pre-wrap break-words rounded-lg border border-line bg-code px-2.5 py-2 font-mono text-[12.5px] leading-[1.45] text-ink">
-                {shell && <span className="select-none text-ink-3">$ </span>}
-                {shell ? String(tool.input?.command || tool.summary) : tool.summary}
+        {open && (
+          <div className="mt-1.5 space-y-2 rounded-[10px] border border-line px-2 pb-2 pt-1.5">
+            <div className="px-1 text-[13px] text-ink-2">{tool.name}</div>
+            {edits ? (
+              edits.map((edit, index) => <DiffView key={index} {...edit} />)
+            ) : (
+              tool.summary &&
+              !agent && (
+                <pre className="whitespace-pre-wrap break-words rounded-lg border border-line bg-code px-2.5 py-2 font-mono text-[12.5px] leading-[1.45] text-ink">
+                  {shell && <span className="select-none text-ink-3">$ </span>}
+                  {shell ? String(tool.input?.command || tool.summary) : tool.summary}
+                </pre>
+              )
+            )}
+            {agent && bodyItems.length > 0 && <div className="border-l-2 border-line pl-3">{renderItems(bodyItems)}</div>}
+            {tool.task?.summary && !agent && !running && <div className="px-1 text-[12.5px] text-ink-3">{tool.task.summary}</div>}
+            {output !== undefined && !edits && (
+              <pre
+                className={
+                  "max-h-[360px] overflow-auto whitespace-pre-wrap break-words px-1 font-mono text-[12.5px] leading-[1.45] " +
+                  (failed ? "text-red-600 dark:text-red-400" : "text-ink-3")
+                }
+              >
+                {output || t("noOutput")}
               </pre>
-            )
-          )}
-          {agent && bodyItems.length > 0 && <div className="border-l-2 border-line pl-3">{renderItems(bodyItems)}</div>}
-          {tool.task?.summary && !agent && !running && <div className="px-1 text-[12.5px] text-ink-3">{tool.task.summary}</div>}
-          {output !== undefined && !edits && (
-            <pre
-              className={
-                "max-h-[360px] overflow-auto whitespace-pre-wrap break-words px-1 font-mono text-[12.5px] leading-[1.45] " +
-                (failed ? "text-red-600 dark:text-red-400" : "text-ink-3")
-              }
-            >
-              {output || t("noOutput")}
-            </pre>
-          )}
-          {edits && failed && tool.output && <pre className="whitespace-pre-wrap px-1 font-mono text-[12.5px] text-red-600 dark:text-red-400">{tool.output}</pre>}
-          {output === undefined && running && !(agent && bodyItems.length > 0) && (
-            <div className="flex items-center gap-1.5 px-1 text-[12.5px] text-ink-3">
-              <LoaderCircle size={12} className="animate-spin" /> {t("toolRunning")}
-            </div>
-          )}
-        </div>
+            )}
+            {edits && failed && tool.output && <pre className="whitespace-pre-wrap px-1 font-mono text-[12.5px] text-red-600 dark:text-red-400">{tool.output}</pre>}
+            {output === undefined && running && !(agent && bodyItems.length > 0) && (
+              <div className="flex items-center gap-1.5 px-1 text-[12.5px] text-ink-3">
+                <LoaderCircle size={12} className="animate-spin" /> {t("toolRunning")}
+              </div>
+            )}
+          </div>
+        )}
       </details>
       {step && (
         <div className="truncate pl-6 text-[13px] leading-5 text-ink-3" title={step}>

@@ -208,14 +208,14 @@ func runDoctor(ctx context.Context, probe bool, target providerTarget) error {
 			doctorSection("Model verification")
 			if !probe {
 				doctorInfo(fmt.Sprintf("Skipped: %d model(s) in the pool.", len(configuredModels)))
-				doctorHint("Run `gbx doctor --probe` or `gbx models --probe` to send a 1-token test to each (billed).")
+				doctorHint("Run `gbx doctor --probe` or `gbx provider models --probe` to send a 1-token test to each (billed).")
 				return nil
 			}
 			availableSet := testModelsConcurrently(ctx, configuredModels, probeTarget.Endpoint, probeTarget.APIKey, probeWireType(probeTarget), probeTarget.ModelProtocols, probeTarget.ModelEndpoints)
 			available, unavailable := classifyModels(configuredModels, availableSet)
 			doctorKV("Summary", modelVerificationSummary(available, unavailable))
 			if len(unavailable) > 0 {
-				doctorHint("Run `gbx models --probe` to inspect individual model results.")
+				doctorHint("Run `gbx provider models --probe` to inspect individual model results.")
 			}
 		}
 	}
@@ -328,7 +328,7 @@ func printDoctorContextBudget(runtimeProvider, configured provider.Provider, mod
 	}
 	if smallest > 0 && maxContext > smallest {
 		doctorWarn(fmt.Sprintf("Balanced context %s exceeds the %s window of %s",
-			formatTokenCount(maxContext), providerCatalogModelLabel(smallestModel, modelNames), formatTokenCount(smallest)))
+			formatTokenCount(maxContext), formatTokenCount(smallest), providerCatalogModelLabel(smallestModel, modelNames)))
 		doctorHint("Requests can be rejected with context_length_exceeded (HTTP 400) before Codex auto-compacts")
 	}
 	doctorOK(fmt.Sprintf("Balanced mode; Codex compacts at 85%% of the %s window (~%s)", balancedWindow, balancedCompactAt))

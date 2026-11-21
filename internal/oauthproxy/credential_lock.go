@@ -45,5 +45,9 @@ func rejectedResponseContext(ctx context.Context, response *http.Response) conte
 	if response == nil || response.Request == nil {
 		return ctx
 	}
-	return withRejectedOAuthToken(ctx, strings.TrimPrefix(response.Request.Header.Get("Authorization"), "Bearer "))
+	token := strings.TrimPrefix(response.Request.Header.Get("Authorization"), "Bearer ")
+	if token == "" {
+		token = strings.TrimPrefix(response.Request.Header.Get("X-Authorization"), "Bearer ")
+	}
+	return withRejectedOAuthToken(ctx, token)
 }

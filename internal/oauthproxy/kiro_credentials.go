@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -23,6 +24,19 @@ import (
 )
 
 const kiroTokenRefreshSkew = 5 * time.Minute
+
+var kiroRegionPattern = regexp.MustCompile(`^[a-z]{2}-[a-z-]+-[0-9]$`)
+
+func validateKiroRegion(raw string) (string, error) {
+	region := strings.ToLower(strings.TrimSpace(raw))
+	if region == "" {
+		return "", nil
+	}
+	if !kiroRegionPattern.MatchString(region) {
+		return "", fmt.Errorf("invalid Kiro AWS region %q", raw)
+	}
+	return region, nil
+}
 
 type kiroCredential struct {
 	path         string
@@ -55,10 +69,12 @@ type kiroCredentialPool struct {
 }
 
 func newKiroCredentialPool(authDir, credentialFile string) *kiroCredentialPool {
+	client := newCredentialHTTPClient(30 * time.Second)
+	client.Timeout = 60 * time.Second
 	return &kiroCredentialPool{
 		authDir:        authDir,
 		credentialFile: strings.TrimSpace(credentialFile),
-		client:         &http.Client{Timeout: 60 * time.Second, Transport: newUpstreamTransport(30 * time.Second)},
+		client:         client,
 	}
 }
 
@@ -188,6 +204,18 @@ func loadKiroCredential(path string) (*kiroCredential, error) {
 	if kind := metadataString(metadata, "type"); !strings.EqualFold(kind, ProviderKiro) {
 		return nil, fmt.Errorf("credential type is %q, not kiro", kind)
 	}
+	region, err := validateKiroRegion(metadataString(metadata, "region"))
+	if err != nil {
+		return nil, err
+	}
+	authRegion, err := validateKiroRegion(metadataString(metadata, "auth_region"))
+	if err != nil {
+		return nil, err
+	}
+	apiRegion, err := validateKiroRegion(metadataString(metadata, "api_region"))
+	if err != nil {
+		return nil, err
+	}
 	expiresAt := parseKiroExpiry(metadata["expires_at"])
 	return &kiroCredential{
 		path:         path,
@@ -200,9 +228,9 @@ func loadKiroCredential(path string) (*kiroCredential, error) {
 		provider:     metadataString(metadata, "provider"),
 		clientID:     metadataString(metadata, "client_id"),
 		clientSecret: metadataString(metadata, "client_secret"),
-		region:       metadataString(metadata, "region"),
-		authRegion:   metadataString(metadata, "auth_region"),
-		apiRegion:    metadataString(metadata, "api_region"),
+		region:       region,
+		authRegion:   authRegion,
+		apiRegion:    apiRegion,
 		machineID:    metadataString(metadata, "machine_id"),
 		csrfToken:    metadataString(metadata, "csrf_token"),
 		userID:       metadataString(metadata, "user_id"),
@@ -318,6 +346,11 @@ func (p *kiroCredentialPool) refreshCredential(ctx context.Context, credential *
 	if region == "" {
 		region = kiroDefaultRegion
 	}
+	validRegion, err := validateKiroRegion(region)
+	if err != nil {
+		return err
+	}
+	region = validRegion
 
 	authMethod := strings.ToLower(strings.TrimSpace(credential.authMethod))
 	useIDC := authMethod == "idc" || authMethod == "builder-id" || authMethod == "iam" ||
@@ -344,7 +377,9 @@ func (p *kiroCredentialPool) refreshCredential(ctx context.Context, credential *
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
+	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(refreshCtx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}
@@ -360,7 +395,7 @@ func (p *kiroCredentialPool) refreshCredential(ctx context.Context, credential *
 	} else {
 		req.Header.Set("User-Agent", "KiroIDE-"+kiroIDEVersion+"-"+machineID)
 	}
-	resp, err := p.client.Do(req)
+	resp, err := doCredentialRequest(p.client, req)
 	if err != nil {
 		return fmt.Errorf("refresh Kiro token: %w", err)
 	}
@@ -417,18 +452,18 @@ func (p *kiroCredentialPool) listAuths() []*AuthInfo {
 			Label:    metadataString(credential.metadata, "email"),
 			Status:   status,
 			Disabled: credential.disabled,
-			Metadata: credential.metadata,
+			Metadata: safeAuthMetadata(credential.metadata),
 		})
 	}
 	return auths
 }
 
 func (credential *kiroCredential) effectiveAPIRegion() string {
-	if credential.apiRegion != "" {
-		return credential.apiRegion
+	if region, err := validateKiroRegion(credential.apiRegion); err == nil && region != "" {
+		return region
 	}
-	if credential.region != "" {
-		return credential.region
+	if region, err := validateKiroRegion(credential.region); err == nil && region != "" {
+		return region
 	}
 	return kiroDefaultRegion
 }

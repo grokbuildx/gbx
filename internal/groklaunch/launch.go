@@ -26,15 +26,16 @@ import (
 // Launch is a prepared Grok Build process spec: its embedded loopback
 // runtime, environment, and default model selection. The caller must Close it.
 type Launch struct {
-	Path         string
-	AuthPath     string
-	DefaultModel string
-	Env          []string
-	Session      *providersession.Session
+	Path            string
+	AuthPath        string
+	DefaultModel    string
+	Env             []string
+	Session         *providersession.Session
+	borrowedSession bool
 }
 
-// Close removes the per-session empty auth file and stops the embedded proxy.
-// It is safe to call more than once.
+// Close removes the per-session empty auth file and stops the embedded proxy
+// when owned by this launch. It is safe to call more than once.
 func (l *Launch) Close() {
 	if l == nil {
 		return
@@ -43,7 +44,7 @@ func (l *Launch) Close() {
 		_ = os.Remove(l.AuthPath)
 		l.AuthPath = ""
 	}
-	if l.Session != nil {
+	if l.Session != nil && !l.borrowedSession {
 		l.Session.Close()
 	}
 }
@@ -295,10 +296,14 @@ func grokExecutableName() string {
 
 // bundledPath is replaceable in tests.
 var bundledPath = func() (string, bool) {
+	return bundledPathContext(context.Background())
+}
+
+func bundledPathContext(ctx context.Context) (string, bool) {
 	if !grokbundle.Available() {
 		return "", false
 	}
-	path, err := grokbundle.Path(context.Background())
+	path, err := grokbundle.Path(ctx)
 	if err != nil {
 		// Fall back to a system Grok Build rather than failing the launch.
 		fmt.Fprintf(os.Stderr, "gbx: %v; trying a system Grok Build\n", err)
@@ -348,6 +353,20 @@ func LookPath() (string, error) {
 	return LookSystemPath()
 }
 
+// LookPathContext behaves like LookPath while canceling any in-flight pinned
+// Grok Build download if ctx is canceled.
+func LookPathContext(ctx context.Context) (string, error) {
+	if ctx == nil || ctx == context.Background() {
+		return LookPath()
+	}
+	if strings.TrimSpace(os.Getenv(BinaryEnv)) == "" {
+		if bundled, ok := bundledPathContext(ctx); ok {
+			return bundled, nil
+		}
+	}
+	return LookSystemPath()
+}
+
 // LookSystemPath locates Grok Build without the pinned copy: GBX_GROK_BIN,
 // then PATH, then ~/.grok/bin. It never downloads.
 func LookSystemPath() (string, error) {
@@ -370,6 +389,21 @@ func LookSystemPath() (string, error) {
 	return "", err
 }
 
+// ScrubServeEnv removes GBX web-server secrets (such as GBX_SERVE_TOKEN) from
+// a child environment slice so sandboxed workers and helper subprocesses cannot
+// authenticate against a parent gbx serve control API.
+func ScrubServeEnv(inherited []string) []string {
+	out := make([]string, 0, len(inherited))
+	for _, entry := range inherited {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && strings.HasPrefix(strings.ToUpper(key), "GBX_SERVE_") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 // NativeBrowserEnv builds the process environment for a browser worker running
 // on Grok Build's own ~/.grok login.
 func NativeBrowserEnv(inherited []string, permissionMode string) []string {
@@ -381,7 +415,11 @@ func NativeBrowserEnv(inherited []string, permissionMode string) []string {
 			env = append(env, entry)
 			continue
 		}
-		switch strings.ToUpper(key) {
+		upper := strings.ToUpper(key)
+		if strings.HasPrefix(upper, "GBX_SERVE_") {
+			continue
+		}
+		switch upper {
 		case "GROK_CONFIG", "GROK_CONFIG_PATH", "GROK_SANDBOX", "GROK_DISABLE_AUTOUPDATER":
 			continue
 		}
@@ -418,6 +456,17 @@ func PrepareBrowserWithMode(ctx context.Context, grokPath string, p provider.Pro
 	return prepare(ctx, grokPath, p, newGrokSessionName(), true, profile)
 }
 
+// PrepareBrowserWithSession builds an isolated Grok launch against a caller-owned
+// providersession.Session (such as a pooled runtime). Launch.Close removes only
+// the per-turn auth file and leaves session open for reuse.
+func PrepareBrowserWithSession(grokPath string, session *providersession.Session, profile, permissionMode string) (*Launch, error) {
+	_ = permissionMode
+	if session == nil {
+		return nil, fmt.Errorf("provider session is required")
+	}
+	return buildLaunchFromSession(grokPath, session, newGrokSessionName(), true, profile, true)
+}
+
 func prepare(ctx context.Context, grokPath string, p provider.Provider, sessionName string, browser bool, profile string) (*Launch, error) {
 	session, err := providersession.Prepare(ctx, p)
 	if err != nil {
@@ -429,8 +478,11 @@ func prepare(ctx context.Context, grokPath string, p provider.Provider, sessionN
 		"oauth", p.OAuthProvider, "protocol", provider.ProtocolLabelForProvider(p),
 		"data_plane", "gbx_proxy", "upstream_errors_visible", true,
 		"base", oauthproxy.SafeLogEndpoint(session.Provider.Endpoint))
+	return buildLaunchFromSession(grokPath, session, sessionName, browser, profile, false)
+}
 
-	resolved := session.Provider
+func buildLaunchFromSession(grokPath string, session *providersession.Session, sessionName string, browser bool, profile string, borrowed bool) (*Launch, error) {
+	resolved := session.Provider.Clone()
 	var runtimeModels []string
 	var runtimeNames map[string]string
 	if session.Runtime != nil {
@@ -458,16 +510,19 @@ func prepare(ctx context.Context, grokPath string, p provider.Provider, sessionN
 	// with 401 invalid_local_api_key.
 	authPath, err := writeSettingsBytes([]byte("{}\n"), sessionName)
 	if err != nil {
-		session.Close()
+		if !borrowed {
+			session.Close()
+		}
 		return nil, fmt.Errorf("create grok auth file: %w", err)
 	}
 
 	return &Launch{
-		Path:         grokPath,
-		AuthPath:     authPath,
-		DefaultModel: defaultModel,
-		Env:          WithBundledEnv(grokPath, buildGrokProcessEnv(env, resolved, configJSON, authPath)),
-		Session:      session,
+		Path:            grokPath,
+		AuthPath:        authPath,
+		DefaultModel:    defaultModel,
+		Env:             WithBundledEnv(grokPath, buildGrokProcessEnv(env, resolved, configJSON, authPath)),
+		Session:         session,
+		borrowedSession: borrowed,
 	}, nil
 }
 
@@ -482,6 +537,9 @@ var allowedBrowserGrokEnv = map[string]struct{}{
 func browserEnvironment(inherited []string, overrides map[string]string, profile string) ([]string, map[string]string) {
 	keepKey := func(key string) bool {
 		upper := strings.ToUpper(key)
+		if strings.HasPrefix(upper, "GBX_SERVE_") {
+			return false
+		}
 		if !strings.HasPrefix(upper, "GROK_") {
 			return true
 		}

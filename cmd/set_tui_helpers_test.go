@@ -32,6 +32,161 @@ func rowAtLine(lines []string, y int) (configRowKind, bool) {
 	return rowAtLineAt(lines, y, -1)
 }
 
+type rowClickLabel struct {
+	en, zh string
+}
+
+var rowClickLabels = map[configRowKind]rowClickLabel{
+	rowSource:       {en: "Source", zh: "来源"},
+	rowEndpoint:     {en: "Endpoint URL", zh: "端点 URL"},
+	rowAPIKey:       {en: "API Key"},
+	rowProvider:     {en: "Provider"},
+	rowTest:         {en: "Auto Configure"},
+	rowProtocol:     {en: "Protocol", zh: "协议"},
+	rowFast:         {en: "Fast"},
+	rowDefaultModel: {en: "Default Model", zh: "默认模型"},
+	rowTestModels:   {en: "Check", zh: "检查"},
+	rowContext:      {en: "Context & Compact", zh: "上下文与压缩"},
+	rowActive:       {en: "Set as active provider", zh: "设为当前激活 Provider"},
+	rowSave:         {en: "Save & Activate", zh: "保存并激活"},
+	rowCancel:       {en: "Cancel", zh: "取消"},
+}
+
+func rowAtLineAt(lines []string, y, x int) (configRowKind, bool) {
+	if y < 0 || y >= len(lines) {
+		return rowCancel, false
+	}
+	for _, off := range []int{0, -1} {
+		row := y + off
+		if row < 0 || row >= len(lines) {
+			continue
+		}
+		text := stripANSI(lines[row])
+		kind, ok := matchRowLabel(text, x, off == 0)
+		if ok {
+			return kind, true
+		}
+	}
+	return rowCancel, false
+}
+
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' && i+1 < len(s) {
+			if s[i+1] == '[' {
+				j := i + 2
+				for j < len(s) && !isANSIFinalByte(s[j]) {
+					j++
+				}
+				if j < len(s) {
+					j++
+				}
+				i = j
+				continue
+			}
+			i += 2
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+func isANSIFinalByte(c byte) bool {
+	return c >= 0x40 && c <= 0x7e
+}
+
+func matchRowLabel(text string, x int, allowButton bool) (configRowKind, bool) {
+	trimmed := strings.TrimLeft(text, " │|>")
+	lead := tui.StringWidth(text[:len(text)-len(trimmed)])
+	rest := trimmed
+	if strings.HasPrefix(rest, "[") {
+		if idx := strings.Index(rest, "] "); idx >= 0 {
+			rest = rest[idx+2:]
+			lead = tui.StringWidth(text[:len(text)-len(rest)])
+		}
+	}
+	var matched configRowKind
+	var matchedIdx int
+	hasMatch := false
+	for kind := range rowClickLabels {
+		for _, label := range rowClickLabelPrefixes(kind) {
+			if strings.HasPrefix(rest, label) {
+				idx := lead
+				if !hasMatch || idx < matchedIdx {
+					matched = kind
+					matchedIdx = idx
+					hasMatch = true
+				}
+				break
+			}
+		}
+	}
+	if !hasMatch {
+		if !allowButton {
+			return rowCancel, false
+		}
+		if strings.HasPrefix(rest, "http://") || strings.HasPrefix(rest, "https://") {
+			return rowCopyURL, true
+		}
+		key := strings.TrimSpace(rest)
+		if key != "" && (strings.HasPrefix(key, "sk-") || strings.HasPrefix(key, "-----BEGIN") || !strings.ContainsAny(key, " \t")) {
+			return rowCopyKey, true
+		}
+		return rowCancel, false
+	}
+	if x < 0 {
+		return matched, true
+	}
+	best := matched
+	bestIdx := matchedIdx
+	for kind := range rowClickLabels {
+		for _, label := range rowClickLabelPrefixes(kind) {
+			if kind == matched {
+				break
+			}
+			idx := strings.Index(rest, label)
+			if idx < 0 {
+				continue
+			}
+			absIdx := lead + tui.StringWidth(rest[:idx])
+			if absIdx <= x && (bestIdx > x || absIdx > bestIdx) {
+				best = kind
+				bestIdx = absIdx
+			}
+			break
+		}
+	}
+	return best, true
+}
+
+func rowClickLabelPrefixes(kind configRowKind) []string {
+	label, ok := rowClickLabels[kind]
+	if !ok {
+		return nil
+	}
+	prefixes := make([]string, 0, 3)
+	if label.en != "" {
+		prefixes = append(prefixes, label.en)
+	}
+	if label.zh != "" {
+		prefixes = append(prefixes, label.zh)
+	}
+	if kind == rowSave {
+		prefixes = append(prefixes, "Save Provider", "保存 Provider")
+	}
+	if kind == rowContext {
+		prefixes = append(prefixes, "Context", "上下文")
+	}
+	if kind == rowDefaultModel {
+		prefixes = append(prefixes, "Default")
+	}
+	return prefixes
+}
+
 // renderView renders the model offline like a terminal frame would, so tests
 // can assert on the visible text (labels, hints, badges) the same way they
 // asserted on the old bubbletea View().Content.

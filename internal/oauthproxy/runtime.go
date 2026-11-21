@@ -15,6 +15,8 @@ import (
 
 	"github.com/grokbuildx/gbx/internal/modelrouting"
 	"github.com/grokbuildx/gbx/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/provider"
+	"github.com/grokbuildx/gbx/internal/runtimelog"
 )
 
 const (
@@ -26,13 +28,12 @@ const (
 type Runtime struct {
 	endpoint   string
 	apiKey     string
+	handler    http.Handler
 	httpServer *http.Server
 	listAuths  func() []*AuthInfo
 	cleanup    []func()
 	cancel     context.CancelFunc
 	done       chan struct{}
-	runErr     chan error
-	started    chan struct{}
 	models     []string
 	modelNames map[string]string
 	// modelDetails carries catalog metadata a backend can expose for UI rows
@@ -46,7 +47,7 @@ type Runtime struct {
 	// catalogStale is a known account inventory read from cache after discovery
 	// failed. It may seed a new session, but must not replace a running snapshot.
 	catalogStale bool
-	ownsLog      bool
+	releaseLog   func()
 	stopOnce     sync.Once
 	// usage accumulates per-model token totals for this runtime. It is never nil:
 	// StartProvider always installs one, even when the backend cannot report
@@ -61,6 +62,14 @@ func (r *Runtime) Usage() *UsageTracker {
 		return nil
 	}
 	return r.usage
+}
+
+// Handler returns the in-process HTTP handler backing this loopback runtime.
+func (r *Runtime) Handler() http.Handler {
+	if r == nil {
+		return nil
+	}
+	return r.handler
 }
 
 // Models returns the authoritative upstream catalog captured when the runtime
@@ -136,6 +145,9 @@ type StartOptions struct {
 	// ModelEndpoints overrides Endpoint per lower-case model ID on the
 	// mixed-protocol gateway.
 	ModelEndpoints map[string]string
+	// DisableHistoryCache bypasses the loopback previous_response_id history
+	// cache when an outer gateway (such as codex.Gateway) already owns history.
+	DisableHistoryCache bool
 }
 
 type runtimeModelRoute struct {
@@ -146,9 +158,12 @@ type runtimeModelRoute struct {
 // StartProvider starts a loopback OpenAI Responses adapter. Every protocol
 // family is served by a GBX-owned data plane (Codex Responses or OpenAI Chat).
 func StartProvider(parent context.Context, options StartOptions) (*Runtime, error) {
-	_, ownsLog, logErr := EnsureSessionLog("runtime")
+	_, releaseLog, logErr := runtimelog.AcquireSessionLog("runtime")
 	if logErr != nil {
 		return nil, fmt.Errorf("open provider runtime log: %w", logErr)
+	}
+	if options.DisableHistoryCache {
+		parent = withDisableHistoryCache(parent)
 	}
 	runtime, err := startProvider(parent, options)
 	if err != nil {
@@ -158,12 +173,10 @@ func StartProvider(parent context.Context, options StartOptions) (*Runtime, erro
 		LogErrorf("runtime start failed oauth=%q protocol=%q endpoint=%q credential=%q error=%v",
 			options.OAuthProvider, options.Protocol, SafeLogEndpoint(options.Endpoint),
 			options.OAuthAccountCredential, err)
-		if ownsLog {
-			CloseLog()
-		}
+		releaseLog()
 		return nil, err
 	}
-	runtime.ownsLog = ownsLog
+	runtime.releaseLog = releaseLog
 	return runtime, nil
 }
 
@@ -199,34 +212,26 @@ func StartOAuth(parent context.Context, providerName, modelSpec, credentialFile 
 	if parent == nil {
 		parent = context.Background()
 	}
-	if backend == ProviderKiro {
+	switch backend {
+	case ProviderKiro:
 		return startKiroOAuth(parent, modelSpec, credentialFile)
-	}
-	if backend == ProviderQoder {
+	case ProviderQoder:
 		return startQoderOAuth(parent, modelSpec, credentialFile)
-	}
-	if backend == ProviderCodex {
+	case ProviderCodex:
 		return startCodexOAuth(parent, modelSpec, credentialFile)
-	}
-	if backend == ProviderWorkBuddy || backend == ProviderWorkBuddyCN {
+	case ProviderWorkBuddy, ProviderWorkBuddyCN:
 		return startWorkBuddyOAuth(parent, providerName, modelSpec, credentialFile)
-	}
-	if backend == backendXAI {
+	case backendXAI:
 		return startXaiOAuth(parent, modelSpec, credentialFile)
-	}
-	if backend == ProviderKimi {
+	case ProviderKimi:
 		return startKimiOAuth(parent, modelSpec, credentialFile)
-	}
-	if backend == backendAntigravity {
-		return startAntigravityOAuth(parent, modelSpec, credentialFile)
-	}
-	if backend == ProviderAutoClaw {
+	case ProviderAutoClaw:
 		return startAutoClawOAuth(parent, AutoClawOpenAIBaseURL(), modelSpec, credentialFile)
-	}
-	if backend == ProviderCursor {
+	case ProviderCursor:
 		return startCursorOAuth(parent, modelSpec, credentialFile)
+	default:
+		return nil, fmt.Errorf("unsupported subscription provider %q", providerName)
 	}
-	return nil, fmt.Errorf("unsupported subscription provider %q", providerName)
 }
 
 // StartOpenAIChatAPI starts GBX's self-owned Chat Completions adapter against
@@ -321,11 +326,7 @@ func runtimeModelAliases(modelSpec string) []string {
 }
 
 func stripContextModelSuffix(model string) string {
-	model = strings.TrimSpace(model)
-	for strings.HasSuffix(strings.ToLower(model), "[1m]") {
-		model = strings.TrimSpace(model[:len(model)-len("[1m]")])
-	}
-	return model
+	return provider.StripContextSuffix(model)
 }
 
 func (r *Runtime) Endpoint() string { return r.endpoint }
@@ -362,8 +363,8 @@ func (r *Runtime) Stop() {
 		defer func() {
 			LogInfof("runtime stop endpoint=%q clean_exit=%t duration=%s",
 				SafeLogEndpoint(r.endpoint), stopped, time.Since(stopStarted).Round(time.Millisecond))
-			if r.ownsLog {
-				CloseLog()
+			if r.releaseLog != nil {
+				r.releaseLog()
 			}
 		}()
 		// Force Shutdown only when Run did not exit cleanly in time.

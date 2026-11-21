@@ -3,10 +3,10 @@
 // Clients talk to the OpenAI Responses or Chat Completions loopback endpoints.
 // GBX directly owns every data plane: Codex Responses (GPT and openai_responses
 // API-key gateways), OpenAI Chat (manual API-key providers, Kimi, and WorkBuddy),
-// Grok (cli-chat-proxy Responses with Grok Build identity), Gemini (Antigravity
-// conversion), and Cursor (Connect bidirectional agent stream). Kiro and Qoder
-// run entirely on GBX-owned runtimes too. AutoClaw uses a GBX-owned OpenAI Chat
-// runtime with its desktop OAuth refresh session and managed-proxy headers.
+// Grok (cli-chat-proxy Responses with Grok Build identity), and Cursor (Connect
+// bidirectional agent stream). Kiro and Qoder run entirely on GBX-owned
+// runtimes too. AutoClaw uses a GBX-owned OpenAI Chat runtime with its desktop
+// OAuth refresh session and managed-proxy headers.
 //
 // Error recovery follows the data-plane owner. Every GBX-owned data plane
 // first applies the shared fast-retry loop (retry.go): an upstream 429 or 5xx
@@ -15,15 +15,9 @@
 // can honor the upstream wait without GBX sending more requests first.
 // Per-provider recovery happens INSIDE one attempt: Codex Responses, Grok, and
 // Kimi refresh once after a 401; WorkBuddy refreshes once after a 401/403;
-// Gemini starts from its discovered catalog base URL and falls back to the
-// secondary Antigravity base (daily <-> prod) on network errors, 429s
-// and 5xx responses (one attempt is then up to 2 upstream calls); Qoder uses
-// its single bound credential and re-signs COSY per attempt. Two layers are
-// deliberately outside the loop: Kiro keeps its own longer 1/2/4s budget with
-// per-round credential rotation (stacking would double the backoff), and the
-// WorkBuddy loopback gateway is the INNER hop of a two-hop path — the outer
-// chat service owns the fast retry, so wrapping the gateway too would retry
-// 3×3 = 9 times per request.
+// Qoder uses its single bound credential and re-signs COSY per attempt. Kiro
+// keeps its own longer 1/2/4s budget with per-round credential rotation
+// (stacking would double the backoff).
 //
 // # Direct data planes
 //
@@ -68,20 +62,13 @@
 //     X-Authorization/X-Request-Model/X-Harness-Type headers, and never starts
 //     or modifies AutoClaw at runtime.
 //
-//  6. Gemini Antigravity runtime (gemini_*.go)
-//     `gbx oauth gemini` discovers the bound account's Antigravity catalog via
-//     loadCodeAssist and fetchAvailableModels, caches validated wire IDs and
-//     modalities per account digest, groups thinking variants into families,
-//     normalizes readable display aliases to canonical catalog IDs, and
-//     translates OpenAI Responses to Antigravity streams.
-//
-//  7. Cursor direct runtime (cursor_*.go)
+//  6. Cursor direct runtime (cursor_*.go)
 //     `gbx oauth cursor` runs PKCE sign-in and polls for tokens. At runtime it
 //     bridges OpenAI Responses over Cursor's Connect bidirectional agent
 //     stream (Run + GetUsableModels), parking the open stream across tool calls
 //     so tool results resume the active turn while the client owns execution.
 //
-//  8. Session credentials
+//  7. Session credentials
 //     All runtimes bind 127.0.0.1 only and use a random per-session API key
 //     that is never written back to ~/.gbx/config.yaml. OAuth credentials live
 //     under ~/.gbx/auth and are filtered per backend so multi-login providers do

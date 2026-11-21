@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/grokbuildx/gbx/internal/fsutil"
 )
 
 // Set with -ldflags -X by scripts/build-release.sh.
@@ -44,6 +46,9 @@ const defaultDownloadBase = "https://github.com/grokbuildx/gbx/releases/download
 
 // maxBinaryBytes caps the unpacked size of a download.
 var maxBinaryBytes int64 = 512 << 20
+
+// maxArchiveTrailingBytes caps trailing bytes hashed after the gzip stream.
+const maxArchiveTrailingBytes int64 = 4 << 20
 
 // Replaceable in tests.
 var (
@@ -124,10 +129,14 @@ func Installed() (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
-		return path, true
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+		return "", false
 	}
-	return "", false
+	if goos != "windows" && info.Mode().Perm()&0o111 == 0 {
+		return "", false
+	}
+	return path, true
 }
 
 // DownloadURL is where this platform's archive is published.
@@ -145,6 +154,9 @@ func Path(ctx context.Context) (string, error) {
 	if !Available() {
 		return "", errors.New("this gbx build does not pin a Grok Build")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	resolved.Lock()
 	defer resolved.Unlock()
 	if resolved.path != "" {
@@ -159,6 +171,21 @@ func Path(ctx context.Context) (string, error) {
 		return "", err
 	}
 	dir := filepath.Dir(path)
+	root := filepath.Dir(dir)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	unlock, err := fsutil.AcquireFileLock(ctx, filepath.Join(root, ".download.lock"))
+	if err != nil {
+		return "", fmt.Errorf("lock Grok Build cache: %w", err)
+	}
+	defer unlock()
+	// Re-check after acquiring cross-process lock in case another process
+	// completed the download while we waited.
+	if installed, ok := Installed(); ok {
+		resolved.path = installed
+		return installed, nil
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -166,7 +193,7 @@ func Path(ctx context.Context) (string, error) {
 	if err := download(ctx, DownloadURL(), path); err != nil {
 		return "", fmt.Errorf("download Grok Build %s: %w", ShortRevision(), err)
 	}
-	pruneOld(filepath.Dir(dir), filepath.Base(dir))
+	pruneOld(root, filepath.Base(dir))
 	resolved.path = path
 	return path, nil
 }
@@ -204,12 +231,23 @@ func download(ctx context.Context, url, dest string) error {
 	if written > maxBinaryBytes {
 		return fmt.Errorf("archive expands beyond %d bytes", maxBinaryBytes)
 	}
-	// Hash the whole download, including anything after the gzip stream.
-	if _, err := io.Copy(io.Discard, io.TeeReader(resp.Body, digest)); err != nil {
+	if err := archive.Close(); err != nil {
 		return err
+	}
+	// Hash any bounded trailing bytes after the gzip stream so the digest covers
+	// the complete archive without allowing an unbounded slowloris drain.
+	trailing, err := io.Copy(io.Discard, io.LimitReader(io.TeeReader(resp.Body, digest), maxArchiveTrailingBytes+1))
+	if err != nil {
+		return err
+	}
+	if trailing > maxArchiveTrailingBytes {
+		return fmt.Errorf("archive contains unexpected trailing data beyond %d bytes", maxArchiveTrailingBytes)
 	}
 	if got := hex.EncodeToString(digest.Sum(nil)); !strings.EqualFold(got, SHA256) {
 		return fmt.Errorf("checksum mismatch: got %s, want %s", got, SHA256)
+	}
+	if err := staging.Sync(); err != nil {
+		return err
 	}
 	if err := staging.Close(); err != nil {
 		return err
@@ -228,7 +266,7 @@ func pruneOld(root, keep string) {
 		return
 	}
 	for _, entry := range entries {
-		if entry.IsDir() && entry.Name() != keep && !strings.HasPrefix(entry.Name(), ".") {
+		if entry.IsDir() && entry.Name() != keep && strings.HasPrefix(entry.Name(), "rev-") {
 			_ = os.RemoveAll(filepath.Join(root, entry.Name()))
 		}
 	}

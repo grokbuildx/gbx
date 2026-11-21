@@ -125,13 +125,15 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			body.ServeSandbox = &mode
 		}
 		// Serialize persistence and publication so concurrent saves cannot publish
-		// the earlier value after the later config.Update has committed.
-		s.sandboxMu.Lock()
+		// the earlier value after the later config.Update has committed, without
+		// blocking readers of s.SandboxMode() across disk I/O.
+		s.configSaveMu.Lock()
+		currentSandbox := s.SandboxMode()
 		if err := s.updateConfig(func(cfg *provider.Config) error {
 			if body.ServeSandbox != nil {
 				mode := *body.ServeSandbox
 				if mode == SandboxOff && !body.ConfirmSandboxOff &&
-					(s.sandbox != SandboxOff || cfg.ServeSandbox != SandboxOff) {
+					(currentSandbox != SandboxOff || cfg.ServeSandbox != SandboxOff) {
 					return fmt.Errorf("disabling the sandbox requires confirmSandboxOff: true; agent processes can write outside the workspace")
 				}
 				cfg.ServeSandbox = mode
@@ -167,14 +169,31 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil
 		}); err != nil {
-			s.sandboxMu.Unlock()
+			s.configSaveMu.Unlock()
 			writeConfigError(w, err)
 			return
 		}
 		if body.ServeSandbox != nil {
+			s.sandboxMu.Lock()
 			s.sandbox = *body.ServeSandbox
+			s.sandboxMu.Unlock()
 		}
-		s.sandboxMu.Unlock()
+		if body.BypassMode != nil {
+			if *body.BypassMode {
+				s.setDefaultPermissionMode("bypassPermissions")
+			} else {
+				s.setDefaultPermissionMode("default")
+			}
+		}
+		if body.LogLevel != nil {
+			level := strings.ToLower(strings.TrimSpace(*body.LogLevel))
+			if parsed, ok := oauthproxy.ParseLogLevel(level); ok {
+				oauthproxy.ConfigureLogLevel(parsed)
+			} else {
+				oauthproxy.ConfigureLogLevel(oauthproxy.LogLevelOff)
+			}
+		}
+		s.configSaveMu.Unlock()
 		view, err := s.configView()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -378,19 +397,8 @@ func (s *Server) handleConfigProvider(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleConfigProviderTest probes a provider's endpoint or runtime once. Nothing is saved.
+// handleConfigProviderTest probes a provider's endpoint or runtime once.
 func (s *Server) handleConfigProviderTest(w http.ResponseWriter, r *http.Request, name string) {
-	cfg, err := config.Load()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	p, ok := cfg.Providers[name]
-	if !ok {
-		writeError(w, http.StatusNotFound, "provider not found")
-		return
-	}
-	p.Name = name
 	var body struct {
 		Endpoint *string `json:"endpoint"`
 		APIKey   *string `json:"apiKey"`
@@ -400,24 +408,52 @@ func (s *Server) handleConfigProviderTest(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	cfg, err := config.Load()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	p, ok := cfg.Providers[name]
 	customProbe := false
-	if body.Endpoint != nil && strings.TrimSpace(*body.Endpoint) != "" {
-		p.Endpoint = strings.TrimSpace(*body.Endpoint)
+	if !ok {
+		if body.Endpoint == nil || strings.TrimSpace(*body.Endpoint) == "" {
+			writeError(w, http.StatusNotFound, "provider not found")
+			return
+		}
+		p = provider.Provider{Name: name}
 		customProbe = true
+	} else {
+		p.Name = name
 	}
-	if body.APIKey != nil && strings.TrimSpace(*body.APIKey) != "" {
-		p.APIKey = strings.TrimSpace(*body.APIKey)
-		customProbe = true
+	if body.Endpoint != nil {
+		if ep := strings.TrimSpace(*body.Endpoint); ep != "" {
+			if !ok || ep != strings.TrimSpace(p.Endpoint) {
+				customProbe = true
+			}
+			p.Endpoint = ep
+		}
 	}
-	if body.Type != nil && strings.TrimSpace(*body.Type) != "" {
-		p.Type = strings.TrimSpace(*body.Type)
-		customProbe = true
+	if body.APIKey != nil {
+		if key := strings.TrimSpace(*body.APIKey); key != "" {
+			if !ok || key != strings.TrimSpace(p.APIKey) {
+				customProbe = true
+			}
+			p.APIKey = key
+		}
+	}
+	if body.Type != nil {
+		if typ := strings.TrimSpace(*body.Type); typ != "" {
+			if !ok || !strings.EqualFold(typ, strings.TrimSpace(provider.EffectiveType(p))) {
+				customProbe = true
+			}
+			p.Type = typ
+		}
 	}
 	result, catalog := probeProviderCatalog(r.Context(), p)
 	if result.OK && !customProbe {
 		s.recordProviderCatalog(name, catalog.models, catalog.labels, catalog.details)
 	}
-	if result.OK && len(result.Labels) > 0 {
+	if result.OK && !customProbe && len(result.Labels) > 0 {
 		if err := s.updateConfig(func(cfg *provider.Config) error {
 			stored, ok := cfg.Providers[name]
 			if !ok {
@@ -491,8 +527,28 @@ func (s *Server) invalidateProviderCatalog(name string) {
 		return
 	}
 	s.catalogMu.Lock()
+	if s.catalogGen == nil {
+		s.catalogGen = make(map[string]uint64)
+	}
+	s.catalogGen[name]++
 	delete(s.catalogs, name)
 	s.catalogMu.Unlock()
+	if s.runtimePool != nil {
+		s.runtimePool.Invalidate(name)
+	}
+}
+
+func (s *Server) invalidateAllProviderCatalogs() {
+	if s == nil {
+		return
+	}
+	s.catalogMu.Lock()
+	s.catalogGlobalGen++
+	clear(s.catalogs)
+	s.catalogMu.Unlock()
+	if s.runtimePool != nil {
+		s.runtimePool.InvalidateAll()
+	}
 }
 
 func (s *Server) cachedProviderCatalog(name string) (providerRuntimeCatalog, bool) {
@@ -529,6 +585,8 @@ func (s *Server) refreshProviderCatalog(ctx context.Context, name string, p prov
 			return providerRuntimeCatalog{}, ctx.Err()
 		}
 	}
+	gen := s.catalogGen[name]
+	globalGen := s.catalogGlobalGen
 	call := &catalogRefreshCall{done: make(chan struct{})}
 	s.catalogInflight[name] = call
 	s.catalogMu.Unlock()
@@ -538,23 +596,30 @@ func (s *Server) refreshProviderCatalog(ctx context.Context, name string, p prov
 		call.err = fmt.Errorf("%s", res.Message)
 	} else {
 		call.catalog = cat
-		s.recordProviderCatalog(name, cat.models, cat.labels, cat.details)
-		if len(cat.labels) > 0 {
-			_ = s.updateConfig(func(cfg *provider.Config) error {
-				stored, ok := cfg.Providers[name]
-				if !ok {
+		s.catalogMu.Lock()
+		fresh := s.catalogGen[name] == gen && s.catalogGlobalGen == globalGen
+		s.catalogMu.Unlock()
+		if fresh {
+			s.recordProviderCatalog(name, cat.models, cat.labels, cat.details)
+			if len(cat.labels) > 0 {
+				_ = s.updateConfig(func(cfg *provider.Config) error {
+					stored, ok := cfg.Providers[name]
+					if !ok {
+						return nil
+					}
+					mergeModelLabels(&stored, cat.labels)
+					cfg.Providers[name] = stored
 					return nil
-				}
-				mergeModelLabels(&stored, cat.labels)
-				cfg.Providers[name] = stored
-				return nil
-			})
+				})
+			}
 		}
 	}
 	close(call.done)
 
 	s.catalogMu.Lock()
-	delete(s.catalogInflight, name)
+	if s.catalogInflight[name] == call {
+		delete(s.catalogInflight, name)
+	}
 	s.catalogMu.Unlock()
 	return call.catalog, call.err
 }
@@ -664,7 +729,7 @@ func probeProviderCatalog(ctx context.Context, p provider.Provider) (ProbeResult
 			done <- outcome{models: models, labels: labels, details: details}
 			return
 		}
-		infos, err := protocol.GetOpenAIModelInfos(p.Endpoint, p.APIKey)
+		infos, err := protocol.GetOpenAIModelInfosContext(ctx, p.Endpoint, p.APIKey)
 		if err != nil {
 			done <- outcome{err: err}
 			return

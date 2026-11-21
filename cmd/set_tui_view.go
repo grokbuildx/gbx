@@ -57,12 +57,41 @@ func renderModelFetchProgress(progress, frame int, oauth bool) []*tui.Element {
 	}
 }
 
+// bodyLine pairs a single-line body element with optional hit-test and cursor
+// anchor metadata so both scroll positioning and mouse clicks resolve directly
+// from structured layout data without re-rendering via tui.Sprint or scraping
+// ANSI text.
+type bodyLine struct {
+	elem          *tui.Element
+	kind          configRowKind
+	hasKind       bool
+	secondaryKind configRowKind
+	hasSecondary  bool
+	secondaryCol  int
+}
+
+func plainBodyLine(elem *tui.Element) bodyLine {
+	return bodyLine{elem: elem}
+}
+
+func plainBodyLines(elems ...*tui.Element) []bodyLine {
+	out := make([]bodyLine, len(elems))
+	for i, e := range elems {
+		out[i] = bodyLine{elem: e}
+	}
+	return out
+}
+
+func taggedBodyLine(elem *tui.Element, kind configRowKind) bodyLine {
+	return bodyLine{elem: elem, kind: kind, hasKind: true}
+}
+
 // credentialField renders one credential row: the label line and the value
 // line(s). The API key can span multiple lines (its editor accepts Enter);
 // each line is its own element so the mouse hit-test rows stay stable. A
 // focused field swaps the label for the accent style and the "> " cursor
 // prefix, matching the stepper rows below.
-func credentialField(label, value string, focused bool) []*tui.Element {
+func credentialField(label, value string, focused bool, labelKind, copyKind configRowKind, hasValue bool) []bodyLine {
 	prefix := "  "
 	labelStyle := stPurple
 	valueStyle := stGray
@@ -71,13 +100,17 @@ func credentialField(label, value string, focused bool) []*tui.Element {
 		labelStyle = stSelected
 		valueStyle = stSelected
 	}
-	rows := []*tui.Element{
-		line(span(prefix, labelStyle), span(label, labelStyle)),
+	rows := []bodyLine{
+		taggedBodyLine(line(span(prefix, labelStyle), span(label, labelStyle)), labelKind),
+	}
+	valueKind := labelKind
+	if hasValue {
+		valueKind = copyKind
 	}
 	for _, v := range strings.Split(value, "\n") {
-		rows = append(rows, line(span("  ", tui.NewStyle()), span(v, valueStyle)))
+		rows = append(rows, taggedBodyLine(line(span("  ", tui.NewStyle()), span(v, valueStyle)), valueKind))
 	}
-	rows = append(rows, plainLine(""))
+	rows = append(rows, plainBodyLine(plainLine("")))
 	return rows
 }
 
@@ -148,35 +181,47 @@ func (m *AdvancedConfigModel) Render(app *tui.App) *tui.Element {
 	if m.width > 0 && m.height > 0 && (m.width < 32 || m.height < 8) {
 		return m.smallTerminalView()
 	}
-	m.keepCursorVisible()
-	m.keepPickersVisible()
 	// models.dev picker overlay: render only the provider catalog instead of the
 	// main page.
 	if m.modelsDevPicker {
+		m.keepPickersVisible()
 		return m.viewModelsDevPicker()
 	}
 	if m.defaultModelPicker {
+		m.keepPickersVisible()
 		return m.viewDefaultModelPicker()
 	}
-	return m.viewMainPage()
+	lines := m.bodyLines()
+	m.keepCursorVisibleLines(lines)
+	return m.wrapMainPanelLines(lines)
 }
 
-// bodyRows builds the full page body (header through the action bar) as an
-// ordered list of single-line elements. viewMainPage wraps it in the panel;
-// keepCursorVisible reuses it to locate the cursor row's precise body line for
-// scrolling. Section renderers are read-only — they only build elements.
+// bodyLines builds the full page body (header through the action bar) as an
+// ordered list of single-line elements with structured row metadata. Both
+// Render (including keepCursorVisibleLines) and HandleMouse reuse it directly.
+// Section renderers are read-only — they only build elements.
+func (m *AdvancedConfigModel) bodyLines() []bodyLine {
+	lines := plainBodyLines(m.renderPageHeader(locale.T("Provider 配置", "Provider Configuration"), m.pageBadge())...)
+	lines = append(lines, m.viewConnectionSection()...)
+	lines = append(lines, m.viewDetectionSection()...)
+	lines = append(lines, m.viewMappingSection()...)
+	lines = append(lines, m.viewRuntimeSection()...)
+	lines = append(lines, m.viewActionSection()...)
+	return lines
+}
+
+// bodyRows returns the body elements without metadata (used by scroll tests).
 func (m *AdvancedConfigModel) bodyRows() []*tui.Element {
-	rows := m.renderPageHeader(locale.T("Provider 配置", "Provider Configuration"), m.pageBadge())
-	rows = append(rows, m.viewConnectionSection()...)
-	rows = append(rows, m.viewDetectionSection()...)
-	rows = append(rows, m.viewMappingSection()...)
-	rows = append(rows, m.viewRuntimeSection()...)
-	rows = append(rows, m.viewActionSection()...)
+	lines := m.bodyLines()
+	rows := make([]*tui.Element, len(lines))
+	for i, l := range lines {
+		rows[i] = l.elem
+	}
 	return rows
 }
 
 func (m *AdvancedConfigModel) viewMainPage() *tui.Element {
-	return m.wrapMainPanel(m.bodyRows())
+	return m.wrapMainPanelLines(m.bodyLines())
 }
 
 // pageBadge labels the header: the connection family this page edits.
@@ -190,18 +235,18 @@ func (m *AdvancedConfigModel) pageBadge() string {
 // viewConnectionSection renders the Connection block: subscription metadata
 // for OAuth providers, or the Source stepper plus endpoint/key/protocol rows
 // for Custom and models.dev sources.
-func (m *AdvancedConfigModel) viewConnectionSection() []*tui.Element {
-	rows := []*tui.Element{m.connectionTitleRow()}
+func (m *AdvancedConfigModel) viewConnectionSection() []bodyLine {
+	rows := []bodyLine{plainBodyLine(m.connectionTitleRow())}
 	if m.usesOAuth() {
 		// OAuth rows are subscription metadata. There is no Auto Configure
 		// button: the subscription already owns its endpoint, credential, and
 		// model catalog, so there is nothing left to detect.
-		return append(rows,
+		return append(rows, plainBodyLines(
 			m.kvRow("Provider", span(m.p.OAuthProvider, stCyan)),
 			m.kvRow("Fast", span(providerFastSummary(*m.p), stCyan)),
 			m.kvRow(locale.T("鉴权", "Auth"), span(providerAuthLabel(*m.p), stAvailable)),
 			m.localProxyRow(),
-		)
+		)...)
 	}
 
 	copiedHint := ""
@@ -226,7 +271,7 @@ func (m *AdvancedConfigModel) viewConnectionSection() []*tui.Element {
 	if m.source == sourceCustom {
 		sourceVal = locale.T("自定义", "Custom")
 	}
-	rows = append(rows, m.stepperRow(locale.T("来源", "Source"), "‹ "+sourceVal+" ›", m.cursor == m.mainRowIndex(rowSource)))
+	rows = append(rows, taggedBodyLine(m.stepperRow(locale.T("来源", "Source"), "‹ "+sourceVal+" ›", m.cursor == m.mainRowIndex(rowSource)), rowSource))
 
 	if m.usesModelsDev() {
 		// models.dev: endpoint/protocol come from metadata (read-only). The
@@ -239,31 +284,33 @@ func (m *AdvancedConfigModel) viewConnectionSection() []*tui.Element {
 		if name == "" {
 			name = locale.T("选择 Provider", "Select provider")
 		}
-		rows = append(rows, m.stepperRow("Provider", "‹ "+name+" ›", m.cursor == m.mainRowIndex(rowProvider)))
-		rows = append(rows, m.kvRow(locale.T("端点", "Endpoint"), span(truncateMiddle(m.p.Endpoint, idleWidth), stCyan)))
+		rows = append(rows, taggedBodyLine(m.stepperRow("Provider", "‹ "+name+" ›", m.cursor == m.mainRowIndex(rowProvider)), rowProvider))
+		rows = append(rows, plainBodyLine(m.kvRow(locale.T("端点", "Endpoint"), span(truncateMiddle(m.p.Endpoint, idleWidth), stCyan))))
 	} else {
-		urlValue := truncateMiddle(m.urlText.Get(), idleWidth) + urlCopiedHint
+		rawURL := m.urlText.Get()
+		urlValue := truncateMiddle(rawURL, idleWidth) + urlCopiedHint
 		if m.currentRow() == rowEndpoint {
-			urlValue = editViewport(m.urlText.Get(), idleWidth)
+			urlValue = editViewport(rawURL, idleWidth)
 		}
-		rows = append(rows, credentialField(locale.T("端点 URL", "Endpoint URL"), urlValue, m.cursor == m.mainRowIndex(rowEndpoint))...)
+		rows = append(rows, credentialField(locale.T("端点 URL", "Endpoint URL"), urlValue, m.cursor == m.mainRowIndex(rowEndpoint), rowEndpoint, rowCopyURL, strings.TrimSpace(rawURL) != "")...)
 	}
 
-	keyValue := truncateMiddle(m.keyText.Get(), idleWidth) + copiedHint
+	rawKey := m.keyText.Get()
+	keyValue := truncateMiddle(rawKey, idleWidth) + copiedHint
 	if m.currentRow() == rowAPIKey {
-		keyValue = editViewport(m.keyText.Get(), idleWidth)
+		keyValue = editViewport(rawKey, idleWidth)
 	}
-	rows = append(rows, credentialField("API Key", keyValue, m.cursor == m.mainRowIndex(rowAPIKey))...)
+	rows = append(rows, credentialField("API Key", keyValue, m.cursor == m.mainRowIndex(rowAPIKey), rowAPIKey, rowCopyKey, strings.TrimSpace(rawKey) != "")...)
 
 	// Protocol moved up from Runtime: Chat/Responses/Anthropic is selectable
 	// for a manual Custom gateway; fixed and per-model runtimes stay read-only.
 	if m.usesModelsDev() {
-		rows = append(rows, m.kvRow(locale.T("协议", "Protocol"), span("auto/mixed", stAvailable)))
+		rows = append(rows, plainBodyLine(m.kvRow(locale.T("协议", "Protocol"), span("auto/mixed", stAvailable))))
 	} else if m.canSelectCustomProtocol() {
 		value := customProtocolLabel(m.p.Type)
-		rows = append(rows, m.stepperRow(locale.T("协议", "Protocol"), "‹ "+value+" ›", m.cursor == m.mainRowIndex(rowProtocol)))
+		rows = append(rows, taggedBodyLine(m.stepperRow(locale.T("协议", "Protocol"), "‹ "+value+" ›", m.cursor == m.mainRowIndex(rowProtocol)), rowProtocol))
 	} else {
-		rows = append(rows, m.kvRow(locale.T("协议", "Protocol"), span(m.getProtocol(), stAvailable)))
+		rows = append(rows, taggedBodyLine(m.kvRow(locale.T("协议", "Protocol"), span(m.getProtocol(), stAvailable)), rowProtocol))
 	}
 	// Auth row: how the upstream verifies requests (API key / OAuth binding).
 	// For OAuth providers the Connection block is subscription metadata, and
@@ -272,12 +319,12 @@ func (m *AdvancedConfigModel) viewConnectionSection() []*tui.Element {
 	if strings.TrimSpace(m.p.Type) == "" {
 		value = "Auto"
 	}
-	rows = append(rows, m.kvRow(locale.T("鉴权", "Auth"), span(value, stAvailable)))
+	rows = append(rows, plainBodyLine(m.kvRow(locale.T("鉴权", "Auth"), span(value, stAvailable))))
 
 	// Custom alone needs a manual Auto Configure action; models.dev verifies
 	// credentials automatically and OAuth uses its managed runtime.
 	if !m.usesModelsDev() {
-		rows = append(rows, plainLine(""), m.actionButtonRow(locale.T("Auto Configure", "Auto Configure"), rowTest))
+		rows = append(rows, plainBodyLine(plainLine("")), taggedBodyLine(m.actionButtonRow(locale.T("Auto Configure", "Auto Configure"), rowTest), rowTest))
 	}
 	return rows
 }
@@ -329,9 +376,9 @@ func (m *AdvancedConfigModel) localProxyRow() *tui.Element {
 // viewDetectionSection renders the connection-check feedback: the in-flight
 // spinner and error status lines. Custom's Auto Configure action lives under
 // Auth; models.dev verification is automatic.
-func (m *AdvancedConfigModel) viewDetectionSection() []*tui.Element {
+func (m *AdvancedConfigModel) viewDetectionSection() []bodyLine {
 	if m.live().detecting {
-		return renderModelFetchProgress(m.live().detectProgress, m.live().detectFrame, m.usesOAuth())
+		return plainBodyLines(renderModelFetchProgress(m.live().detectProgress, m.live().detectFrame, m.usesOAuth())...)
 	}
 
 	// models.dev providers are pre-configured from metadata (endpoint, model
@@ -341,32 +388,32 @@ func (m *AdvancedConfigModel) viewDetectionSection() []*tui.Element {
 	// a non-empty string is not proof of validity.
 	if m.usesModelsDev() {
 		if !m.live().modelPoolFromDiscovery {
-			return []*tui.Element{spanLine(locale.T("尚未选择 Provider", "No provider selected yet"), stGray)}
+			return plainBodyLines(spanLine(locale.T("尚未选择 Provider", "No provider selected yet"), stGray))
 		}
 		switch {
 		case strings.TrimSpace(m.keyText.Get()) == "":
-			return []*tui.Element{spanLine(locale.T("已选择 Provider · 请输入 API Key", "Provider selected · enter your API key"), stGray)}
+			return plainBodyLines(spanLine(locale.T("已选择 Provider · 请输入 API Key", "Provider selected · enter your API key"), stGray))
 		case m.live().detectionError != nil:
-			return []*tui.Element{
+			return plainBodyLines(
 				spanLine(locale.T("验证失败，无法连接", "Verification failed; cannot connect"), stUnavailable),
 				spanLine(m.live().detectionError.Error(), stUnavailable),
 				spanLine(locale.T("在 API Key 行按 Enter 重试", "Press Enter on API Key to retry"), stGray),
 				plainLine(""),
-			}
+			)
 		case m.live().keyVerified:
 			// The header line already carries the connected status.
 			return nil
 		default:
-			return []*tui.Element{spanLine(locale.T("Key 尚未验证", "Key not verified yet"), stGray)}
+			return plainBodyLines(spanLine(locale.T("Key 尚未验证", "Key not verified yet"), stGray))
 		}
 	}
 
 	if m.live().detectionError != nil {
-		return []*tui.Element{
+		return plainBodyLines(
 			spanLine(locale.T("检测失败，无法继续", "Detection failed; cannot continue"), stUnavailable),
 			spanLine(m.live().detectionError.Error(), stUnavailable),
 			plainLine(""),
-		}
+		)
 	}
 	// Connected: the header line carries the status; nothing extra here.
 	return nil
@@ -393,15 +440,15 @@ func (m *AdvancedConfigModel) actionButtonRow(label string, kind configRowKind) 
 
 // viewMappingSection renders Models: the discovered/configured model pool
 // summary and the optional per-model availability check.
-func (m *AdvancedConfigModel) viewMappingSection() []*tui.Element {
-	rows := []*tui.Element{
+func (m *AdvancedConfigModel) viewMappingSection() []bodyLine {
+	rows := plainBodyLines(
 		plainLine(""),
 		spanLine(locale.T("模型", "Models"), stTitle),
-	}
+	)
 	ready := m.connectionReady()
 	pool := m.live().modelPool
 	if len(pool) == 0 {
-		rows = append(rows, m.kvRow(locale.T("模型列表", "Model Pool"), span(locale.T("(未检测)", "(not detected)"), stGray)))
+		rows = append(rows, plainBodyLine(m.kvRow(locale.T("模型列表", "Model Pool"), span(locale.T("(未检测)", "(not detected)"), stGray))))
 	} else {
 		previewLabels := make([]string, 0, min(len(pool), 4))
 		for i := 0; i < len(pool) && i < 4; i++ {
@@ -415,12 +462,12 @@ func (m *AdvancedConfigModel) viewMappingSection() []*tui.Element {
 		if !ready {
 			style = stGray
 		}
-		rows = append(rows, m.kvRow(locale.T("模型列表", "Model Pool"), span(truncateMiddle(summary, max(m.bodyWidth()-16, 1)), style)))
+		rows = append(rows, plainBodyLine(m.kvRow(locale.T("模型列表", "Model Pool"), span(truncateMiddle(summary, max(m.bodyWidth()-16, 1)), style))))
 	}
-	rows = append(rows, m.stepperRow(locale.T("默认模型", "Default Model"), "‹ "+m.defaultModelSummary()+" ›", ready && m.cursor == m.mainRowIndex(rowDefaultModel)))
+	rows = append(rows, taggedBodyLine(m.stepperRow(locale.T("默认模型", "Default Model"), "‹ "+m.defaultModelSummary()+" ›", ready && m.cursor == m.mainRowIndex(rowDefaultModel)), rowDefaultModel))
 
 	// Check — optional; each probe consumes quota, so the user opts in explicitly.
-	rows = append(rows, plainLine(""))
+	rows = append(rows, plainBodyLine(plainLine("")))
 	testPrefix := "  "
 	testPrefixStyle := tui.NewStyle()
 	testLabel := locale.T("检查", "Check")
@@ -437,19 +484,19 @@ func (m *AdvancedConfigModel) viewMappingSection() []*tui.Element {
 		testPrefixStyle = stSelected
 		testStyle = stSelected
 	}
-	rows = append(rows, line(
+	rows = append(rows, taggedBodyLine(line(
 		span(testPrefix, testPrefixStyle),
 		span(testLabel, testStyle),
-	))
+	), rowTestModels))
 	if m.modelTesting {
-		rows = append(rows, spanLine("    "+locale.T("测试进行中 · 按 esc 取消", "Testing in progress · press esc to cancel"), stGray))
+		rows = append(rows, plainBodyLine(spanLine("    "+locale.T("测试进行中 · 按 esc 取消", "Testing in progress · press esc to cancel"), stGray)))
 	} else if len(m.modelAvailability) > 0 {
 		available, unavailable, inconclusive := m.availabilityCounts()
-		rows = append(rows, spanLine(fmt.Sprintf("    "+locale.T("%d 个可用 · %d 个不可用 · %d 个未确认", "%d available · %d unavailable · %d inconclusive"), available, unavailable, inconclusive), stGray))
+		rows = append(rows, plainBodyLine(spanLine(fmt.Sprintf("    "+locale.T("%d 个可用 · %d 个不可用 · %d 个未确认", "%d available · %d unavailable · %d inconclusive"), available, unavailable, inconclusive), stGray)))
 	} else if m.cursor == m.mainRowIndex(rowTestModels) {
 		// go-tui has no tooltip API: the quota warning behaves like a hover hint
 		// and only renders while the row is selected.
-		rows = append(rows, spanLine(locale.T("    ⚠ 会为每个模型发送测试请求，限流时可能重试，消耗额度", "    ⚠ probes each model; may retry on rate limits and consume quota"), stGray))
+		rows = append(rows, plainBodyLine(spanLine(locale.T("    ⚠ 会为每个模型发送测试请求，限流时可能重试，消耗额度", "    ⚠ probes each model; may retry on rate limits and consume quota"), stGray)))
 	}
 
 	return rows
@@ -458,19 +505,19 @@ func (m *AdvancedConfigModel) viewMappingSection() []*tui.Element {
 // viewRuntimeSection renders the Runtime block: the OAuth read-only protocol
 // display (when applicable), the Context & Compact stepper, the
 // Fast and Status Line steppers, plus the active-provider checkbox.
-func (m *AdvancedConfigModel) viewRuntimeSection() []*tui.Element {
-	rows := []*tui.Element{
+func (m *AdvancedConfigModel) viewRuntimeSection() []bodyLine {
+	rows := plainBodyLines(
 		plainLine(""),
 		spanLine(locale.T("运行时", "Runtime"), stTitle),
-	}
+	)
 	ready := m.connectionReady()
 	renderEditable := func(kind configRowKind, label, value string) {
-		rows = append(rows, m.stepperRow(label, value, ready && m.cursor == m.mainRowIndex(kind)))
+		rows = append(rows, taggedBodyLine(m.stepperRow(label, value, ready && m.cursor == m.mainRowIndex(kind)), kind))
 	}
 	if m.usesOAuth() {
 		// OAuth subscriptions keep the read-only protocol display here: their
 		// Connection block is subscription metadata with no protocol concept.
-		rows = append(rows, m.kvRow(locale.T("协议", "Protocol"), span(m.getProtocol(), stAvailable)))
+		rows = append(rows, plainBodyLine(m.kvRow(locale.T("协议", "Protocol"), span(m.getProtocol(), stAvailable))))
 	}
 	// Context & Compact — per-slot [1m] via Space on the model rows above; the
 	// provider-wide fallback cycles with ←→ (shown as ‹ › like other editable
@@ -496,11 +543,11 @@ func (m *AdvancedConfigModel) viewRuntimeSection() []*tui.Element {
 		boxStyle = stSelected
 		labelStyle = stSelected
 	}
-	return append(rows, line(
+	return append(rows, taggedBodyLine(line(
 		span(prefix, prefixStyle),
 		span(activeBox+" ", boxStyle),
 		span(activeLabel, labelStyle),
-	))
+	), rowActive))
 }
 
 // saveBlockedReason explains a greyed-out Save button. Without it a blocked
@@ -523,7 +570,7 @@ func (m *AdvancedConfigModel) saveBlockedReason() string {
 
 // viewActionSection renders the Save/Cancel action bar, the save-gating
 // warnings, and the key hint footer.
-func (m *AdvancedConfigModel) viewActionSection() []*tui.Element {
+func (m *AdvancedConfigModel) viewActionSection() []bodyLine {
 	applyLabel := locale.T("保存并激活", "Save & Activate")
 	if !m.IsActiveChosen {
 		applyLabel = locale.T("保存 Provider", "Save Provider")
@@ -550,41 +597,79 @@ func (m *AdvancedConfigModel) viewActionSection() []*tui.Element {
 		cancelPrefixStyle = stSelected
 		cancelStyle = stSelected
 	}
-	rows := []*tui.Element{
-		plainLine(""),
-		line(
-			span(applyPrefix, applyPrefixStyle),
-			span(applyLabel, applyStyle),
-			span("     ", tui.NewStyle()),
-			span(cancelPrefix, cancelPrefixStyle),
-			span(cancelLabel, cancelStyle),
-		),
-	}
+	rows := []bodyLine{plainBodyLine(plainLine(""))}
 	if m.splitActions() {
-		rows = []*tui.Element{plainLine(""),
-			line(span(applyPrefix, applyPrefixStyle), span(applyLabel, applyStyle)),
-			line(span(cancelPrefix, cancelPrefixStyle), span(cancelLabel, cancelStyle))}
+		rows = append(rows,
+			taggedBodyLine(line(span(applyPrefix, applyPrefixStyle), span(applyLabel, applyStyle)), rowSave),
+			taggedBodyLine(line(span(cancelPrefix, cancelPrefixStyle), span(cancelLabel, cancelStyle)), rowCancel),
+		)
+	} else {
+		rows = append(rows, bodyLine{
+			elem: line(
+				span(applyPrefix, applyPrefixStyle),
+				span(applyLabel, applyStyle),
+				span("     ", tui.NewStyle()),
+				span(cancelPrefix, cancelPrefixStyle),
+				span(cancelLabel, cancelStyle),
+			),
+			kind:          rowSave,
+			hasKind:       true,
+			secondaryKind: rowCancel,
+			hasSecondary:  true,
+			secondaryCol:  tui.StringWidth(applyPrefix) + tui.StringWidth(applyLabel) + 5,
+		})
 	}
 	if m.live().connectionDirty && !m.usesOAuth() {
-		rows = append(rows, spanLine(locale.T("连接已修改，保存前请重新检测", "Connection changed; re-test before saving"), stGray))
+		rows = append(rows, plainBodyLine(spanLine(locale.T("连接已修改，保存前请重新检测", "Connection changed; re-test before saving"), stGray)))
 	} else if applyDisabled {
-		rows = append(rows, spanLine(m.saveBlockedReason(), stGray))
+		rows = append(rows, plainBodyLine(spanLine(m.saveBlockedReason(), stGray)))
 	}
 	if m.customDraft != nil && m.customDraft.saveGuardPending {
-		rows = append(rows, spanLine(locale.T(
+		rows = append(rows, plainBodyLine(spanLine(locale.T(
 			"保存将覆盖同名 models.dev Provider（逐模型协议表会丢失）；再次点击保存确认，或切回 models.dev",
 			"Saving replaces the same-named models.dev provider (its per-model protocol table is lost); press Save again to confirm, or switch back to models.dev",
-		), stUnavailable))
+		), stUnavailable)))
 	}
-	return append(rows, spanLine(locale.T(
+	return append(rows, plainBodyLine(spanLine(locale.T(
 		"↑↓ 选择 · ←→ 调整 · enter 确认 · esc 退出",
 		"↑↓ select · ←→ adjust · enter confirm · esc quit",
-	), stGray))
+	), stGray)))
 }
 
-// wrapMainPanel wraps the page body in the rounded, scrollable panel plus the
-// outer content chrome (scroll indicator and language tip).
-func (m *AdvancedConfigModel) wrapMainPanel(rows []*tui.Element) *tui.Element {
+// bodyLayoutGeometry reports the screen coordinates where the first visible
+// body line is drawn (topY, leftX), the slice offset into lines, and how many
+// body lines are visible. Both wrapMainPanelLines and HandleMouse derive their
+// geometry from this single helper so rendering and hit-testing cannot drift.
+func (m *AdvancedConfigModel) bodyLayoutGeometry(lineCount int) (topY, leftX, offset, visibleCount int) {
+	// panel has a 1-cell rounded border and 2 cells of horizontal padding.
+	leftX = 3
+	offset = m.scrollWindowOffsetLen(lineCount)
+	if m.height <= 0 {
+		visibleCount = lineCount
+	} else {
+		maxBody := scrollBodyBudget(m.height)
+		if lineCount <= maxBody {
+			visibleCount = lineCount
+		} else {
+			visibleCount = min(lineCount-offset, maxBody)
+		}
+	}
+	// Short terminals (<18) return the bare panel (1 top border line).
+	if m.height > 0 && m.height < 18 {
+		topY = 1
+		return topY, leftX, offset, visibleCount
+	}
+	// Standard layout: 1 line outer top padding + optional scroll indicator + 1 line panel top border.
+	topY = 2
+	if m.height > 0 && lineCount > scrollBodyBudget(m.height) && offset > 0 {
+		topY++
+	}
+	return topY, leftX, offset, visibleCount
+}
+
+// wrapMainPanelLines wraps the page body in the rounded, scrollable panel plus
+// the outer content chrome (scroll indicator and language tip).
+func (m *AdvancedConfigModel) wrapMainPanelLines(lines []bodyLine) *tui.Element {
 	panel := tui.New(
 		tui.WithDisplay(tui.DisplayFlex),
 		tui.WithDirection(tui.Column),
@@ -593,9 +678,14 @@ func (m *AdvancedConfigModel) wrapMainPanel(rows []*tui.Element) *tui.Element {
 		tui.WithPaddingTRBL(0, 2, 0, 2),
 		tui.WithWidth(m.panelWidth()),
 	)
-	for _, r := range m.scrollWindow(rows) {
-		fitElementText(r, m.bodyWidth())
-		panel.AddChild(r)
+	_, _, offset, visibleCount := m.bodyLayoutGeometry(len(lines))
+	if visibleCount == 0 {
+		panel.AddChild(plainLine(""))
+	} else {
+		for _, l := range lines[offset : offset+visibleCount] {
+			fitElementText(l.elem, m.bodyWidth())
+			panel.AddChild(l.elem)
+		}
 	}
 	if m.height > 0 && m.height < 18 {
 		return panel
@@ -604,7 +694,7 @@ func (m *AdvancedConfigModel) wrapMainPanel(rows []*tui.Element) *tui.Element {
 	content := tui.New(tui.WithDisplay(tui.DisplayFlex), tui.WithDirection(tui.Column), tui.WithWrap(false), tui.WithPaddingTRBL(1, 0, 1, 0))
 	// The indicator mirrors scrollWindow's actual offset: both derive from
 	// scrollBodyBudget, so the indicator appears exactly when the body was cut.
-	if m.height > 0 && len(rows) > scrollBodyBudget(m.height) && m.scrollWindowOffset(rows) > 0 {
+	if m.height > 0 && len(lines) > scrollBodyBudget(m.height) && offset > 0 {
 		content.AddChild(spanLine(locale.T("▲ 上滚 · ↑ 查看", "▲ scrolled up · ↑ to view"), stGray))
 	}
 	content.AddChild(panel)
@@ -618,28 +708,33 @@ func (m *AdvancedConfigModel) wrapMainPanel(rows []*tui.Element) *tui.Element {
 	return content
 }
 
-// scrollWindowOffset reports the body offset scrollWindow would slice at: it is
-// the model's scrollOffset, anchored to the tail once the cursor reaches the
-// action bar. The indicator logic uses it so the two can never disagree.
-func (m *AdvancedConfigModel) scrollWindowOffset(rows []*tui.Element) int {
+// scrollWindowOffsetLen reports the body offset scrollWindow would slice at for
+// a body of length n. The indicator and hit-test logic share it so they can
+// never disagree.
+func (m *AdvancedConfigModel) scrollWindowOffsetLen(n int) int {
 	if m.height <= 0 {
 		return 0
 	}
 	maxBody := scrollBodyBudget(m.height)
-	if len(rows) <= maxBody {
+	if n <= maxBody {
 		return 0
 	}
 	offset := m.scrollOffset
 	if offset < 0 {
 		offset = 0
 	}
-	if offset+maxBody > len(rows) {
-		offset = len(rows) - maxBody
+	if offset+maxBody > n {
+		offset = n - maxBody
 	}
 	if offset < 0 {
 		offset = 0
 	}
 	return offset
+}
+
+// scrollWindowOffset reports the body offset scrollWindow would slice at.
+func (m *AdvancedConfigModel) scrollWindowOffset(rows []*tui.Element) int {
+	return m.scrollWindowOffsetLen(len(rows))
 }
 
 // scrollWindow slices the page body rows to the visible window when the body
@@ -652,7 +747,7 @@ func (m *AdvancedConfigModel) scrollWindow(rows []*tui.Element) []*tui.Element {
 		return rows
 	}
 	maxBody := scrollBodyBudget(m.height)
-	offset := m.scrollWindowOffset(rows)
+	offset := m.scrollWindowOffsetLen(len(rows))
 	if offset == 0 && len(rows) <= maxBody {
 		return rows
 	}

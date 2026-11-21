@@ -310,15 +310,18 @@ func (w *chatFrontWriter) Write(data []byte) (int, error) {
 		}
 		return w.body.Write(data)
 	}
+	if int64(w.pending.Len()+len(data)) > chatFrontMaxBodyBytes {
+		return 0, fmt.Errorf("response exceeds the GBX Chat Completions limit")
+	}
 	w.pending.Write(data)
 	for {
 		buffered := w.pending.Bytes()
-		end := bytes.Index(buffered, []byte("\n\n"))
+		end, sepLen := nextSSEFrameBoundary(buffered)
 		if end < 0 {
 			break
 		}
 		event := append([]byte(nil), buffered[:end]...)
-		w.pending.Next(end + 2)
+		w.pending.Next(end + sepLen)
 		if err := w.streamEvent(event); err != nil {
 			return 0, err
 		}

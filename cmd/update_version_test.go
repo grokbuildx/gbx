@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/grokbuildx/gbx/internal/selfupdate"
 )
 
 // withReleaseAndNpm points both version lookups at local servers. A status of
@@ -31,15 +33,15 @@ func withReleaseAndNpm(t *testing.T, releaseStatus int, releaseBody string, npmS
 	t.Cleanup(release.Close)
 	t.Cleanup(npm.Close)
 
-	previousAPI, previousClient := latestReleaseAPI, updateHTTPClient
-	latestReleaseAPI = release.URL
-	updateHTTPClient = &http.Client{
+	previousAPI, previousClient := selfupdate.LatestReleaseAPI, selfupdate.HTTPClient
+	selfupdate.LatestReleaseAPI = release.URL
+	selfupdate.HTTPClient = &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: roundTripTo(map[string]string{
 			"https://registry.npmjs.org/": npm.URL + "/",
 		}),
 	}
-	t.Cleanup(func() { latestReleaseAPI, updateHTTPClient = previousAPI, previousClient })
+	t.Cleanup(func() { selfupdate.LatestReleaseAPI, selfupdate.HTTPClient = previousAPI, previousClient })
 }
 
 // roundTripTo rewrites requests for the given hosts to a local server.
@@ -65,39 +67,39 @@ func TestLatestVersionsPrefersTheRelease(t *testing.T) {
 	// The GitHub release exists before the npm job has published: the release
 	// version is what update installs, and npm is not offered yet.
 	withReleaseAndNpm(t, http.StatusOK, `{"tag_name":"v1.6.6"}`, http.StatusOK, `{"version":"1.6.5"}`)
-	latest, npmReady := latestVersions()
+	latest, npmReady := selfupdate.LatestVersions()
 	if latest != "v1.6.6" || npmReady {
-		t.Fatalf("latestVersions() = %q, %v; want v1.6.6, false", latest, npmReady)
+		t.Fatalf("LatestVersions() = %q, %v; want v1.6.6, false", latest, npmReady)
 	}
 
 	withReleaseAndNpm(t, http.StatusOK, `{"tag_name":"v1.6.6"}`, http.StatusOK, `{"version":"1.6.6"}`)
-	if latest, npmReady = latestVersions(); latest != "v1.6.6" || !npmReady {
-		t.Fatalf("latestVersions() = %q, %v; want v1.6.6, true", latest, npmReady)
+	if latest, npmReady = selfupdate.LatestVersions(); latest != "v1.6.6" || !npmReady {
+		t.Fatalf("LatestVersions() = %q, %v; want v1.6.6, true", latest, npmReady)
 	}
 }
 
 func TestLatestVersionsFallsBackToNpm(t *testing.T) {
 	// The GitHub API is blocked on some networks; npm still answers.
 	withReleaseAndNpm(t, http.StatusForbidden, ``, http.StatusOK, `{"version":"1.6.5"}`)
-	latest, npmReady := latestVersions()
+	latest, npmReady := selfupdate.LatestVersions()
 	if latest != "v1.6.5" || !npmReady {
-		t.Fatalf("latestVersions() = %q, %v; want v1.6.5, true", latest, npmReady)
+		t.Fatalf("LatestVersions() = %q, %v; want v1.6.5, true", latest, npmReady)
 	}
 
 	withReleaseAndNpm(t, http.StatusForbidden, ``, http.StatusNotFound, `{}`)
-	if latest, npmReady = latestVersions(); latest != "unknown" || npmReady {
-		t.Fatalf("latestVersions() = %q, %v; want unknown, false", latest, npmReady)
+	if latest, npmReady = selfupdate.LatestVersions(); latest != "unknown" || npmReady {
+		t.Fatalf("LatestVersions() = %q, %v; want unknown, false", latest, npmReady)
 	}
 }
 
 // A draft release is not something to install.
 func TestLatestVersionsRejectsUnstableRelease(t *testing.T) {
 	withReleaseAndNpm(t, http.StatusOK, `{"tag_name":"v1.6.6","draft":true}`, http.StatusOK, `{"version":"1.6.5"}`)
-	if latest, _ := latestVersions(); latest != "v1.6.5" {
+	if latest, _ := selfupdate.LatestVersions(); latest != "v1.6.5" {
 		t.Fatalf("draft release was used: %q", latest)
 	}
 	withReleaseAndNpm(t, http.StatusOK, `{"tag_name":"v1.6.6","prerelease":true}`, http.StatusOK, `{"version":"1.6.6"}`)
-	if latest, _ := latestVersions(); latest != "v1.6.6" {
+	if latest, _ := selfupdate.LatestVersions(); latest != "v1.6.6" {
 		t.Fatalf("prerelease was used: %q", latest)
 	}
 }

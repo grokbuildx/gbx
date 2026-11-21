@@ -141,6 +141,29 @@ export interface ResultPayload {
   subscription?: boolean;
 }
 
+export interface ContextPayload {
+  tokens: number;
+  window?: number;
+}
+
+export interface PermissionPayload {
+  requestId: string;
+  toolName: string;
+  title?: string;
+  description?: string;
+  summary?: string;
+  reason?: string;
+  input?: Record<string, unknown>;
+  canRemember?: boolean;
+}
+
+export interface PermissionResolvedPayload {
+  requestId: string;
+  behavior: "allow" | "deny" | "cancelled";
+  message?: string;
+  mode?: string;
+}
+
 export interface Health {
   ok: boolean;
   version: string;
@@ -174,6 +197,8 @@ export interface ProviderView {
   models?: string;
   // Optional preferred default model ID (including [1m] if configured).
   defaultModel?: string;
+  fastMode?: boolean;
+  contextPreset?: string;
   // The window a Balanced context preset declares; absent for Default.
   contextWindow?: number;
   active: boolean;
@@ -187,6 +212,7 @@ export interface ConfigView {
   // The running server's current new-conversation default.
   serveSandbox?: SandboxMode;
   savedServeSandbox?: SandboxMode;
+  logLevel?: string;
   default?: {
     name: string;
     isDefault: boolean;
@@ -195,6 +221,7 @@ export interface ConfigView {
     legacyClaude?: string;
   };
   providers: Record<string, ProviderView>;
+  order?: string[];
 }
 
 export interface TestResult {
@@ -291,7 +318,7 @@ export interface Schedule {
   text: string;
 }
 
-export const OAUTH_PROVIDERS = ["gpt", "gemini", "grok", "qoder", "kimi", "kiro", "workbuddy", "workbuddycn", "autoclaw", "cursor"] as const;
+export const OAUTH_PROVIDERS = ["gpt", "grok", "qoder", "kimi", "kiro", "workbuddy", "workbuddycn", "autoclaw", "cursor"] as const;
 
 export interface SessionWorktree {
   name: string;
@@ -323,6 +350,7 @@ export interface CloudRemote {
   signedIn: boolean;
   accountHint?: string;
   state?: string;
+  localHash?: string;
   remoteTag?: string;
   remoteDevice?: string;
   remoteCreated?: string;

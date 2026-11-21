@@ -3,13 +3,10 @@ package oauthproxy
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/grokbuildx/gbx/internal/protocol"
 )
@@ -123,10 +120,6 @@ func startMixedProtocolRouter(parent context.Context, endpoint, upstreamAPIKey s
 	if err != nil {
 		return nil, err
 	}
-	listener, err := net.Listen("tcp", runtimeLoopbackHost+":0")
-	if err != nil {
-		return nil, fmt.Errorf("listen for mixed-protocol router: %w", err)
-	}
 	responseRoutes := make([]runtimeModelRoute, 0, len(routes.responses))
 	responseModels := make(map[string]bool, len(routes.responses))
 	for _, route := range routes.responses {
@@ -164,28 +157,22 @@ func startMixedProtocolRouter(parent context.Context, endpoint, upstreamAPIKey s
 	}
 	if len(responseRoutes) > 0 {
 		router.codex = newCodexResponsesService(apiKey, endpoint, responseRoutes, &codexStaticAuthorizer{token: upstreamAPIKey}, usage)
+		router.codex.setModelEndpoints(responseRoutes, endpoints)
 	}
 	if len(chatRoutes) > 0 {
 		router.chatSvc = newChatCompletionsService(apiKey, endpoint, chatRoutes, upstreamAPIKey, usage)
+		router.chatSvc.setModelEndpoints(chatRoutes, endpoints)
 	}
 	if len(messageRoutes) > 0 {
 		router.messagesSvc = newAnthropicMessagesService(apiKey, endpoint, messageRoutes, endpoints, upstreamAPIKey, usage)
 	}
-	runCtx, cancel := context.WithCancel(parent)
-	server := &http.Server{
-		Handler: router.handler(), ReadHeaderTimeout: 15 * time.Second,
-		BaseContext: func(net.Listener) context.Context { return runCtx },
+	proxyRuntime, err := startLoopbackServer(parent, "mixed-protocol router", router.handlerForContext(parent), apiKey, usage)
+	if err != nil {
+		return nil, err
 	}
-	started := make(chan struct{})
-	close(started)
-	proxyRuntime := &Runtime{
-		endpoint: "http://" + listener.Addr().String() + "/v1", apiKey: apiKey,
-		httpServer: server, cancel: cancel, done: make(chan struct{}), runErr: make(chan error, 1),
-		started: started, usage: usage,
-		// Surface the catalog so callers like `gbx map` and `gbx provider models --all`
-		// see the routed models instead of falling through to heuristics.
-		models: append([]string(nil), routes.models...),
-	}
+	// Surface the catalog so callers like `gbx map` and `gbx provider models --all`
+	// see the routed models instead of falling through to heuristics.
+	proxyRuntime.models = append([]string(nil), routes.models...)
 	if router.codex != nil {
 		proxyRuntime.cleanup = append(proxyRuntime.cleanup, closeIdleClients(router.codex.client))
 	}
@@ -195,28 +182,15 @@ func startMixedProtocolRouter(parent context.Context, endpoint, upstreamAPIKey s
 	if router.messagesSvc != nil {
 		proxyRuntime.cleanup = append(proxyRuntime.cleanup, closeIdleClients(router.messagesSvc.client))
 	}
-	go func() {
-		err := server.Serve(listener)
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
-		proxyRuntime.runErr <- err
-		close(proxyRuntime.done)
-	}()
-	go func() {
-		select {
-		case <-runCtx.Done():
-			ctx, stop := context.WithTimeout(context.Background(), runtimeStopTimeout)
-			_ = server.Shutdown(ctx)
-			stop()
-		case <-proxyRuntime.done:
-		}
-	}()
 	return proxyRuntime, nil
 }
 
 func (r *mixedProtocolRouter) handler() http.Handler {
-	return loopbackFrontMux(r.apiKey, r.handleModels, r.handleResponses)
+	return r.handlerForContext(context.Background())
+}
+
+func (r *mixedProtocolRouter) handlerForContext(ctx context.Context) http.Handler {
+	return loopbackFrontMuxForContext(ctx, r.apiKey, r.handleModels, r.handleResponses)
 }
 
 func (r *mixedProtocolRouter) handleModels(writer http.ResponseWriter, request *http.Request) {

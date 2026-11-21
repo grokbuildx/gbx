@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -92,7 +93,7 @@ type callbackResult struct {
 
 func checkGoogleCallback(query url.Values, state string) callbackResult {
 	switch {
-	case query.Get("state") != state:
+	case subtle.ConstantTimeCompare([]byte(query.Get("state")), []byte(state)) != 1:
 		return callbackResult{err: fmt.Errorf("Google OAuth state did not match")}
 	case query.Get("error") != "":
 		return callbackResult{err: fmt.Errorf("Google authorization was not completed: %s", query.Get("error"))}
@@ -169,7 +170,14 @@ func authorizeGoogleDriveAt(ctx context.Context, authPath string, notice io.Writ
 				http.NotFound(w, request)
 				return
 			}
-			result := checkGoogleCallback(request.URL.Query(), state)
+			query := request.URL.Query()
+			if subtle.ConstantTimeCompare([]byte(query.Get("state")), []byte(state)) != 1 {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = fmt.Fprint(w, "<!doctype html><title>GBX authorization failed</title><h1>Authorization failed</h1><p>Google OAuth state did not match</p>")
+				return
+			}
+			result := checkGoogleCallback(query, state)
 			select {
 			case resultChannel <- result:
 			default:
@@ -182,6 +190,11 @@ func authorizeGoogleDriveAt(ctx context.Context, authPath string, notice io.Writ
 			}
 		}),
 	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = server.Shutdown(shutdownCtx)
+		shutdownCancel()
+	}()
 	go func() {
 		serveErr := server.Serve(listener)
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
@@ -223,15 +236,13 @@ func authorizeGoogleDriveAt(ctx context.Context, authPath string, notice io.Writ
 	case <-waitCtx.Done():
 		return nil, fmt.Errorf("Google authorization timed out: %w", waitCtx.Err())
 	}
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_ = server.Shutdown(shutdownCtx)
-	shutdownCancel()
 	if callback.err != nil {
 		return nil, callback.err
 	}
 
+	exchangeCtx := context.WithValue(ctx, oauth2.HTTPClient, newGoogleHTTPClient())
 	token, err := config.Exchange(
-		ctx,
+		exchangeCtx,
 		callback.code,
 		oauth2.VerifierOption(verifier),
 	)
@@ -317,7 +328,7 @@ func revokeGoogleAuthorization(ctx context.Context, authPath string) error {
 		return err
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response, err := http.DefaultClient.Do(request)
+	response, err := newGoogleHTTPClient().Do(request)
 	if err != nil {
 		return fmt.Errorf("revoke Google Drive authorization: %w", err)
 	}

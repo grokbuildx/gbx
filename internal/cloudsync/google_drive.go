@@ -10,10 +10,20 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/grokbuildx/gbx/internal/fsutil"
 	"golang.org/x/oauth2"
 )
+
+const googleDriveHTTPTimeout = 60 * time.Second
+
+func newGoogleHTTPClient() *http.Client {
+	return &http.Client{Timeout: googleDriveHTTPTimeout}
+}
 
 var (
 	googleDriveAPIBase    = "https://www.googleapis.com"
@@ -35,17 +45,46 @@ type googleDriveFile struct {
 }
 
 func newGoogleDriveRemote(ctx context.Context, token *oauth2.Token, authPath string) *googleDriveRemote {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// TokenSource stores its context for future refreshes; detach cancellation
+	// from any short-lived LoadRemoteContext call and supply a timed HTTP client.
+	baseCtx := context.WithValue(context.WithoutCancel(ctx), oauth2.HTTPClient, newGoogleHTTPClient())
 	config := googleOAuthConfig("")
 	source := &savingTokenSource{
-		source:   config.TokenSource(ctx, token),
+		source:   config.TokenSource(baseCtx, token),
 		authPath: authPath,
 		last:     token,
 	}
-	return &googleDriveRemote{client: oauth2.NewClient(ctx, source)}
+	client := oauth2.NewClient(baseCtx, source)
+	client.Timeout = googleDriveHTTPTimeout
+	return &googleDriveRemote{client: client}
+}
+
+func lockGoogleCache(ctx context.Context, cacheDir string) (func(), error) {
+	parent := filepath.Dir(cacheDir)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return nil, err
+	}
+	return fsutil.AcquireFileLock(ctx, filepath.Join(parent, ".cache.lock"))
 }
 
 func (remote *googleDriveRemote) downloadBundle(cacheDir string) (bool, error) {
-	file, found, err := remote.findBundle()
+	return remote.downloadBundleContext(context.Background(), cacheDir)
+}
+
+func (remote *googleDriveRemote) downloadBundleContext(ctx context.Context, cacheDir string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, err := lockGoogleCache(ctx, cacheDir)
+	if err != nil {
+		return false, fmt.Errorf("lock Google Drive sync cache: %w", err)
+	}
+	defer release()
+
+	file, found, err := remote.findBundleContext(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -60,7 +99,7 @@ func (remote *googleDriveRemote) downloadBundle(cacheDir string) (bool, error) {
 	}
 	remote.expectedBundleID = file.ID
 	remote.expectedBundleVersion = file.Version
-	request, err := http.NewRequest(http.MethodGet,
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		googleDriveAPIBase+"/drive/v3/files/"+url.PathEscape(file.ID)+"?alt=media", nil)
 	if err != nil {
 		return false, err
@@ -87,11 +126,30 @@ func (remote *googleDriveRemote) downloadBundle(cacheDir string) (bool, error) {
 }
 
 func (remote *googleDriveRemote) uploadBundle(cacheDir string) error {
+	return remote.uploadBundleContext(context.Background(), cacheDir)
+}
+
+func (remote *googleDriveRemote) uploadBundleContext(ctx context.Context, cacheDir string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, err := lockGoogleCache(ctx, cacheDir)
+	if err != nil {
+		return fmt.Errorf("lock Google Drive sync cache: %w", err)
+	}
+	defer release()
+	return remote.uploadBundleLocked(ctx, cacheDir)
+}
+
+func (remote *googleDriveRemote) uploadBundleLocked(ctx context.Context, cacheDir string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	data, err := createGoogleBundle(cacheDir)
 	if err != nil {
 		return err
 	}
-	file, found, err := remote.findBundle()
+	file, found, err := remote.findBundleContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -107,7 +165,8 @@ func (remote *googleDriveRemote) uploadBundle(cacheDir string) error {
 		}
 	}
 	if found {
-		request, requestErr := http.NewRequest(
+		request, requestErr := http.NewRequestWithContext(
+			ctx,
 			http.MethodPatch,
 			googleDriveUploadBase+"/upload/drive/v3/files/"+url.PathEscape(file.ID)+"?uploadType=media&fields=id,version",
 			bytes.NewReader(data),
@@ -167,7 +226,8 @@ func (remote *googleDriveRemote) uploadBundle(cacheDir string) error {
 		return err
 	}
 
-	request, err := http.NewRequest(
+	request, err := http.NewRequestWithContext(
+		ctx,
 		http.MethodPost,
 		googleDriveUploadBase+"/upload/drive/v3/files?uploadType=multipart&fields=id,version",
 		&body,
@@ -195,12 +255,16 @@ func (remote *googleDriveRemote) uploadBundle(cacheDir string) error {
 }
 
 func (remote *googleDriveRemote) findBundle() (googleDriveFile, bool, error) {
+	return remote.findBundleContext(context.Background())
+}
+
+func (remote *googleDriveRemote) findBundleContext(ctx context.Context) (googleDriveFile, bool, error) {
 	query := url.Values{}
 	query.Set("spaces", "appDataFolder")
 	query.Set("pageSize", "10")
 	query.Set("fields", "files(id,name,size,version)")
 	query.Set("q", "name = '"+googleBundleName+"' and 'appDataFolder' in parents")
-	request, err := http.NewRequest(http.MethodGet,
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		googleDriveAPIBase+"/drive/v3/files?"+query.Encode(), nil)
 	if err != nil {
 		return googleDriveFile{}, false, err

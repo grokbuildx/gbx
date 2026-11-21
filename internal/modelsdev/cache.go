@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/grokbuildx/gbx/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/paths"
 )
 
 // Snapshot is a validated catalog fetched during configuration. Offline means
@@ -38,11 +39,7 @@ type cacheMetadata struct {
 
 // CachePath is separate from provider configuration and OAuth credentials.
 func CachePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".gbx", "cache", "modelsdev.json"), nil
+	return paths.ModelsDevCachePath()
 }
 
 // CacheStamp lets an explicitly requested proxy start notice a metadata
@@ -80,7 +77,7 @@ func CachedIndex() (*Index, error) {
 }
 
 var indexCache = struct {
-	sync.Mutex
+	sync.RWMutex
 	files map[string]cachedIndex
 }{files: make(map[string]cachedIndex)}
 
@@ -91,19 +88,27 @@ type cachedIndex struct {
 }
 
 func (c *Cache) Index() (*Index, error) {
-	indexCache.Lock()
-	defer indexCache.Unlock()
+	info, err := os.Stat(c.Path)
+	if err != nil {
+		return nil, err
+	}
+	indexCache.RLock()
+	cached, ok := indexCache.files[c.Path]
+	indexCache.RUnlock()
+	if ok && cached.size == info.Size() && cached.modified.Equal(info.ModTime()) {
+		return cached.index, nil
+	}
+
+	// Read and build the immutable index off-lock so concurrent /v1/models
+	// callers are never serialized behind disk I/O or JSON decoding.
 	file, err := os.Open(c.Path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	info, err := file.Stat()
+	stat, err := file.Stat()
 	if err != nil {
 		return nil, err
-	}
-	if cached, ok := indexCache.files[c.Path]; ok && cached.size == info.Size() && cached.modified.Equal(info.ModTime()) {
-		return cached.index, nil
 	}
 	data, err := readCatalogBody(file)
 	if err != nil {
@@ -113,7 +118,10 @@ func (c *Cache) Index() (*Index, error) {
 	if err != nil {
 		return nil, err
 	}
-	indexCache.files[c.Path] = cachedIndex{index: index, size: info.Size(), modified: info.ModTime()}
+
+	indexCache.Lock()
+	indexCache.files[c.Path] = cachedIndex{index: index, size: stat.Size(), modified: stat.ModTime()}
+	indexCache.Unlock()
 	return index, nil
 }
 
@@ -132,9 +140,9 @@ func (c *Cache) Refresh(ctx context.Context) (*Snapshot, error) {
 	}
 	defer release()
 
-	cached, _ := os.ReadFile(c.Path)
+	cached, _ := fsutil.ReadFile(c.Path)
 	var metadata cacheMetadata
-	if data, err := os.ReadFile(c.Path + ".meta.json"); err == nil {
+	if data, err := fsutil.ReadFile(c.Path + ".meta.json"); err == nil {
 		_ = json.Unmarshal(data, &metadata)
 	}
 	if metadata.SHA256 != catalogHash(cached) {
@@ -191,7 +199,7 @@ func (c *Cache) Refresh(ctx context.Context) (*Snapshot, error) {
 }
 
 func (c *Cache) offline(refreshErr error) (*Snapshot, error) {
-	data, err := os.ReadFile(c.Path)
+	data, err := fsutil.ReadFile(c.Path)
 	if err == nil {
 		var snapshot *Snapshot
 		snapshot, err = decodeSnapshot(data)
@@ -204,10 +212,14 @@ func (c *Cache) offline(refreshErr error) (*Snapshot, error) {
 }
 
 func decodeSnapshot(data []byte) (*Snapshot, error) {
-	if _, err := newIndex(data); err != nil {
+	all, err := decodeAllProviders(data)
+	if err != nil {
 		return nil, err
 	}
-	providers, err := decodeCatalog(data)
+	if _, err := newIndexFromProviders(all); err != nil {
+		return nil, err
+	}
+	providers, err := filterUsableProviders(all)
 	if err != nil {
 		return nil, err
 	}

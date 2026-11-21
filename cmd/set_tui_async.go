@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -18,10 +19,16 @@ import (
 // the metadata-derived Type, endpoint, and per-model protocol table are left
 // untouched; only the key's validity (keyVerified) is recorded. The result is
 // delivered on the verify channel consumed by Watchers().
-func keyVerifyAsync(done chan<- keyVerifyDoneMsg, endpoint, apiKey, model, proto string, generation uint64) {
+func keyVerifyAsync(ctx context.Context, done chan<- keyVerifyDoneMsg, endpoint, apiKey, model, proto string, generation uint64) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	go func() {
-		err := verifyProviderAPIKey(context.Background(), model, endpoint, apiKey, proto, keyVerifyTimeout)
-		done <- keyVerifyDoneMsg{endpoint: endpoint, apiKey: apiKey, generation: generation, err: err}
+		err := verifyProviderAPIKey(ctx, model, endpoint, apiKey, proto, keyVerifyTimeout)
+		select {
+		case done <- keyVerifyDoneMsg{endpoint: endpoint, apiKey: apiKey, generation: generation, err: err}:
+		case <-ctx.Done():
+		}
 	}()
 }
 
@@ -98,10 +105,16 @@ func (m *AdvancedConfigModel) firstRoutableModel() (model, proto string, ok bool
 
 // fetchModelsDevAsync fetches the models.dev catalog off the UI thread and
 // delivers the result on the models.dev channel.
-func fetchModelsDevAsync(done chan<- modelsDevFetchDoneMsg) {
+func fetchModelsDevAsync(ctx context.Context, done chan<- modelsDevFetchDoneMsg) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	go func() {
-		providers, err := modelsDevProviders(context.Background())
-		done <- modelsDevFetchDoneMsg{providers: providers, err: err}
+		providers, err := modelsDevProviders(ctx)
+		select {
+		case done <- modelsDevFetchDoneMsg{providers: providers, err: err}:
+		case <-ctx.Done():
+		}
 	}()
 }
 
@@ -112,19 +125,29 @@ func fetchModelsDevAsync(done chan<- modelsDevFetchDoneMsg) {
 // catalog dropped stay selectable and new ones never appear. The result merges
 // additively in handleModelsDevRefreshDone; a failed fetch just keeps the
 // saved list.
-func fetchModelsDevRefreshAsync(done chan<- modelsDevFetchDoneMsg, providerID string) {
+func fetchModelsDevRefreshAsync(ctx context.Context, done chan<- modelsDevFetchDoneMsg, providerID string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	go func() {
-		providers, err := modelsDevProviders(context.Background())
-		done <- modelsDevFetchDoneMsg{providers: providers, err: err, refreshFor: providerID}
+		providers, err := modelsDevProviders(ctx)
+		select {
+		case done <- modelsDevFetchDoneMsg{providers: providers, err: err, refreshFor: providerID}:
+		case <-ctx.Done():
+		}
 	}()
 }
 
 // fetchModelsAsync runs protocol detection + model fetching off the UI thread
 // and delivers the result on the fetch channel.
-func fetchModelsAsync(done chan<- modelFetchDoneMsg, endpoint, apiKey string, preference ...string) {
+func fetchModelsAsync(ctx context.Context, done chan<- modelFetchDoneMsg, endpoint, apiKey string, preference ...string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	pref := append([]string(nil), preference...)
 	go func() {
 		setDebugf("modelFetch start endpoint=%q api_key_len=%d", endpoint, len(apiKey))
-		result := detectProtocolAndModelsPreferred(endpoint, apiKey, preference...)
+		result := detectProtocolAndModelsPreferredContext(ctx, endpoint, apiKey, pref...)
 		setDebugf(
 			"modelFetch done endpoint=%q detected_endpoint=%q protocol=%q model_count=%d err=%v",
 			endpoint,
@@ -139,7 +162,8 @@ func fetchModelsAsync(done chan<- modelFetchDoneMsg, endpoint, apiKey string, pr
 				windows[strings.ToLower(info.ID)] = info.ContextWindow
 			}
 		}
-		done <- modelFetchDoneMsg{
+		select {
+		case done <- modelFetchDoneMsg{
 			endpoint:            endpoint,
 			apiKey:              apiKey,
 			detectedType:        result.protocol,
@@ -148,6 +172,8 @@ func fetchModelsAsync(done chan<- modelFetchDoneMsg, endpoint, apiKey string, pr
 			contextWindows:      windows,
 			modelInfos:          result.modelInfos,
 			err:                 result.err,
+		}:
+		case <-ctx.Done():
 		}
 	}()
 }
@@ -158,10 +184,15 @@ func fetchModelsAsync(done chan<- modelFetchDoneMsg, endpoint, apiKey string, pr
 // models.dev source upgrade a 404 to a concrete "unavailable" verdict.
 func testModelsAsync(done chan<- modelAvailabilityDoneMsg, ctx context.Context, testID uint64, models []string, endpoint, apiKey, providerType string, protocols, endpoints map[string]string, smokeTestModel string, keyVerified bool) {
 	models = append([]string(nil), models...)
+	protocols = maps.Clone(protocols)
+	endpoints = maps.Clone(endpoints)
 	go func() {
 		statuses := make(map[string]modelAvailability, len(models))
 		if len(models) == 0 {
-			done <- modelAvailabilityDoneMsg{testID: testID, statuses: statuses}
+			select {
+			case done <- modelAvailabilityDoneMsg{testID: testID, statuses: statuses}:
+			case <-ctx.Done():
+			}
 			return
 		}
 		if smokeTestModel != "" {
@@ -171,7 +202,10 @@ func testModelsAsync(done chan<- modelAvailabilityDoneMsg, ctx context.Context, 
 					statuses[model] = status
 				}
 			}
-			done <- modelAvailabilityDoneMsg{testID: testID, statuses: statuses}
+			select {
+			case done <- modelAvailabilityDoneMsg{testID: testID, statuses: statuses}:
+			case <-ctx.Done():
+			}
 			return
 		}
 
@@ -209,7 +243,10 @@ func testModelsAsync(done chan<- modelAvailabilityDoneMsg, ctx context.Context, 
 		}
 
 		wg.Wait()
-		done <- modelAvailabilityDoneMsg{testID: testID, statuses: statuses}
+		select {
+		case done <- modelAvailabilityDoneMsg{testID: testID, statuses: statuses}:
+		case <-ctx.Done():
+		}
 	}()
 }
 

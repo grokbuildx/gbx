@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -134,15 +135,17 @@ func fetchModelsPayloadWithContext(ctx context.Context, url, apiKey string, head
 		}
 	}
 
-	resp, err := (&http.Client{Timeout: 4 * time.Second}).Do(req)
+	client := newProbeHTTPClient(4 * time.Second)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxProbeDiscardBytes))
 		return errors.New(resp.Status)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxModelsResponseBytes)).Decode(out); err != nil {
 		return fmt.Errorf("decode models response: %w", err)
 	}
 	return nil
@@ -347,24 +350,7 @@ func decodeCapabilityEfforts(raw json.RawMessage) ([]ReasoningLevel, string, boo
 }
 
 func defaultEffortDescription(effort string) string {
-	switch effort {
-	case "minimal":
-		return "Minimal reasoning for fast responses"
-	case "low":
-		return "Fast responses with lighter reasoning"
-	case "medium":
-		return "Balances speed and reasoning depth for everyday tasks"
-	case "high":
-		return "Greater reasoning depth for complex problems"
-	case "xhigh":
-		return "Extra high reasoning depth for complex problems"
-	case "max":
-		return "Maximum reasoning depth for the hardest problems"
-	case "ultra":
-		return "Maximum reasoning with automatic task delegation"
-	default:
-		return effort
-	}
+	return EffortDescription(effort)
 }
 
 func modelInputModalities(candidates ...[]string) []string {
@@ -460,6 +446,7 @@ func GetCodexClientModelInfos(baseURL, apiKey string) ([]ModelInfo, error) {
 			ContextWindow:         window,
 			MaxOutputTokens:       model.MaxOutputTokens,
 			InputModalities:       normalizeModalities(model.InputModalities),
+			ReasoningKnown:        model.ReasoningLevels != nil || strings.TrimSpace(model.DefaultReasoningLevel) != "",
 			ReasoningLevels:       model.ReasoningLevels,
 			DefaultReasoningLevel: model.DefaultReasoningLevel,
 		})

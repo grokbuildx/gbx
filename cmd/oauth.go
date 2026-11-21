@@ -35,7 +35,7 @@ var authCmd = newAuthCommand()
 func newAuthCommand() *cobra.Command {
 	opts := authOptions{}
 	cmd := &cobra.Command{
-		Use:   "oauth <gpt|gemini|grok|qoder|kimi|kiro|workbuddy|workbuddycn|autoclaw|cursor> [alias]",
+		Use:   "oauth <gpt|grok|qoder|kimi|kiro|workbuddy|workbuddycn|autoclaw|cursor> [alias]",
 		Short: "Authenticate a subscription-backed provider",
 		Long: `Authenticate subscription-backed providers.
 
@@ -43,11 +43,10 @@ Login:
 
   gbx oauth gpt                 # ChatGPT / Codex subscription
   gbx oauth gpt work            # same backend, provider name "work"
-  gbx oauth gemini|grok|qoder|kimi|kiro|workbuddy|workbuddycn|autoclaw|cursor
+  gbx oauth grok|qoder|kimi|kiro|workbuddy|workbuddycn|autoclaw|cursor
 
 Notes:
   - Subscription logins create providers and use ~/.gbx/auth
-  - gemini signs in to Google Antigravity; it does not use Gemini CLI credentials
   - WorkBuddy has two deployments with separate accounts and credentials:
     workbuddy is www.workbuddy.ai, workbuddycn is www.workbuddy.cn
   - Fast mode (gpt): gbx set Review & Apply
@@ -70,22 +69,18 @@ Notes:
 		},
 	}
 	cmd.Flags().BoolVar(&opts.noBrowser, "no-browser", false, "Print the OAuth URL instead of opening a browser")
-	cmd.Flags().IntVar(&opts.callbackPort, "callback-port", 0, "Override the OAuth callback port (ChatGPT/Gemini/Kiro Portal/AutoClaw)")
+	cmd.Flags().IntVar(&opts.callbackPort, "callback-port", 0, "Override the OAuth callback port (ChatGPT/Kiro Portal/AutoClaw)")
 	cmd.Flags().StringVar(&opts.kiroAuthMode, "kiro-auth", oauthproxy.KiroAuthModePortal, "Kiro login mode: portal or builder")
 	cmd.Flags().BoolVar(&opts.fromDesktop, "from-desktop", false, "AutoClaw only: reuse the desktop app's login instead of a browser flow")
 	cmd.AddCommand(newOAuthPruneCommand())
 	return cmd
 }
 
-// supportsFastMode reports whether the GPT subscription backend honours the
+// supportsFastMode reports whether the subscription backend honours the
 // configured fast mode.
 func supportsFastMode(providerName string) bool {
-	switch strings.ToLower(strings.TrimSpace(providerName)) {
-	case oauthproxy.ProviderChatGPT:
-		return true
-	default:
-		return false
-	}
+	spec, ok := provider.LookupOAuthSpec(providerName)
+	return ok && spec.SupportsFastMode
 }
 
 func runAuth(ctx context.Context, out io.Writer, args []string, opts authOptions) error {
@@ -223,23 +218,7 @@ func oauthRuntimeType(providerName string) string {
 // isReservedProviderName blocks aliases that would collide with canonical
 // provider names or SDK backend keys.
 func isReservedProviderName(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case provider.DefaultProvider, "claude",
-		oauthproxy.ProviderChatGPT, oauthproxy.ProviderCodex,
-		oauthproxy.ProviderGemini, "antigravity",
-		oauthproxy.ProviderGrok, "xai",
-		oauthproxy.ProviderQoder,
-		oauthproxy.ProviderKimi,
-		oauthproxy.ProviderKiro,
-		oauthproxy.ProviderWorkBuddy,
-		oauthproxy.ProviderWorkBuddyCN,
-		oauthproxy.ProviderAutoClaw,
-		"zed", // reserved legacy backend name
-		oauthproxy.ProviderCursor:
-		return true
-	default:
-		return false
-	}
+	return provider.IsReservedProviderName(name)
 }
 
 // derivedProviderName names GPT accounts by their full email, independently of

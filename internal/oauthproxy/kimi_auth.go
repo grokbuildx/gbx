@@ -48,7 +48,7 @@ func loginKimi(ctx context.Context, authDir string, opts LoginOptions) (LoginRes
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := newTimedCredentialHTTPClient(30 * time.Second)
 	deviceID := uuid.NewString()
 	device, err := requestKimiDeviceCode(ctx, client, deviceID)
 	if err != nil {

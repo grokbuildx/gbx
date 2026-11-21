@@ -3,6 +3,7 @@ package oauthproxy
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -273,5 +274,34 @@ func TestCodexResponsesNonStreamingClaudeResponse(t *testing.T) {
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("non-stream")) {
 		t.Fatalf("status=%d body=%s", response.StatusCode, body)
+	}
+}
+
+func TestSanitizePassthroughResponsesInputUnwrapsSignedReasoning(t *testing.T) {
+	original := []byte(`{"type":"reasoning","id":"rs_upstream","encrypted_content":"opaque_blob","summary":[{"type":"summary_text","text":"step"}]}`)
+	sig := codexReasoningSignaturePrefix + base64.StdEncoding.EncodeToString(original)
+	payload := map[string]any{
+		"input": []any{
+			map[string]any{"type": "reasoning", "id": gbxReasoningIDPrefix + "1", "encrypted_content": sig},
+			map[string]any{"type": "reasoning", "id": gbxReasoningIDPrefix + "2", "encrypted_content": ""},
+			map[string]any{"role": "user", "content": "hi"},
+		},
+	}
+	sanitizePassthroughResponsesInput(payload)
+	items, _ := payload["input"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("filtered len = %d, want 2: %#v", len(items), items)
+	}
+	first, _ := items[0].(map[string]any)
+	if first["id"] != "rs_upstream" || first["encrypted_content"] != "opaque_blob" {
+		t.Fatalf("unwrapped reasoning item = %#v", first)
+	}
+}
+
+func TestResponsesUsageObserverHandlesCRLF(t *testing.T) {
+	var obs responsesUsageObserver
+	obs.observe([]byte("event: response.completed\r\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":25,\"input_tokens_details\":{\"cached_tokens\":40}}}}\r\n\r\n"))
+	if !obs.seen || obs.input != 100 || obs.output != 25 || obs.cached != 40 {
+		t.Fatalf("observer = %+v, want seen=true input=100 output=25 cached=40", obs)
 	}
 }

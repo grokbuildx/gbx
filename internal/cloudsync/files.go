@@ -15,16 +15,13 @@ import (
 	"strings"
 
 	"github.com/grokbuildx/gbx/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/paths"
 )
 
 var ErrNoLocalData = errors.New("no gbx configuration or OAuth credentials found to sync")
 
 func gbxDirectory() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(home, ".gbx"), nil
+	return paths.GBXDir()
 }
 
 func defaultICloudDirectory() (string, error) {
@@ -70,8 +67,11 @@ func collectLocalFiles() ([]snapshotFile, string, error) {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("refuse to sync non-regular file %s", path)
 		}
-		data, readErr := os.ReadFile(path)
+		data, readErr := fsutil.ReadRegularFileLimited(path, maxEncryptedSize-totalSize)
 		if readErr != nil {
+			if errors.Is(readErr, fsutil.ErrFileTooLarge) {
+				return fmt.Errorf("gbx configuration exceeds the %d MiB sync safety limit", maxEncryptedSize>>20)
+			}
 			return readErr
 		}
 		totalSize += int64(len(data))
@@ -153,24 +153,7 @@ func readJSONFile(path string, target any) error {
 }
 
 func readRegularFile(path string, limit int64) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("refuse to read non-regular file %s", path)
-	}
-	if info.Size() > limit {
-		return nil, fmt.Errorf("file %s exceeds safety limit", path)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("file %s exceeds safety limit", path)
-	}
-	return data, nil
+	return fsutil.ReadRegularFileLimited(path, limit)
 }
 
 func writeJSONAtomic(path string, value any, mode os.FileMode) error {

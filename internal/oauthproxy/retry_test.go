@@ -296,81 +296,6 @@ func TestRetryUpstreamSuccessSucceedsOnFirstTry(t *testing.T) {
 	}
 }
 
-// TestGeminiForwardFastRetryCoversBothBases pins the attempt arithmetic: ONE
-// attempt walks daily→prod (2 upstream calls), so exhausting the budget is
-// 3 attempts × 2 bases = 6 calls, in strict daily,prod order.
-func TestGeminiForwardFastRetryCoversBothBases(t *testing.T) {
-	staticFastRetryBackoff(t)
-	var calls atomic.Int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		calls.Add(1)
-		writer.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer upstream.Close()
-
-	service := &geminiService{
-		authorizer: &chatStaticAuthorizer{token: "test-token"},
-		client:     upstream.Client(),
-	}
-	// Redirect both bases at the stub so the fallback order stays observable.
-	previousDaily, previousProd := antigravityBaseURLDaily, antigravityBaseURLProd
-	antigravityBaseURLDaily = upstream.URL
-	antigravityBaseURLProd = upstream.URL
-	t.Cleanup(func() {
-		antigravityBaseURLDaily, antigravityBaseURLProd = previousDaily, previousProd
-	})
-
-	response, err := service.forward(context.Background(), false, []byte("{}"))
-	if err != nil {
-		t.Fatalf("forward() error: %v", err)
-	}
-	if response == nil || response.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("response = %v", response)
-	}
-	_, _ = io.ReadAll(response.Body)
-	_ = response.Body.Close()
-	if got := calls.Load(); got != 6 {
-		t.Fatalf("upstream calls = %d, want 6 (3 attempts × 2 bases)", got)
-	}
-}
-
-func TestGeminiForwardFastRetryRecovers(t *testing.T) {
-	staticFastRetryBackoff(t)
-	var calls atomic.Int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if calls.Add(1) >= 3 {
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"candidates":[]}`))
-			return
-		}
-		writer.WriteHeader(http.StatusTooManyRequests)
-	}))
-	defer upstream.Close()
-
-	service := &geminiService{
-		authorizer: &chatStaticAuthorizer{token: "test-token"},
-		client:     upstream.Client(),
-	}
-	previousDaily, previousProd := antigravityBaseURLDaily, antigravityBaseURLProd
-	antigravityBaseURLDaily = upstream.URL
-	antigravityBaseURLProd = upstream.URL
-	t.Cleanup(func() {
-		antigravityBaseURLDaily, antigravityBaseURLProd = previousDaily, previousProd
-	})
-
-	response, err := service.forward(context.Background(), false, []byte("{}"))
-	if err != nil {
-		t.Fatalf("forward() error: %v", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", response.StatusCode)
-	}
-	if got := calls.Load(); got != 3 {
-		t.Fatalf("upstream calls = %d, want 3 (2 failed bases then success)", got)
-	}
-}
-
 func TestRetryUpstreamRetriesPostDataEveryAttempt(t *testing.T) {
 	// A retried request must re-send the same payload: the closure owns the
 	// body, so this pins that retryUpstream does not consume it.
@@ -410,42 +335,5 @@ func TestRetryUpstreamRetriesPostDataEveryAttempt(t *testing.T) {
 	}
 	if len(bodies) != 3 || bodies[0] != string(payload) || bodies[2] != string(payload) {
 		t.Fatalf("bodies = %q", bodies)
-	}
-}
-
-func TestGeminiForwardWithConfiguredDailyBaseStillFallsBackToProd(t *testing.T) {
-	staticFastRetryBackoff(t)
-	daily := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.WriteHeader(http.StatusGatewayTimeout)
-	}))
-	defer daily.Close()
-	prod := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"candidates":[]}`))
-	}))
-	defer prod.Close()
-
-	previousDaily, previousProd := antigravityBaseURLDaily, antigravityBaseURLProd
-	antigravityBaseURLDaily = daily.URL
-	antigravityBaseURLProd = prod.URL
-	t.Cleanup(func() {
-		antigravityBaseURLDaily, antigravityBaseURLProd = previousDaily, previousProd
-	})
-
-	service := &geminiService{
-		authorizer: &chatStaticAuthorizer{token: "test-token"},
-		client:     daily.Client(),
-		baseURL:    antigravityBaseURLDaily,
-	}
-	response, err := service.forward(context.Background(), false, []byte("{}"))
-	if err != nil {
-		t.Fatalf("forward() error: %v", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200 after daily->prod fallback", response.StatusCode)
-	}
-	if got := service.preferredBaseURL(); got != prod.URL {
-		t.Fatalf("preferredBaseURL() = %q, want %q", got, prod.URL)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/grokbuildx/gbx/internal/oauthproxy"
+	"github.com/grokbuildx/gbx/internal/paths"
 )
 
 // Per-session auth files live
@@ -25,13 +26,7 @@ const (
 )
 
 // runDirectory is var so tests can redirect it.
-var runDirectory = func() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".gbx", "run"), nil
-}
+var runDirectory = paths.RunDir
 
 // sessionSettingsPath returns where this process writes a session's settings,
 // creating ~/.gbx/run if needed. It falls back to the temp directory when the

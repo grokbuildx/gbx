@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -107,7 +106,7 @@ func (a *cursorOAuthAuthorizer) listAuths() []*AuthInfo {
 	}
 	return []*AuthInfo{{
 		ID: filepath.Base(a.path), Provider: ProviderCursor, FileName: a.path, Label: credential.email,
-		Status: status, Disabled: credential.disabled, Metadata: credential.metadata,
+		Status: status, Disabled: credential.disabled, Metadata: safeAuthMetadata(credential.metadata),
 	}}
 }
 
@@ -270,11 +269,14 @@ func (b *cursorBeat) cancel() {
 }
 
 type cursorSession struct {
-	response *http.Response
-	reader   *bufio.Reader
-	writer   cursorStreamWriter
-	cancel   context.CancelFunc
+	response   *http.Response
+	reader     *bufio.Reader
+	writer     cursorStreamWriter
+	cancel     context.CancelFunc
+	sessionKey string
+	initDone   chan struct{}
 
+	writeMu sync.Mutex
 	mu      sync.Mutex
 	closed  bool
 	pending map[string]cursorPendingCall
@@ -301,11 +303,24 @@ func newCursorSession(response *http.Response, writer cursorStreamWriter, cancel
 	return session
 }
 
-// send writes one Connect frame on the request body.
+// send writes one Connect frame on the request body without holding s.mu across
+// blocking pipe I/O so close() can always abort a stalled writer.
 func (s *cursorSession) send(frame []byte) error {
+	if s.initDone != nil {
+		<-s.initDone
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return fmt.Errorf("Cursor stream is closed")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.mu.Lock()
+	closed = s.closed
+	s.mu.Unlock()
+	if closed {
 		return fmt.Errorf("Cursor stream is closed")
 	}
 	_, err := s.writer.Write(frame)
@@ -416,6 +431,11 @@ func (s *cursorSession) close() {
 	}
 }
 
+const (
+	cursorMaxParkedSessions = 16
+	cursorMaxBlobBytes      = 64 << 20
+)
+
 type cursorService struct {
 	apiKey       string
 	models       []string
@@ -427,13 +447,14 @@ type cursorService struct {
 	ctx          context.Context
 
 	mu        sync.Mutex
-	parked    *cursorSession
+	parked    []*cursorSession
 	blobs     map[string][]byte
 	blobOrder []string
+	blobBytes int
 }
 
 func (s *cursorService) handler() http.Handler {
-	return loopbackFrontMux(s.apiKey, s.handleModels, s.handleResponses)
+	return loopbackFrontMuxForContext(s.ctx, s.apiKey, s.handleModels, s.handleResponses)
 }
 
 func (s *cursorService) authorized(request *http.Request) bool {
@@ -472,6 +493,15 @@ func (s *cursorService) handleResponses(writer http.ResponseWriter, request *htt
 			"path", request.URL.Path, "status", http.StatusBadRequest, "reason", "request_conversion", "error", err)
 		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
+	}
+	if converted.sessionKey == "" {
+		for _, name := range []string{"Session_id", "X-Grok-Conv-Id", "X-Session-Id"} {
+			if value := strings.TrimSpace(request.Header.Get(name)); value != "" && len(value) <= 256 {
+				converted.sessionKey = value
+				converted.conversationID = kiroConversationID(value)
+				break
+			}
+		}
 	}
 	var gate *cursorGateWriter
 	var assemblerWriter http.ResponseWriter
@@ -543,12 +573,14 @@ func cursorClientError(err error) (int, string) {
 func (s *cursorService) serve(ctx context.Context, converted *cursorConvertedRequest, assembler *responseAssembler, gate *cursorGateWriter) error {
 	// Cursor's ExecMcpResult protobuf frame carries text only. When a tool
 	// result (or follow-up user turn) attaches screenshots, close any parked
-	// stream and start a fresh Run so SelectedImages reach Cursor alongside
-	// the full conversation history and TOOL_RESULT blocks.
+	// stream for this conversation and start a fresh Run so SelectedImages reach
+	// Cursor alongside the full conversation history and TOOL_RESULT blocks.
 	if len(converted.images) > 0 {
-		s.closeParked()
-	} else if session := s.takeParked(converted.resumeToolUseIDs()); session != nil {
-		defer session.close()
+		s.closeParkedForSession(converted.sessionKey)
+	} else if session := s.takeParked(converted.sessionKey, converted.resumeToolUseIDs()); session != nil {
+		// A resumed stream may emit another tool call and re-park itself.
+		// Release only if it is not parked again when continueTurn returns.
+		defer s.releaseOwned(session)
 		LogDebugEvent("cursor_resume", "call_count", len(converted.resume))
 		return s.continueTurn(ctx, session, converted, assembler, gate, true)
 	}
@@ -562,31 +594,75 @@ func (s *cursorService) serve(ctx context.Context, converted *cursorConvertedReq
 	return s.continueTurn(ctx, session, converted, assembler, gate, false)
 }
 
-// takeParked hands the parked stream back to the request that answers its tool
-// call. A stream whose pending call is not among these results is irrelevant to
-// this turn and is dropped.
-func (s *cursorService) takeParked(callIDs []string) *cursorSession {
+// takeParked hands a parked stream back to the request that answers its tool
+// call. Unrelated parked streams belonging to the same conversation are dropped
+// and closed, while streams owned by other concurrent conversations stay parked.
+func (s *cursorService) takeParked(sessionKey string, callIDs []string) *cursorSession {
+	var matched *cursorSession
+	var toClose []*cursorSession
+
 	s.mu.Lock()
-	session := s.parked
-	s.parked = nil
+	remaining := s.parked[:0]
+	for _, candidate := range s.parked {
+		if candidate == nil {
+			continue
+		}
+		if matched == nil && candidate.sessionKey == sessionKey && candidate.matches(callIDs) {
+			matched = candidate
+			continue
+		}
+		remaining = append(remaining, candidate)
+	}
+	if matched == nil && len(remaining) > 0 {
+		kept := remaining[:0]
+		for _, candidate := range remaining {
+			if candidate.sessionKey == sessionKey {
+				toClose = append(toClose, candidate)
+				continue
+			}
+			kept = append(kept, candidate)
+		}
+		remaining = kept
+	}
+	clear(s.parked[len(remaining):])
+	s.parked = remaining
 	s.mu.Unlock()
-	if session == nil {
+
+	for _, stale := range toClose {
+		stale.close()
+	}
+	if matched == nil {
 		return nil
 	}
-	if !session.matches(callIDs) {
-		session.close()
-		return nil
-	}
-	session.handoff()
-	return session
+	matched.handoff()
+	return matched
 }
 
 func (s *cursorService) park(session *cursorSession) {
+	if session == nil {
+		return
+	}
+	var toClose []*cursorSession
 	s.mu.Lock()
-	previous := s.parked
-	s.parked = session
+	kept := s.parked[:0]
+	for _, existing := range s.parked {
+		if existing == nil || existing == session {
+			continue
+		}
+		if existing.sessionKey == session.sessionKey {
+			toClose = append(toClose, existing)
+			continue
+		}
+		kept = append(kept, existing)
+	}
+	for len(kept) >= cursorMaxParkedSessions {
+		toClose = append(toClose, kept[0])
+		kept = kept[1:]
+	}
+	clear(s.parked[len(kept):])
+	s.parked = append(kept, session)
 	s.mu.Unlock()
-	if previous != nil && previous != session {
+	for _, previous := range toClose {
 		previous.close()
 	}
 }
@@ -595,20 +671,50 @@ func (s *cursorService) park(session *cursorSession) {
 // it to a later request.
 func (s *cursorService) releaseOwned(session *cursorSession) {
 	s.mu.Lock()
-	parked := s.parked == session
+	parked := false
+	for _, existing := range s.parked {
+		if existing == session {
+			parked = true
+			break
+		}
+	}
 	s.mu.Unlock()
 	if !parked {
 		session.close()
 	}
 }
 
+func (s *cursorService) closeParkedForSession(sessionKey string) {
+	var toClose []*cursorSession
+	s.mu.Lock()
+	kept := s.parked[:0]
+	for _, existing := range s.parked {
+		if existing == nil {
+			continue
+		}
+		if existing.sessionKey == sessionKey {
+			toClose = append(toClose, existing)
+			continue
+		}
+		kept = append(kept, existing)
+	}
+	clear(s.parked[len(kept):])
+	s.parked = kept
+	s.mu.Unlock()
+	for _, session := range toClose {
+		session.close()
+	}
+}
+
 func (s *cursorService) closeParked() {
 	s.mu.Lock()
-	session := s.parked
+	toClose := s.parked
 	s.parked = nil
 	s.mu.Unlock()
-	if session != nil {
-		session.close()
+	for _, session := range toClose {
+		if session != nil {
+			session.close()
+		}
 	}
 }
 
@@ -627,17 +733,20 @@ func (s *cursorService) startRun(ctx context.Context, converted *cursorConverted
 		Tools:          converted.tools,
 		Thinking:       converted.thinkingEnabled,
 	}
-	encoded := encodeCursorRunRequest(params)
+	encoded := encodeCursorRunRequest(&params)
 	s.storeBlobs(params.Blobs)
 	// The stream outlives this HTTP request: a parked stream is resumed by a
 	// later one, so it is owned by the runtime, not by ctx. Each stream derives
-	// its own context from the runtime, and this one only bounds the retry loop.
+	// its own context from the runtime, while runCtx also observes ctx so client
+	// disconnects abort dialing, retry backoff, and token refreshes immediately.
 	runCtx, cancel := context.WithCancel(s.serviceContext())
 	defer cancel()
+	stopCancel := context.AfterFunc(ctx, cancel)
+	defer stopCancel()
 
 	var opened *cursorSession
 	attempt := func() (*http.Response, error) {
-		session, err := s.openStream(s.serviceContext(), encoded)
+		session, err := s.openStream(s.serviceContext(), runCtx, encoded)
 		if err != nil {
 			return nil, err
 		}
@@ -650,7 +759,7 @@ func (s *cursorService) startRun(ctx context.Context, converted *cursorConverted
 			if _, authErr := s.authorizer.authorize(rejected, true); authErr != nil {
 				return nil, fmt.Errorf("refresh Cursor OAuth token: %w", authErr)
 			}
-			session, err = s.openStream(s.serviceContext(), encoded)
+			session, err = s.openStream(s.serviceContext(), runCtx, encoded)
 			if err != nil {
 				return nil, err
 			}
@@ -662,6 +771,7 @@ func (s *cursorService) startRun(ctx context.Context, converted *cursorConverted
 			session.close()
 			return nil, &cursorUpstreamError{status: response.StatusCode, body: strings.TrimSpace(string(body)), retryAfter: retryAfter}
 		}
+		session.sessionKey = converted.sessionKey
 		opened = session
 		return response, nil
 	}
@@ -697,17 +807,20 @@ func (s *cursorService) serviceContext() context.Context {
 }
 
 // openStream sends the Run frame and holds the request body open. Each attempt
-// gets its own child context, so closing a rejected attempt (a 401 or a 5xx
-// that will be retried) cannot cancel the run the next attempt still needs.
-func (s *cursorService) openStream(ctx context.Context, frame []byte) (*cursorSession, error) {
-	token, err := s.authorizer.authorize(ctx, false)
+// gets its own child context derived from streamCtx (so parked streams outlive
+// the first turn), while dialCtx cancels dialing/header waits immediately if
+// the caller disconnects before the stream opens.
+func (s *cursorService) openStream(streamCtx, dialCtx context.Context, frame []byte) (*cursorSession, error) {
+	token, err := s.authorizer.authorize(dialCtx, false)
 	if err != nil {
 		return nil, fmt.Errorf("authorize Cursor agent request: %w", err)
 	}
-	attemptCtx, cancel := context.WithCancel(ctx)
+	attemptCtx, cancel := context.WithCancel(streamCtx)
+	stopDialCancel := context.AfterFunc(dialCtx, cancel)
 	pipeReader, pipeWriter := io.Pipe()
 	request, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, cursorConnectBaseURL+cursorConnectRunPath, pipeReader)
 	if err != nil {
+		stopDialCancel()
 		cancel()
 		_ = pipeWriter.Close()
 		return nil, err
@@ -719,28 +832,43 @@ func (s *cursorService) openStream(ctx context.Context, frame []byte) (*cursorSe
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("X-Cursor-Client-Version", cursorCLIVersion)
 	request.Header.Set("User-Agent", "gbx/"+cursorCLIVersion)
+	initDone := make(chan struct{})
 	go func() {
+		defer close(initDone)
 		if _, writeErr := pipeWriter.Write(cursorFrameConnect(frame, 0)); writeErr != nil {
 			_ = pipeWriter.CloseWithError(writeErr)
 		}
 	}()
 	started := time.Now()
 	response, err := doCredentialRequest(s.client, request)
+	stopDialCancel()
 	if err != nil {
 		cancel()
 		_ = pipeWriter.CloseWithError(err)
 		return nil, fmt.Errorf("call Cursor agent stream: %w", err)
 	}
+	if dialCtx.Err() != nil {
+		cancel()
+		_ = pipeWriter.CloseWithError(dialCtx.Err())
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
+		return nil, dialCtx.Err()
+	}
 	LogUpstreamEvent(response.StatusCode, "upstream_response", "component", "cursor",
 		"status", response.StatusCode, "content_type", response.Header.Get("Content-Type"),
 		"duration", logDuration(started))
-	return newCursorSession(response, pipeWriter, cancel), nil
+	session := newCursorSession(response, pipeWriter, cancel)
+	session.initDone = initDone
+	return session, nil
 }
 
 // continueTurn relays one stream. A tool request from Cursor ends the Responses
 // output with a function_call item and parks the stream; the next request that
 // carries matching tool results resumes it here.
 func (s *cursorService) continueTurn(ctx context.Context, session *cursorSession, converted *cursorConvertedRequest, assembler *responseAssembler, gate *cursorGateWriter, resuming bool) error {
+	stopTurnCancel := context.AfterFunc(ctx, session.close)
+	defer stopTurnCancel()
 	// message_start is emitted while the gate still holds every event, so a turn
 	// that fails before its first block still answers with a status code.
 	if err := assembler.start(); err != nil {
@@ -761,11 +889,14 @@ func (s *cursorService) continueTurn(ctx context.Context, session *cursorSession
 	for {
 		flags, payload, err := cursorReadFrame(session.reader)
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				break
-			}
 			if ctx.Err() != nil || s.serviceContext().Err() != nil {
 				return context.Canceled
+			}
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				return fmt.Errorf("Cursor agent stream truncated: %w", err)
+			}
+			if errors.Is(err, io.EOF) {
+				return fmt.Errorf("Cursor agent stream ended before terminal event: %w", io.ErrUnexpectedEOF)
 			}
 			return fmt.Errorf("read Cursor agent stream: %w", err)
 		}
@@ -805,7 +936,7 @@ func (s *cursorService) continueTurn(ctx context.Context, session *cursorSession
 					return err
 				}
 			case "checkpoint":
-				s.storeBlob(event.BlobData, event.BlobData)
+				s.storeBlob(sha256SumBytes(event.BlobData), event.BlobData)
 			case "exec_mcp":
 				callID := firstNonEmptyString(event.MCPCallID, event.ExecID, uuidString())
 				session.addPending(callID, cursorPendingCall{msgID: event.ExecMsgID, execID: event.ExecID})
@@ -829,12 +960,19 @@ func (s *cursorService) continueTurn(ctx context.Context, session *cursorSession
 				if sawExecMCP {
 					break
 				}
+				gate.open()
 				return assembler.finish()
 			}
 		}
 		if sawExecMCP {
+			gate.open()
 			if err := assembler.finish(); err != nil {
 				return err
+			}
+			// Detach this HTTP request's cancellation before parking the stream
+			// so the parked stream survives after the response completes.
+			if !stopTurnCancel() {
+				return context.Canceled
 			}
 			// The stream stays open: the next request carries the tool result(s)
 			// and continues it instead of replaying the turn.
@@ -843,6 +981,7 @@ func (s *cursorService) continueTurn(ctx context.Context, session *cursorSession
 			return nil
 		}
 	}
+	gate.open()
 	return assembler.finish()
 }
 
@@ -883,25 +1022,36 @@ func blobKey(identity []byte) string {
 }
 
 func (s *cursorService) storeBlob(identity, data []byte) {
-	if len(identity) == 0 {
+	if len(identity) == 0 || len(data) > cursorMaxBlobBytes {
 		return
 	}
 	key := blobKey(identity)
+	copied := append([]byte(nil), data...)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.blobs == nil {
 		s.blobs = make(map[string][]byte)
 	}
-	if _, exists := s.blobs[key]; exists {
-		s.blobs[key] = append([]byte(nil), data...)
-		return
+	if old, exists := s.blobs[key]; exists {
+		s.blobBytes -= len(old)
+		delete(s.blobs, key)
+		for i, k := range s.blobOrder {
+			if k == key {
+				s.blobOrder = append(s.blobOrder[:i], s.blobOrder[i+1:]...)
+				break
+			}
+		}
 	}
-	if len(s.blobOrder) >= cursorMaxBlobs {
+	for len(s.blobOrder) > 0 && (len(s.blobOrder) >= cursorMaxBlobs || s.blobBytes+len(copied) > cursorMaxBlobBytes) {
 		dropped := s.blobOrder[0]
 		s.blobOrder = s.blobOrder[1:]
-		delete(s.blobs, dropped)
+		if old, ok := s.blobs[dropped]; ok {
+			s.blobBytes -= len(old)
+			delete(s.blobs, dropped)
+		}
 	}
-	s.blobs[key] = append([]byte(nil), data...)
+	s.blobs[key] = copied
+	s.blobBytes += len(copied)
 	s.blobOrder = append(s.blobOrder, key)
 }
 
@@ -910,12 +1060,7 @@ func (s *cursorService) blob(identity []byte) []byte {
 	if len(identity) == 0 {
 		return nil
 	}
-	key := hex.EncodeToString(identity)
-	if len(identity) == 64 {
-		if decoded, err := hex.DecodeString(string(identity)); err == nil {
-			key = hex.EncodeToString(decoded)
-		}
-	}
+	key := blobKey(identity)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.blobs[key]
@@ -1152,7 +1297,7 @@ func startCursorOAuth(parent context.Context, modelSpec, credentialFile string) 
 	path := filepath.Join(authDir, filepath.Base(credentialFile))
 	authorizer := &cursorOAuthAuthorizer{
 		path:   path,
-		client: &http.Client{Transport: newUpstreamTransport(60 * time.Second), CheckRedirect: checkCredentialRedirect},
+		client: newCredentialHTTPClient(60 * time.Second),
 	}
 	credential, err := authorizer.load()
 	if err != nil {
@@ -1164,7 +1309,7 @@ func startCursorOAuth(parent context.Context, modelSpec, credentialFile string) 
 	if credential.accessToken == "" && credential.refreshToken == "" {
 		return nil, fmt.Errorf("Cursor credential %s has no access or refresh token; run `gbx oauth cursor` again", filepath.Base(path))
 	}
-	discoveryClient := &http.Client{Transport: newUpstreamTransport(20 * time.Second)}
+	discoveryClient := newCredentialHTTPClient(20 * time.Second)
 	discoveryCtx, cancelDiscovery := context.WithTimeout(parent, 20*time.Second)
 	discovered, discoverErr := discoverCursorModels(discoveryCtx, authorizer, discoveryClient)
 	cancelDiscovery()
@@ -1185,12 +1330,8 @@ func startCursorOAuth(parent context.Context, modelSpec, credentialFile string) 
 	if err != nil {
 		return nil, err
 	}
-	listener, err := net.Listen("tcp", runtimeLoopbackHost+":0")
-	if err != nil {
-		return nil, fmt.Errorf("listen for Cursor runtime: %w", err)
-	}
 	details := cursorModelDetails(models, routes)
-	runCtx, cancel := context.WithCancel(parent)
+	serviceCtx, serviceCancel := context.WithCancel(parent)
 	usage := NewUsageTracker()
 	service := &cursorService{
 		apiKey:       apiKey,
@@ -1198,54 +1339,26 @@ func startCursorOAuth(parent context.Context, modelSpec, credentialFile string) 
 		modelDetails: details,
 		modelRoute:   routes,
 		authorizer:   authorizer,
-		client:       &http.Client{Transport: newUpstreamTransport(60 * time.Second), CheckRedirect: checkCredentialRedirect},
+		client:       newCredentialHTTPClient(60 * time.Second),
 		usage:        usage,
-		ctx:          runCtx,
+		ctx:          serviceCtx,
 	}
-	server := &http.Server{
-		Handler:           service.handler(),
-		ReadHeaderTimeout: 15 * time.Second,
-		BaseContext:       func(net.Listener) context.Context { return runCtx },
+	proxyRuntime, err := startLoopbackServer(parent, "Cursor runtime", service.handler(), apiKey, usage)
+	if err != nil {
+		serviceCancel()
+		return nil, err
 	}
-	started := make(chan struct{})
-	close(started)
-	proxyRuntime := &Runtime{
-		endpoint:        "http://" + listener.Addr().String() + "/v1",
-		apiKey:          apiKey,
-		httpServer:      server,
-		listAuths:       authorizer.listAuths,
-		models:          models,
-		modelDetails:    details,
-		catalogFallback: catalogFallback,
-		cancel:          cancel,
-		done:            make(chan struct{}),
-		runErr:          make(chan error, 1),
-		started:         started,
-		usage:           usage,
-	}
+	proxyRuntime.listAuths = authorizer.listAuths
+	proxyRuntime.models = models
+	proxyRuntime.modelDetails = details
+	proxyRuntime.catalogFallback = catalogFallback
 	proxyRuntime.cleanup = append(proxyRuntime.cleanup,
+		serviceCancel,
 		closeIdleClients(service.client, authorizer.client, discoveryClient),
 		service.closeParked,
 	)
-	go func() {
-		err := server.Serve(listener)
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
-		proxyRuntime.runErr <- err
-		close(proxyRuntime.done)
-	}()
-	go func() {
-		select {
-		case <-runCtx.Done():
-			ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = server.Shutdown(ctx)
-			stop()
-		case <-proxyRuntime.done:
-		}
-	}()
 	LogInfof("runtime start oauth provider=cursor backend=cursor protocol=responses port=%s credential_file=%s model_count=%d fallback_catalog=%t",
-		listener.Addr().String(), filepath.Base(path), len(models), catalogFallback)
+		strings.TrimPrefix(strings.TrimSuffix(proxyRuntime.endpoint, "/v1"), "http://"), filepath.Base(path), len(models), catalogFallback)
 	return proxyRuntime, nil
 }
 
@@ -1261,6 +1374,7 @@ type cursorConvertedRequest struct {
 	images         []cursorImage
 	tools          []cursorMCPTool
 	resume         []cursorToolResult
+	sessionKey     string
 	conversationID string
 }
 
@@ -1301,6 +1415,7 @@ func convertResponsesToCursor(raw []byte) (*cursorConvertedRequest, error) {
 	model := stripContextModelSuffix(request.Model)
 	adapter := request.adapter(model)
 	adapter.maxTokens = maxTokens
+	sessionKey := firstNonEmptyString(request.CacheKey, request.User)
 	converted := &cursorConvertedRequest{
 		adapterRequest: adapter,
 		model:          model,
@@ -1309,7 +1424,8 @@ func convertResponsesToCursor(raw []byte) (*cursorConvertedRequest, error) {
 		images:         images,
 		tools:          tools,
 		resume:         resume,
-		conversationID: kiroConversationID(firstNonEmptyString(request.CacheKey, request.User)),
+		sessionKey:     sessionKey,
+		conversationID: kiroConversationID(sessionKey),
 	}
 	converted.userText = cursorTurnUserText(history, current, resume)
 	return converted, nil

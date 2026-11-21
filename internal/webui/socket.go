@@ -25,6 +25,28 @@ func DefaultSocketPath() (string, error) {
 	return filepath.Join(filepath.Dir(root), "gbx.sock"), nil
 }
 
+type renamedUnixListener struct {
+	*net.UnixListener
+	finalPath     string
+	unlinkOnClose bool
+}
+
+func (l *renamedUnixListener) Addr() net.Addr {
+	return &net.UnixAddr{Name: l.finalPath, Net: "unix"}
+}
+
+func (l *renamedUnixListener) SetUnlinkOnClose(unlink bool) {
+	l.unlinkOnClose = unlink
+}
+
+func (l *renamedUnixListener) Close() error {
+	err := l.UnixListener.Close()
+	if l.unlinkOnClose {
+		_ = os.Remove(l.finalPath)
+	}
+	return err
+}
+
 // ListenUnix listens on a Unix socket at path that only this user can
 // connect to. A socket left behind by a server that died is replaced; one
 // another server still answers on is refused, as is any other file.
@@ -36,7 +58,8 @@ func ListenUnix(path string) (net.Listener, error) {
 	if len(path) > maxSocketPath {
 		return nil, fmt.Errorf("socket path %s is longer than %d bytes; pick a shorter one", path, maxSocketPath)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create socket directory: %w", err)
 	}
 	info, err := os.Lstat(path)
@@ -53,6 +76,46 @@ func ListenUnix(path string) (net.Listener, error) {
 		}
 	case !errors.Is(err, fs.ErrNotExist):
 		return nil, err
+	}
+	// If the parent directory is accessible to group or others (e.g., /tmp),
+	// stage the socket inside a mode-0700 directory, tighten it to 0600, then
+	// rename into place so there is no permission race window.
+	dirInfo, statErr := os.Stat(dir)
+	dirShared := statErr != nil || dirInfo.Mode().Perm()&0o077 != 0
+	if dirShared {
+		tmpDir, mkErr := os.MkdirTemp(dir, ".s")
+		if mkErr != nil {
+			return nil, fmt.Errorf("stage socket directory: %w", mkErr)
+		}
+		tmpSock := filepath.Join(tmpDir, "s")
+		if len(tmpSock) > maxSocketPath {
+			_ = os.RemoveAll(tmpDir)
+			return nil, fmt.Errorf("socket path %s is too long to stage safely inside a shared directory; use a shorter path or a 0700 directory", path)
+		}
+		rawListener, listenErr := net.Listen("unix", tmpSock)
+		if listenErr != nil {
+			_ = os.RemoveAll(tmpDir)
+			return nil, fmt.Errorf("listen on %s: %w", path, listenErr)
+		}
+		ul, ok := rawListener.(*net.UnixListener)
+		if !ok {
+			_ = rawListener.Close()
+			_ = os.RemoveAll(tmpDir)
+			return nil, fmt.Errorf("unexpected unix listener type")
+		}
+		ul.SetUnlinkOnClose(false)
+		if chmodErr := os.Chmod(tmpSock, 0o600); chmodErr != nil {
+			_ = ul.Close()
+			_ = os.RemoveAll(tmpDir)
+			return nil, fmt.Errorf("restrict socket: %w", chmodErr)
+		}
+		if renameErr := os.Rename(tmpSock, path); renameErr != nil {
+			_ = ul.Close()
+			_ = os.RemoveAll(tmpDir)
+			return nil, fmt.Errorf("publish socket %s: %w", path, renameErr)
+		}
+		_ = os.Remove(tmpDir)
+		return &renamedUnixListener{UnixListener: ul, finalPath: path, unlinkOnClose: true}, nil
 	}
 	listener, err := net.Listen("unix", path)
 	if err != nil {

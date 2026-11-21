@@ -64,6 +64,10 @@ interface Props {
 // Unsent text per tab, for this page load.
 const drafts = new Map<string, string>();
 
+export function clearDraft(key: string) {
+  drafts.delete(key);
+}
+
 // The Web Speech API, where the browser has it (Chrome sends audio to its
 // recognition service).
 type Recognition = { lang: string; interimResults: boolean; continuous: boolean; start(): void; stop(): void; onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> ; resultIndex: number }) => void) | null; onend: (() => void) | null };
@@ -88,11 +92,23 @@ export function Composer(props: Props) {
     else drafts.delete(props.draftKey);
   }, [text, props.draftKey]);
   const [pending, setPending] = useState<Pending[]>([]);
+  const pendingRef = useRef<Pending[]>(pending);
+  pendingRef.current = pending;
   const [sending, setSending] = useState(false);
   const [menu, setMenu] = useState<null | "main" | "connectors" | "schedule">(null);
   const [scheduleAt, setScheduleAt] = useState(inAnHour);
   const [listening, setListening] = useState(false);
   const recognition = useRef<Recognition | null>(null);
+  useEffect(
+    () => () => {
+      recognition.current?.stop();
+      recognition.current = null;
+      for (const item of pendingRef.current) {
+        if (item.preview) URL.revokeObjectURL(item.preview);
+      }
+    },
+    [],
+  );
   const { lang } = useI18n();
   const [pick, setPick] = useState(0);
   const [caret, setCaret] = useState(0);

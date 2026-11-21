@@ -9,6 +9,7 @@ package webui
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/grokbuildx/gbx/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/paths"
 )
 
 // Usage is token, cost and time accounting, for one turn or a whole
@@ -110,6 +112,11 @@ const (
 	// maxEventLine bounds one events.jsonl line so a corrupt write cannot make
 	// the reader allocate unbounded memory.
 	maxEventLine = 8 << 20
+	// sessionTailCapacity bounds how many recent events stay cached in memory
+	// per open session so live SSE delivery never re-scans events.jsonl.
+	sessionTailCapacity = 2048
+	// maxOpenSessions bounds how many idle sessions stay pinned in Store.open.
+	maxOpenSessions = 128
 )
 
 var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -127,9 +134,17 @@ type Store struct {
 	// OnAppend is called after a session stores an event. The server uses it to
 	// wake open SSE streams.
 	OnAppend func(sessionID string)
+	// CanEvict reports whether an open session is idle (not running and has no
+	// active SSE subscribers) and may be evicted from Store.open.
+	CanEvict func(sessionID string) bool
 
-	mu   sync.Mutex
-	open map[string]*Session
+	mu              sync.Mutex
+	open            map[string]*Session
+	metaIndex       map[string]Meta
+	shareIndex      map[string]string // shareToken -> sessionID
+	indexLoaded     bool
+	indexDirModTime time.Time
+	gen             uint64
 }
 
 // NewStore creates root when needed and returns a store over it.
@@ -137,48 +152,281 @@ func NewStore(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create web session directory: %w", err)
 	}
-	return &Store{root: root, open: make(map[string]*Session)}, nil
+	return &Store{
+		root:       root,
+		open:       make(map[string]*Session),
+		metaIndex:  make(map[string]Meta),
+		shareIndex: make(map[string]string),
+	}, nil
 }
 
 // DefaultRoot is where gbx serve keeps conversations.
 func DefaultRoot() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(home, ".gbx", "serve", "sessions"), nil
+	return paths.ServeSessionsDir()
 }
 
 // Root is the directory holding every conversation.
 func (s *Store) Root() string { return s.root }
 
-// List returns every conversation, most recently updated first.
-func (s *Store) List() ([]Meta, error) {
-	entries, err := os.ReadDir(s.root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read web sessions: %w", err)
+// Close releases cached append file handles for all open sessions.
+func (s *Store) Close() {
+	if s == nil {
+		return
 	}
-	metas := make([]Meta, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() || !sessionIDPattern.MatchString(entry.Name()) {
-			continue
+	s.mu.Lock()
+	sessions := make([]*Session, 0, len(s.open))
+	for _, session := range s.open {
+		sessions = append(sessions, session)
+	}
+	s.mu.Unlock()
+	for _, session := range sessions {
+		session.closeAppendFile()
+	}
+}
+
+func (s *Store) ensureIndex() error {
+	for attempt := 0; attempt < 8; attempt++ {
+		info, statErr := os.Stat(s.root)
+		if statErr != nil {
+			if os.IsNotExist(statErr) {
+				s.mu.Lock()
+				s.metaIndex = make(map[string]Meta)
+				s.shareIndex = make(map[string]string)
+				s.indexLoaded = true
+				s.indexDirModTime = time.Time{}
+				s.mu.Unlock()
+				return nil
+			}
+			return fmt.Errorf("read web sessions: %w", statErr)
 		}
-		meta, err := readMeta(filepath.Join(s.root, entry.Name()))
+		dirModTime := info.ModTime()
+
+		s.mu.Lock()
+		if s.indexLoaded && dirModTime.Equal(s.indexDirModTime) {
+			s.mu.Unlock()
+			return nil
+		}
+		startGen := s.gen
+		openSnapshot := make(map[string]*Session, len(s.open))
+		for id, sess := range s.open {
+			openSnapshot[id] = sess
+		}
+		s.mu.Unlock()
+
+		entries, err := os.ReadDir(s.root)
 		if err != nil {
-			// A half-written directory must not hide the other conversations.
-			continue
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("read web sessions: %w", err)
 		}
-		if meta.Turns == 0 {
-			// Opening counts the turns of an older conversation (see openSession).
-			if session, err := s.Open(meta.ID); err == nil {
-				meta = session.Meta()
+		metas := make(map[string]Meta, len(entries))
+		shares := make(map[string]string)
+		for _, entry := range entries {
+			if !entry.IsDir() || !sessionIDPattern.MatchString(entry.Name()) {
+				continue
+			}
+			id := entry.Name()
+			if sess, ok := openSnapshot[id]; ok {
+				meta := sess.Meta()
+				metas[id] = meta
+				if meta.ShareToken != "" {
+					shares[meta.ShareToken] = id
+				}
+				continue
+			}
+			dir := filepath.Join(s.root, id)
+			meta, err := readMeta(dir)
+			if err != nil {
+				// A half-written directory must not hide the other conversations.
+				continue
+			}
+			if meta.Turns == 0 {
+				// Count turns of a legacy conversation only when events.jsonl has data,
+				// without pinning empty conversations in s.open.
+				if evInfo, err := os.Stat(filepath.Join(dir, "events.jsonl")); err == nil && evInfo.Size() > 0 {
+					if events, err := readEvents(dir, 0); err == nil {
+						if turns := countTurns(events); turns > 0 {
+							meta.Turns = turns
+							_ = writeMeta(dir, meta)
+						}
+					}
+				}
+			}
+			metas[id] = meta
+			if meta.ShareToken != "" {
+				shares[meta.ShareToken] = id
 			}
 		}
+
+		s.mu.Lock()
+		if s.gen != startGen {
+			// A concurrent Create/Delete invalidated this scan; retry so a
+			// deleted conversation is never resurrected into metaIndex.
+			s.mu.Unlock()
+			continue
+		}
+		// Merge any live open sessions updated concurrently while scanning.
+		for id, sess := range s.open {
+			meta := sess.Meta()
+			if old, exists := metas[id]; exists && old.ShareToken != "" && old.ShareToken != meta.ShareToken {
+				delete(shares, old.ShareToken)
+			}
+			metas[id] = meta
+			if meta.ShareToken != "" {
+				shares[meta.ShareToken] = id
+			}
+		}
+		s.metaIndex = metas
+		s.shareIndex = shares
+		s.indexLoaded = true
+		s.indexDirModTime = dirModTime
+		s.mu.Unlock()
+		return nil
+	}
+	return nil
+}
+
+func (s *Store) recordMeta(session *Session, meta Meta) {
+	if s == nil || meta.ID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if session != nil {
+		session.mu.Lock()
+		deleted := session.deleted
+		session.mu.Unlock()
+		if deleted {
+			return
+		}
+		if cur, ok := s.open[meta.ID]; ok && cur != session {
+			return
+		}
+	}
+	if s.indexLoaded {
+		if _, exists := s.metaIndex[meta.ID]; !exists && s.open[meta.ID] != session {
+			return
+		}
+	}
+	if s.metaIndex == nil {
+		s.metaIndex = make(map[string]Meta)
+	}
+	if s.shareIndex == nil {
+		s.shareIndex = make(map[string]string)
+	}
+	if prev, ok := s.metaIndex[meta.ID]; ok && prev.ShareToken != "" && prev.ShareToken != meta.ShareToken {
+		delete(s.shareIndex, prev.ShareToken)
+	}
+	s.metaIndex[meta.ID] = meta
+	if meta.ShareToken != "" {
+		s.shareIndex[meta.ShareToken] = meta.ID
+	}
+}
+
+func (s *Store) refreshDirModTimeLocked() {
+	if info, err := os.Stat(s.root); err == nil {
+		s.indexDirModTime = info.ModTime()
+	}
+}
+
+func (s *Store) maybeEvictIdle(keepID string) {
+	s.mu.Lock()
+	if len(s.open) <= maxOpenSessions {
+		s.mu.Unlock()
+		return
+	}
+	type candidate struct {
+		id         string
+		sess       *Session
+		lastAccess time.Time
+	}
+	cands := make([]candidate, 0, len(s.open))
+	for id, sess := range s.open {
+		if id == keepID {
+			continue
+		}
+		sess.mu.Lock()
+		la := sess.lastAccess
+		busy := sess.deleting
+		sess.mu.Unlock()
+		if !busy {
+			cands = append(cands, candidate{id: id, sess: sess, lastAccess: la})
+		}
+	}
+	s.mu.Unlock()
+
+	sort.Slice(cands, func(i, j int) bool {
+		return cands[i].lastAccess.Before(cands[j].lastAccess)
+	})
+	canEvict := s.CanEvict
+	var eligible []candidate
+	for _, c := range cands {
+		if canEvict == nil || canEvict(c.id) {
+			eligible = append(eligible, c)
+		}
+	}
+
+	var evicted []*Session
+	s.mu.Lock()
+	for _, c := range eligible {
+		if len(s.open) <= maxOpenSessions {
+			break
+		}
+		if s.open[c.id] != c.sess {
+			continue
+		}
+		delete(s.open, c.id)
+		evicted = append(evicted, c.sess)
+	}
+	s.mu.Unlock()
+	for _, sess := range evicted {
+		sess.closeAppendFile()
+	}
+}
+
+// Count returns the number of conversations without sorting or copying all metadata.
+func (s *Store) Count() int {
+	if err := s.ensureIndex(); err != nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.metaIndex)
+}
+
+// FindByShareToken resolves a share token to its conversation id in O(1).
+func (s *Store) FindByShareToken(token string) (string, bool) {
+	if token == "" {
+		return "", false
+	}
+	if err := s.ensureIndex(); err != nil {
+		return "", false
+	}
+	s.mu.Lock()
+	id, ok := s.shareIndex[token]
+	var stored string
+	if ok {
+		stored = s.metaIndex[id].ShareToken
+	}
+	s.mu.Unlock()
+	if !ok || stored == "" || subtle.ConstantTimeCompare([]byte(stored), []byte(token)) != 1 {
+		return "", false
+	}
+	return id, true
+}
+
+// List returns every conversation, most recently updated first.
+func (s *Store) List() ([]Meta, error) {
+	if err := s.ensureIndex(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	metas := make([]Meta, 0, len(s.metaIndex))
+	for _, meta := range s.metaIndex {
 		metas = append(metas, meta)
 	}
+	s.mu.Unlock()
 	sort.Slice(metas, func(i, j int) bool {
 		if metas[i].UpdatedAt.Equal(metas[j].UpdatedAt) {
 			return metas[i].ID < metas[j].ID
@@ -215,8 +463,20 @@ func (s *Store) Create(meta Meta) (*Session, error) {
 		return nil, err
 	}
 	s.mu.Lock()
+	s.gen++
 	s.open[meta.ID] = session
+	if s.indexLoaded {
+		if prev, ok := s.metaIndex[meta.ID]; ok && prev.ShareToken != "" && prev.ShareToken != meta.ShareToken {
+			delete(s.shareIndex, prev.ShareToken)
+		}
+		s.metaIndex[meta.ID] = session.meta
+		if session.meta.ShareToken != "" {
+			s.shareIndex[session.meta.ShareToken] = meta.ID
+		}
+		s.refreshDirModTimeLocked()
+	}
 	s.mu.Unlock()
+	s.maybeEvictIdle(meta.ID)
 	return session, nil
 }
 
@@ -227,9 +487,13 @@ func (s *Store) Open(id string) (*Session, error) {
 	}
 	s.mu.Lock()
 	if session, ok := s.open[id]; ok {
+		session.mu.Lock()
+		session.lastAccess = time.Now()
+		session.mu.Unlock()
 		s.mu.Unlock()
 		return session, nil
 	}
+	startGen := s.gen
 	s.mu.Unlock()
 
 	dir := filepath.Join(s.root, id)
@@ -245,19 +509,45 @@ func (s *Store) Open(id string) (*Session, error) {
 		return nil, err
 	}
 	s.mu.Lock()
+	if existing, ok := s.open[id]; ok {
+		existing.mu.Lock()
+		existing.lastAccess = time.Now()
+		existing.mu.Unlock()
+		s.mu.Unlock()
+		return existing, nil
+	}
+	if s.gen != startGen {
+		if _, statErr := os.Stat(filepath.Join(dir, "meta.json")); statErr != nil {
+			s.mu.Unlock()
+			return nil, ErrNotFound
+		}
+	}
 	s.open[id] = session
+	if s.indexLoaded {
+		s.metaIndex[id] = session.meta
+		if session.meta.ShareToken != "" {
+			s.shareIndex[session.meta.ShareToken] = id
+		}
+	}
 	s.mu.Unlock()
+	s.maybeEvictIdle(id)
 	return session, nil
 }
 
 func (s *Store) openSession(dir string, meta Meta) (*Session, error) {
-	session := &Session{dir: dir, meta: meta, store: s}
+	session := &Session{id: meta.ID, dir: dir, meta: meta, store: s, tailComplete: true, lastAccess: time.Now()}
 	events, err := readEvents(dir, 0)
 	if err != nil {
 		return nil, err
 	}
 	if len(events) > 0 {
 		session.seq = events[len(events)-1].Seq
+		if len(events) > sessionTailCapacity {
+			session.tail = append([]Event(nil), events[len(events)-sessionTailCapacity:]...)
+			session.tailComplete = false
+		} else {
+			session.tail = events
+		}
 	}
 	// A conversation from before the turn counter is counted once, from the
 	// history this read already loaded, and keeps the count.
@@ -292,27 +582,88 @@ func (s *Store) Delete(id string) error {
 		}
 		return err
 	}
+	s.mu.Lock()
+	session := s.open[id]
+	delete(s.open, id)
+	if prev, ok := s.metaIndex[id]; ok {
+		if prev.ShareToken != "" {
+			delete(s.shareIndex, prev.ShareToken)
+		}
+		delete(s.metaIndex, id)
+	}
+	s.gen++
+	if session != nil {
+		session.mu.Lock()
+		session.deleted = true
+		if session.appendFile != nil {
+			_ = session.appendFile.Close()
+			session.appendFile = nil
+		}
+		session.mu.Unlock()
+	}
+	s.mu.Unlock()
+
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}
 	s.mu.Lock()
-	delete(s.open, id)
+	if s.indexLoaded {
+		s.refreshDirModTimeLocked()
+	}
 	s.mu.Unlock()
 	return nil
 }
 
 // Session is one open conversation: its metadata and append-only history.
 type Session struct {
+	id    string
 	dir   string
 	store *Store
 
-	mu   sync.Mutex
-	meta Meta
-	seq  int64
+	mu           sync.Mutex
+	meta         Meta
+	seq          int64
+	tail         []Event
+	tailComplete bool
+	appendFile   *os.File
+	lastAccess   time.Time
+	deleting     bool
+	deleted      bool
+}
+
+func (s *Session) beginDelete() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deleted {
+		return ErrNotFound
+	}
+	if s.deleting {
+		return ErrBusy
+	}
+	s.deleting = true
+	return nil
+}
+
+func (s *Session) cancelDelete() {
+	s.mu.Lock()
+	s.deleting = false
+	s.mu.Unlock()
+}
+
+func (s *Session) closeAppendFile() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.appendFile != nil {
+		_ = s.appendFile.Close()
+		s.appendFile = nil
+	}
+	s.mu.Unlock()
 }
 
 // ID is the conversation id.
-func (s *Session) ID() string { return s.meta.ID }
+func (s *Session) ID() string { return s.id }
 
 // Meta returns a copy of the conversation metadata.
 func (s *Session) Meta() Meta {
@@ -334,15 +685,31 @@ func (s *Session) RelabelMeta(fn func(*Meta)) (Meta, error) {
 
 func (s *Session) updateMeta(fn func(*Meta), touch bool) (Meta, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	fn(&s.meta)
-	if touch {
-		s.meta.UpdatedAt = time.Now().UTC()
+	if s.deleted {
+		s.mu.Unlock()
+		return Meta{}, ErrNotFound
 	}
-	if err := writeMeta(s.dir, s.meta); err != nil {
+	if s.deleting {
+		s.mu.Unlock()
+		return Meta{}, ErrBusy
+	}
+	next := s.meta
+	fn(&next)
+	if touch {
+		next.UpdatedAt = time.Now().UTC()
+	}
+	if err := writeMeta(s.dir, next); err != nil {
+		s.mu.Unlock()
 		return Meta{}, err
 	}
-	return s.meta, nil
+	s.meta = next
+	s.lastAccess = time.Now()
+	updated := s.meta
+	s.mu.Unlock()
+	if s.store != nil {
+		s.store.recordMeta(s, updated)
+	}
+	return updated, nil
 }
 
 // Append stores one event and returns it with its assigned seq.
@@ -375,23 +742,46 @@ func (s *Session) appendRaw(kind string, payload json.RawMessage, ts time.Time) 
 func (s *Session) write(kind string, payload json.RawMessage, ts time.Time) (Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.deleted {
+		return Event{}, ErrNotFound
+	}
+	if s.deleting {
+		return Event{}, ErrBusy
+	}
 	if ts.IsZero() {
 		ts = time.Now()
 	}
-	s.seq++
-	event := Event{Seq: s.seq, Type: kind, Payload: payload, TS: ts.UnixMilli()}
+	nextSeq := s.seq + 1
+	event := Event{Seq: nextSeq, Type: kind, Payload: payload, TS: ts.UnixMilli()}
 	line, err := json.Marshal(event)
 	if err != nil {
 		return Event{}, fmt.Errorf("encode %s event: %w", kind, err)
 	}
-	path := filepath.Join(s.dir, "events.jsonl")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return Event{}, fmt.Errorf("open session history: %w", err)
+	if s.appendFile == nil {
+		path := filepath.Join(s.dir, "events.jsonl")
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return Event{}, fmt.Errorf("open session history: %w", err)
+		}
+		s.appendFile = file
 	}
-	defer file.Close()
-	if _, err := file.Write(append(line, '\n')); err != nil {
+	if _, err := s.appendFile.Write(append(line, '\n')); err != nil {
+		_ = s.appendFile.Close()
+		s.appendFile = nil
 		return Event{}, fmt.Errorf("append session history: %w", err)
+	}
+	s.seq = nextSeq
+	s.lastAccess = time.Now()
+	s.tail = append(s.tail, event)
+	if len(s.tail) > sessionTailCapacity {
+		s.tailComplete = false
+		if cap(s.tail) > sessionTailCapacity*2 {
+			compacted := make([]Event, sessionTailCapacity)
+			copy(compacted, s.tail[len(s.tail)-sessionTailCapacity:])
+			s.tail = compacted
+		} else {
+			s.tail = s.tail[len(s.tail)-sessionTailCapacity:]
+		}
 	}
 	// Metadata is written on turn boundaries (see Touch), not per token: a
 	// streamed answer appends thousands of events.
@@ -400,6 +790,23 @@ func (s *Session) write(kind string, payload json.RawMessage, ts time.Time) (Eve
 
 // Events returns every stored event with Seq greater than since.
 func (s *Session) Events(since int64) ([]Event, error) {
+	s.mu.Lock()
+	s.lastAccess = time.Now()
+	if since >= s.seq {
+		s.mu.Unlock()
+		return nil, nil
+	}
+	if len(s.tail) > 0 && (s.tailComplete || since >= s.tail[0].Seq-1) {
+		idx := sort.Search(len(s.tail), func(i int) bool { return s.tail[i].Seq > since })
+		var out []Event
+		if idx < len(s.tail) {
+			out = make([]Event, len(s.tail)-idx)
+			copy(out, s.tail[idx:])
+		}
+		s.mu.Unlock()
+		return out, nil
+	}
+	s.mu.Unlock()
 	return readEvents(s.dir, since)
 }
 
@@ -448,9 +855,28 @@ func (s *Session) LastSeq() int64 {
 // once per turn rather than per event.
 func (s *Session) Touch() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.meta.UpdatedAt = time.Now().UTC()
-	return writeMeta(s.dir, s.meta)
+	if s.deleted {
+		s.mu.Unlock()
+		return ErrNotFound
+	}
+	if s.deleting {
+		s.mu.Unlock()
+		return ErrBusy
+	}
+	next := s.meta
+	next.UpdatedAt = time.Now().UTC()
+	if err := writeMeta(s.dir, next); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.meta = next
+	s.lastAccess = time.Now()
+	updated := s.meta
+	s.mu.Unlock()
+	if s.store != nil {
+		s.store.recordMeta(s, updated)
+	}
+	return nil
 }
 
 func readMeta(dir string) (Meta, error) {

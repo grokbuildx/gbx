@@ -257,12 +257,16 @@ type AdvancedConfigModel struct {
 
 	// app is bound by the framework before the first render (AppBinder). The
 	// async channels below deliver their results onto the main loop through it.
-	app        *tui.App
-	fetchDone  chan modelFetchDoneMsg
-	verifyDone chan keyVerifyDoneMsg
-	mdDone     chan modelsDevFetchDoneMsg
-	availDone  chan modelAvailabilityDoneMsg
-	oauthDone  chan oauthRuntimeDoneMsg
+	app          *tui.App
+	ctx          context.Context
+	cancel       context.CancelFunc
+	fetchCancel  context.CancelFunc
+	verifyCancel context.CancelFunc
+	fetchDone    chan modelFetchDoneMsg
+	verifyDone   chan keyVerifyDoneMsg
+	mdDone       chan modelsDevFetchDoneMsg
+	availDone    chan modelAvailabilityDoneMsg
+	oauthDone    chan oauthRuntimeDoneMsg
 
 	// The OAuth runtime is started in the background so the panel opens at once.
 	// oauthStartDone closes when that goroutine finishes, which is also the
@@ -479,25 +483,24 @@ func scrollBodyBudget(height int) int {
 }
 
 // keepCursorVisible clamps scrollOffset so the cursor row stays inside the
-// visible region. It runs after cursor movement in Update; View never mutates
-// scroll state.
-//
-// scrollWindow slices the body at the *element* index; the previous
-// rowLineHeight estimate counted only focusable rows and ignored structural
-// lines (header, section titles, blank separators, footer), so the cursor
-// drifted off-screen until it happened to hit the tail anchor. Locating the
-// cursor by its rendered label keeps the two in agreement.
+// visible region.
 func (m *AdvancedConfigModel) keepCursorVisible() {
 	if m.height <= 0 {
 		return
 	}
-	rows := m.bodyRows()
+	m.keepCursorVisibleLines(m.bodyLines())
+}
+
+func (m *AdvancedConfigModel) keepCursorVisibleLines(lines []bodyLine) {
+	if m.height <= 0 {
+		return
+	}
 	visibleHeight := scrollBodyBudget(m.height)
-	if len(rows) <= visibleHeight {
+	if len(lines) <= visibleHeight {
 		m.scrollOffset = 0
 		return
 	}
-	cursorLine := m.cursorBodyLine(rows)
+	cursorLine := m.cursorBodyLineMeta(lines)
 
 	if cursorLine < m.scrollOffset {
 		m.scrollOffset = cursorLine
@@ -505,7 +508,7 @@ func (m *AdvancedConfigModel) keepCursorVisible() {
 	if cursorLine+1 > m.scrollOffset+visibleHeight {
 		m.scrollOffset = cursorLine + 1 - visibleHeight
 	}
-	maxOffset := len(rows) - visibleHeight
+	maxOffset := len(lines) - visibleHeight
 	if m.scrollOffset > maxOffset {
 		m.scrollOffset = maxOffset
 	}
@@ -514,59 +517,28 @@ func (m *AdvancedConfigModel) keepCursorVisible() {
 	}
 }
 
-// cursorBodyLine returns the 0-based body-line index of the cursor row, located
-// by matching the row's rendered label prefix in the sprinted body text. Every
-// body element renders as exactly one line (a no-wrap flex row), so this text
-// line index equals the element index scrollWindow slices at.
-func (m *AdvancedConfigModel) cursorBodyLine(rows []*tui.Element) int {
+// cursorBodyLine returns the 0-based body-line index of the cursor row.
+func (m *AdvancedConfigModel) cursorBodyLine(_ []*tui.Element) int {
+	return m.cursorBodyLineMeta(m.bodyLines())
+}
+
+// cursorBodyLineMeta returns the 0-based body-line index of the cursor row from
+// structured bodyLine metadata without re-rendering or stripping ANSI codes.
+func (m *AdvancedConfigModel) cursorBodyLineMeta(lines []bodyLine) int {
 	vrows := m.visibleRows()
 	if m.cursor < 0 || m.cursor >= len(vrows) {
 		return 0
 	}
 	kind := vrows[m.cursor].kind
-	// Cancel shares the Save & Activate line; match Save's labels so the row
-	// locates instead of resolving to 0 (which would snap the scroll to the top).
-	if kind == rowCancel && !m.splitActions() {
-		kind = rowSave
-	}
-	prefixes := rowClickLabelPrefixes(kind)
-	if len(prefixes) == 0 {
-		return 0
-	}
-	container := tui.New(tui.WithDisplay(tui.DisplayFlex), tui.WithDirection(tui.Column), tui.WithWrap(false))
-	for _, r := range rows {
-		container.AddChild(r)
-	}
-	width := m.width
-	if width <= 0 {
-		width = 80
-	}
-	fallback := -1
-	for i, line := range strings.Split(tui.Sprint(container, tui.WithPrintWidth(width)), "\n") {
-		// Sprint emits ANSI SGR codes ahead of every styled span; strip them
-		// before the label match, exactly like the mouse hit-test does.
-		trimmed := strings.TrimLeft(stripANSI(line), " >│")
-		// The Active row leads with a "[x] "/"[ ] " checkbox; skip it so the
-		// label matches.
-		if strings.HasPrefix(trimmed, "[") {
-			if idx := strings.Index(trimmed, "] "); idx >= 0 {
-				trimmed = trimmed[idx+2:]
-			}
+	for i, l := range lines {
+		if !l.hasKind {
+			continue
 		}
-		for _, p := range prefixes {
-			if strings.HasPrefix(trimmed, p) {
-				// OAuth's read-only Connection summary and editable Runtime
-				// section both contain Fast. Anchor to the selected row first.
-				if strings.Contains(stripANSI(line), "> ") {
-					return i
-				}
-				if fallback < 0 {
-					fallback = i
-				}
-			}
+		if l.kind == kind || (l.hasSecondary && l.secondaryKind == kind) {
+			return i
 		}
 	}
-	return max(fallback, 0)
+	return 0
 }
 
 // canSave reports whether the current draft may be persisted. A new provider, or
@@ -698,6 +670,7 @@ func NewAdvancedConfigModel(p *provider.Provider) *AdvancedConfigModel {
 		p:                    modelsDevP,
 		modelContextWindows:  make(map[string]int),
 		modelDisplayMetadata: make(map[string]protocol.ModelInfo),
+		compactPreset:        compactPresetFromProvider(*modelsDevP),
 	}
 
 	source := sourceCustom
@@ -707,6 +680,7 @@ func NewAdvancedConfigModel(p *provider.Provider) *AdvancedConfigModel {
 		active = modelsDevDraft
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	m := &AdvancedConfigModel{
 		source:            source,
 		customDraft:       customDraft,
@@ -720,6 +694,8 @@ func NewAdvancedConfigModel(p *provider.Provider) *AdvancedConfigModel {
 		defaultModelText:  tui.NewState(""),
 		IsActiveChosen:    true,
 		modelAvailability: make(map[string]modelAvailability),
+		ctx:               ctx,
+		cancel:            cancel,
 		fetchDone:         make(chan modelFetchDoneMsg, 8),
 		verifyDone:        make(chan keyVerifyDoneMsg, 8),
 		mdDone:            make(chan modelsDevFetchDoneMsg, 2),
@@ -898,7 +874,6 @@ func (m *AdvancedConfigModel) syncTerminalSize(app *tui.App) {
 		return
 	}
 	w, h := app.Size()
-	changed := w != m.width || h != m.height
 	if w > 0 {
 		m.width = w
 	}
@@ -906,10 +881,6 @@ func (m *AdvancedConfigModel) syncTerminalSize(app *tui.App) {
 		m.height = h
 	}
 	m.updateInputWidths()
-	if changed {
-		m.keepCursorVisible()
-		m.keepPickersVisible()
-	}
 }
 
 func (m *AdvancedConfigModel) panelWidth() int {
@@ -1133,8 +1104,56 @@ func (m *AdvancedConfigModel) markDirty() {
 	}
 }
 
+func (m *AdvancedConfigModel) lifecycleCtx() context.Context {
+	if m.ctx != nil {
+		return m.ctx
+	}
+	return context.Background()
+}
+
+func (m *AdvancedConfigModel) nextFetchCtx() context.Context {
+	m.cancelFetch()
+	ctx, cancel := context.WithCancel(m.lifecycleCtx())
+	m.fetchCancel = cancel
+	return ctx
+}
+
+func (m *AdvancedConfigModel) cancelFetch() {
+	if m.fetchCancel != nil {
+		m.fetchCancel()
+		m.fetchCancel = nil
+	}
+}
+
+func (m *AdvancedConfigModel) nextVerifyCtx() context.Context {
+	m.cancelVerify()
+	ctx, cancel := context.WithCancel(m.lifecycleCtx())
+	m.verifyCancel = cancel
+	return ctx
+}
+
+func (m *AdvancedConfigModel) cancelVerify() {
+	if m.verifyCancel != nil {
+		m.verifyCancel()
+		m.verifyCancel = nil
+	}
+}
+
+func (m *AdvancedConfigModel) cancelAsync() {
+	m.cancelFetch()
+	m.cancelVerify()
+	if m.modelTestCancel != nil {
+		m.modelTestCancel()
+		m.modelTestCancel = nil
+	}
+	if m.cancel != nil {
+		m.cancel()
+	}
+}
+
 func (m *AdvancedConfigModel) quit() {
 	m.quitRequested = true
+	m.cancelAsync()
 	if m.app != nil {
 		m.app.Stop()
 	}

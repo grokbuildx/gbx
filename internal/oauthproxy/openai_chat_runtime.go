@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -40,14 +39,15 @@ func (*chatStaticAuthorizer) isOAuth() bool                                     
 // usage accounting all live here, independent of external runtime upgrades;
 // these details define how openai(chat) behaves.
 type chatCompletionsService struct {
-	apiKey       string
-	endpoint     string
-	authorizer   chatAuthorizer
-	models       []string
-	modelDetails map[string]protocol.ModelInfo
-	modelRoute   map[string]string
-	client       *http.Client
-	usage        *UsageTracker
+	apiKey        string
+	endpoint      string
+	authorizer    chatAuthorizer
+	models        []string
+	modelDetails  map[string]protocol.ModelInfo
+	modelRoute    map[string]string
+	modelEndpoint map[string]string
+	client        *http.Client
+	usage         *UsageTracker
 	// fastRetry controls GBX's hidden 429/5xx replay loop. It defaults to true
 	// for ordinary OpenAI-compatible gateways. Subscription brokers that charge
 	// per invocation can turn it off so an ambiguous 5xx is never submitted a
@@ -68,6 +68,9 @@ type chatCompletionsService struct {
 	// both the body and the routed model, which is required when a backend routes
 	// multimodal requests through a dedicated model/header pair.
 	normalizeRequest func(*chatCompletionsConvertedRequest) error
+	// roundTrip optionally replaces the default HTTP POST + 401 refresh inside
+	// one fast-retry attempt (used by single-hop WorkBuddy).
+	roundTrip func(context.Context, *chatCompletionsConvertedRequest) (*http.Response, error)
 }
 
 type chatCompletionsUpstreamError struct {
@@ -136,45 +139,17 @@ func startOpenAIChatRuntimeService(parent context.Context, endpoint string, rout
 	if err != nil {
 		return nil, err
 	}
-	listener, err := net.Listen("tcp", runtimeLoopbackHost+":0")
-	if err != nil {
-		return nil, fmt.Errorf("listen for OpenAI Chat runtime: %w", err)
-	}
 	usage := NewUsageTracker()
 	service := newChatCompletionsServiceWithAuthorizer(apiKey, endpoint, routes, authorizer, usage)
 	if configure != nil {
 		configure(service)
 	}
-	runCtx, cancel := context.WithCancel(parent)
-	server := &http.Server{
-		Handler: service.handler(), ReadHeaderTimeout: 15 * time.Second,
-		BaseContext: func(net.Listener) context.Context { return runCtx },
+	runtime, err := startLoopbackServer(parent, "OpenAI Chat runtime", service.handlerForContext(parent), apiKey, usage)
+	if err != nil {
+		return nil, err
 	}
-	started := make(chan struct{})
-	close(started)
-	runtime := &Runtime{
-		endpoint: "http://" + listener.Addr().String() + "/v1", apiKey: apiKey,
-		httpServer: server, cancel: cancel, done: make(chan struct{}), runErr: make(chan error, 1),
-		started: started, models: append([]string(nil), service.models...), usage: usage,
-	}
-	runtime.cleanup = append(runtime.cleanup, closeIdleClients(service.client, authorizerHTTPClient(authorizer)))
-	go func() {
-		err := server.Serve(listener)
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
-		runtime.runErr <- err
-		close(runtime.done)
-	}()
-	go func() {
-		select {
-		case <-runCtx.Done():
-			ctx, stop := context.WithTimeout(context.Background(), runtimeStopTimeout)
-			_ = server.Shutdown(ctx)
-			stop()
-		case <-runtime.done:
-		}
-	}()
+	runtime.models = append([]string(nil), service.models...)
+	runtime.cleanup = append(runtime.cleanup, closeIdleClients(service.client), closeIdleResource(authorizer))
 	return runtime, nil
 }
 
@@ -202,12 +177,51 @@ func newChatCompletionsServiceWithAuthorizer(apiKey, endpoint string, routes []r
 	return &chatCompletionsService{
 		apiKey: apiKey, endpoint: endpoint, authorizer: authorizer,
 		models: models, modelRoute: modelRoute, usage: usage, fastRetry: true,
-		client: &http.Client{Transport: newUpstreamTransport(90 * time.Second)},
+		client: newCredentialHTTPClient(90 * time.Second),
 	}
 }
 
+func (s *chatCompletionsService) setModelEndpoints(routes []runtimeModelRoute, endpoints map[string]string) {
+	if len(endpoints) == 0 {
+		return
+	}
+	resolved := make(map[string]string)
+	for _, route := range routes {
+		for _, id := range []string{route.Alias, route.Name, stripContextModelSuffix(route.Name)} {
+			if base := strings.TrimSpace(endpoints[strings.ToLower(id)]); base != "" {
+				resolved[strings.ToLower(route.Alias)] = base
+				resolved[strings.ToLower(route.Name)] = base
+				break
+			}
+		}
+	}
+	if len(resolved) > 0 {
+		s.modelEndpoint = resolved
+	}
+}
+
+func (s *chatCompletionsService) chatURL(converted *chatCompletionsConvertedRequest) string {
+	base := ""
+	if converted != nil && len(s.modelEndpoint) > 0 {
+		for _, id := range []string{converted.clientModel, converted.model, converted.upstreamModel, stripContextModelSuffix(converted.model)} {
+			if candidate := s.modelEndpoint[strings.ToLower(strings.TrimSpace(id))]; candidate != "" {
+				base = candidate
+				break
+			}
+		}
+	}
+	if base == "" {
+		base = s.endpoint
+	}
+	return protocol.NormalizeOpenAIChatCompletionsURL(base)
+}
+
 func (s *chatCompletionsService) handler() http.Handler {
-	return loopbackFrontMux(s.apiKey, s.handleModels, s.handleResponses)
+	return s.handlerForContext(context.Background())
+}
+
+func (s *chatCompletionsService) handlerForContext(ctx context.Context) http.Handler {
+	return loopbackFrontMuxForContext(ctx, s.apiKey, s.handleModels, s.handleResponses)
 }
 
 func (s *chatCompletionsService) authorized(request *http.Request) bool {
@@ -320,20 +334,29 @@ func (s *chatCompletionsService) recordUsage(converted *chatCompletionsConverted
 // status/body/Retry-After. The 401 refresh below is part of one attempt.
 func (s *chatCompletionsService) call(ctx context.Context, converted *chatCompletionsConvertedRequest) (*http.Response, error) {
 	attempt := func() (*http.Response, error) {
-		response, err := s.callOnce(ctx, converted)
-		if err != nil {
-			return nil, err
-		}
-		if response.StatusCode == http.StatusUnauthorized && s.authorizer != nil && s.authorizer.isOAuth() {
-			// OAuth subscription: a stale token 401s once, then we force-refresh and
-			// retry the request exactly once before surfacing the failure.
-			_ = response.Body.Close()
-			if _, authErr := s.authorizer.authorize(rejectedResponseContext(ctx, response), true); authErr != nil {
-				return nil, fmt.Errorf("refresh OpenAI Chat OAuth token: %w", authErr)
+		var response *http.Response
+		var err error
+		if s.roundTrip != nil {
+			response, err = s.roundTrip(ctx, converted)
+			if err != nil {
+				return nil, err
 			}
+		} else {
 			response, err = s.callOnce(ctx, converted)
 			if err != nil {
 				return nil, err
+			}
+			if response.StatusCode == http.StatusUnauthorized && s.authorizer != nil && s.authorizer.isOAuth() {
+				// OAuth subscription: a stale token 401s once, then we force-refresh and
+				// retry the request exactly once before surfacing the failure.
+				_ = response.Body.Close()
+				if _, authErr := s.authorizer.authorize(rejectedResponseContext(ctx, response), true); authErr != nil {
+					return nil, fmt.Errorf("refresh OpenAI Chat OAuth token: %w", authErr)
+				}
+				response, err = s.callOnce(ctx, converted)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -348,7 +371,7 @@ func (s *chatCompletionsService) call(ctx context.Context, converted *chatComple
 }
 
 func (s *chatCompletionsService) callOnce(ctx context.Context, converted *chatCompletionsConvertedRequest) (*http.Response, error) {
-	target := protocol.NormalizeOpenAIChatCompletionsURL(s.endpoint)
+	target := s.chatURL(converted)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(converted.body))
 	if err != nil {
 		return nil, err
@@ -370,7 +393,7 @@ func (s *chatCompletionsService) callOnce(ctx context.Context, converted *chatCo
 		"method", http.MethodPost, "endpoint", SafeLogEndpoint(target),
 		"body_bytes", len(converted.body), "stream", converted.stream, "model", converted.model)
 	started := time.Now()
-	response, err := s.client.Do(request)
+	response, err := doCredentialRequest(s.client, request)
 	if err != nil {
 		return nil, fmt.Errorf("call OpenAI Chat Completions upstream: %w", err)
 	}

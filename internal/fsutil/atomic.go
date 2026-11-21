@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // WriteFileAtomic replaces path with data so readers see either the old or
@@ -37,7 +38,17 @@ func WriteFileAtomic(path string, data []byte, mode os.FileMode) (err error) {
 	if err = tmp.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", filepath.Base(path), err)
 	}
-	if err = os.Rename(tmpPath, path); err != nil {
+	deadline := time.Now().Add(readRetryWindow)
+	delay := 5 * time.Millisecond
+	for {
+		err = os.Rename(tmpPath, path)
+		if err == nil || !transientReadError(err) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(delay)
+		delay = min(delay*2, 100*time.Millisecond)
+	}
+	if err != nil {
 		return fmt.Errorf("replace %s: %w", filepath.Base(path), err)
 	}
 	// Rename keeps the temporary file's mode, but an umask or a pre-existing

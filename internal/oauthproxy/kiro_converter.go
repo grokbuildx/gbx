@@ -358,18 +358,31 @@ func convertKiroTools(input []conversationTool, nameMap map[string]string) ([]an
 			description = tool.Name
 		}
 		if len(description) > 10_000 {
-			description = description[:10_000]
+			description = truncateKiroUTF8(description, 10_000)
 		}
 		var schema any
 		if len(tool.Parameters) == 0 || json.Unmarshal(tool.Parameters, &schema) != nil {
 			schema = map[string]any{}
 		}
-		normalized := normalizeKiroSchema(schema, true)
+		normalized := normalizeKiroSchemaDepth(schema, true, 0)
 		tools = append(tools, kiroToolDefinition(name, description, normalized))
 		declared[name] = true
 	}
 	return tools, declared, nil
 }
+
+func truncateKiroUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && (s[cut]&0xc0) == 0x80 {
+		cut--
+	}
+	return s[:cut]
+}
+
+const kiroSchemaMaxDepth = 32
 
 func kiroToolDefinition(name, description string, schema any) map[string]any {
 	return map[string]any{"toolSpecification": map[string]any{
@@ -380,6 +393,21 @@ func kiroToolDefinition(name, description string, schema any) map[string]any {
 }
 
 func normalizeKiroSchema(value any, root bool) any {
+	return normalizeKiroSchemaDepth(value, root, 0)
+}
+
+func normalizeKiroSchemaDepth(value any, root bool, depth int) any {
+	if depth > kiroSchemaMaxDepth {
+		if root {
+			return map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"required":             []any{},
+				"additionalProperties": true,
+			}
+		}
+		return map[string]any{}
+	}
 	object, ok := value.(map[string]any)
 	if !ok {
 		if root {
@@ -442,25 +470,25 @@ func normalizeKiroSchema(value any, root bool) any {
 	}
 	if properties, ok := object["properties"].(map[string]any); ok {
 		for key, property := range properties {
-			properties[key] = normalizeKiroSchema(property, false)
+			properties[key] = normalizeKiroSchemaDepth(property, false, depth+1)
 		}
 	}
 	if items, ok := object["items"]; ok {
 		if list, isSlice := items.([]any); isSlice {
 			for i, elem := range list {
-				list[i] = normalizeKiroSchema(elem, false)
+				list[i] = normalizeKiroSchemaDepth(elem, false, depth+1)
 			}
 		} else {
-			object["items"] = normalizeKiroSchema(items, false)
+			object["items"] = normalizeKiroSchemaDepth(items, false, depth+1)
 		}
 	}
 	if additional, ok := object["additionalProperties"].(map[string]any); ok {
-		object["additionalProperties"] = normalizeKiroSchema(additional, false)
+		object["additionalProperties"] = normalizeKiroSchemaDepth(additional, false, depth+1)
 	}
 	for _, combinator := range []string{"anyOf", "oneOf", "allOf"} {
 		if variants, ok := object[combinator].([]any); ok {
 			for i, variant := range variants {
-				variants[i] = normalizeKiroSchema(variant, false)
+				variants[i] = normalizeKiroSchemaDepth(variant, false, depth+1)
 			}
 		}
 	}

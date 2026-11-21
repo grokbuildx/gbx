@@ -47,18 +47,34 @@ export default function TerminalPanel({ api, id, onId, onError }: Props) {
     fit.fit();
 
     let closed = false;
+    let exitedLocal = false;
     let source: EventSource | null = null;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     let current = id;
+    let lastOffset = 0;
+    let backoff = 1000;
     let pending = "";
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let inputChain: Promise<void> = Promise.resolve();
 
-    // Keystrokes go out in small batches rather than one request each.
+    // Keystrokes go out in small batches, serialized so order is preserved.
     const flush = () => {
       timer = undefined;
-      if (!current || !pending) return;
+      if (!current || !pending || closed) return;
+      const terminalId = current;
       const data = pending;
       pending = "";
-      api.terminalInput(current, data).catch(() => setExited(true));
+      inputChain = inputChain.then(() =>
+        api.terminalInput(terminalId, data).then(
+          () => {},
+          () => {
+            if (!closed) {
+              exitedLocal = true;
+              setExited(true);
+            }
+          },
+        ),
+      );
     };
     const input = term.onData((data) => {
       pending += data;
@@ -66,31 +82,81 @@ export default function TerminalPanel({ api, id, onId, onError }: Props) {
     });
 
     const attach = (terminalId: string) => {
-      source = new EventSource(api.terminalStreamURL(terminalId, 0));
-      source.addEventListener("output", (message) => {
-        const { data } = JSON.parse((message as MessageEvent<string>).data) as { data: string };
-        const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+      if (closed || exitedLocal) return;
+      const stream = new EventSource(api.terminalStreamURL(terminalId, lastOffset));
+      source = stream;
+      let opened = false;
+      stream.onopen = () => {
+        opened = true;
+        backoff = 1000;
+      };
+      stream.addEventListener("output", (message) => {
+        if (!(message instanceof MessageEvent)) return;
+        opened = true;
+        backoff = 1000;
+        const parsed = JSON.parse(message.data as string) as { data: string; offset?: number };
+        if (typeof parsed.offset === "number") {
+          if (parsed.offset <= lastOffset) return;
+          lastOffset = parsed.offset;
+        }
+        const bytes = Uint8Array.from(atob(parsed.data), (c) => c.charCodeAt(0));
         term.write(bytes);
       });
-      source.addEventListener("exit", () => {
+      stream.addEventListener("exit", () => {
+        exitedLocal = true;
         setExited(true);
         term.write(`\r\n\x1b[2m[${t("terminalExited")}]\x1b[0m\r\n`);
-        source?.close();
+        stream.close();
+        if (source === stream) source = null;
       });
+      stream.onerror = () => {
+        if (source !== stream) return;
+        stream.close();
+        source = null;
+        if (closed || exitedLocal) return;
+        const delay = backoff;
+        backoff = Math.min(backoff * 2, 30_000);
+        const scheduleRetry = () => {
+          if (!closed && !exitedLocal && source === null) retry = setTimeout(() => attach(terminalId), delay);
+        };
+        if (!opened) {
+          void api.terminalResize(terminalId, term.cols, term.rows).then(
+            () => scheduleRetry(),
+            (err) => {
+              if (closed) return;
+              if (err instanceof HttpError && (err.status === 401 || err.status === 404 || err.status === 410)) {
+                exitedLocal = true;
+                setExited(true);
+                if (err.status === 401) onError(err);
+                return;
+              }
+              scheduleRetry();
+            },
+          );
+          return;
+        }
+        scheduleRetry();
+      };
     };
 
     (async () => {
       try {
         if (!current) {
-          current = (await api.terminalOpen(term.cols, term.rows)).id;
-          if (closed) return;
+          const opened = await api.terminalOpen(term.cols, term.rows);
+          if (closed) {
+            api.terminalClose(opened.id).catch(() => {});
+            return;
+          }
+          current = opened.id;
           onId(current);
         } else {
           await api.terminalResize(current, term.cols, term.rows);
+          if (closed) return;
         }
         attach(current);
         term.focus();
       } catch (error) {
+        if (closed) return;
         // A shell that is gone (a restarted server) is replaced quietly.
         if (!(error instanceof HttpError && error.status === 404)) onError(error);
         onId(null);
@@ -108,6 +174,7 @@ export default function TerminalPanel({ api, id, onId, onError }: Props) {
       observer.disconnect();
       input.dispose();
       source?.close();
+      if (retry) clearTimeout(retry);
       if (timer) clearTimeout(timer);
       term.dispose();
     };
