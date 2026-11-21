@@ -953,11 +953,6 @@ func lookupCaseInsensitiveLabel(labels map[string]string, id string) string {
 }
 
 func closestEffortLevel(levels []string, target string) string {
-	for _, lvl := range levels {
-		if strings.EqualFold(lvl, target) {
-			return lvl
-		}
-	}
 	return pickManagedEffort(levels, strings.ToLower(strings.TrimSpace(target)))
 }
 

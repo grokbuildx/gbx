@@ -145,6 +145,10 @@ type StartOptions struct {
 	// ModelEndpoints overrides Endpoint per lower-case model ID on the
 	// mixed-protocol gateway.
 	ModelEndpoints map[string]string
+	// ModelsDevProvider pins the models.dev catalog provider ID used for
+	// loopback /v1/models and request-side effort clamping when upstream
+	// metadata does not declare per-model reasoning tiers.
+	ModelsDevProvider string
 	// DisableHistoryCache bypasses the loopback previous_response_id history
 	// cache when an outer gateway (such as codex.Gateway) already owns history.
 	DisableHistoryCache bool
@@ -187,14 +191,18 @@ func startProvider(parent context.Context, options StartOptions) (*Runtime, erro
 		}
 		return StartOAuth(parent, options.OAuthProvider, options.ModelSpec, options.OAuthAccountCredential)
 	}
+	providerID := strings.TrimSpace(options.ModelsDevProvider)
+	if providerID == "" {
+		providerID = inferModelsDevProviderFromHint("", options.Endpoint)
+	}
 	if len(options.ModelProtocols) > 0 {
-		return StartMixedProtocolAPIKeyRuntime(parent, options.Endpoint, options.APIKey, options.ModelSpec, options.ModelProtocols, options.ModelEndpoints)
+		return startMixedProtocolAPIKeyRuntimeWithProvider(parent, options.Endpoint, options.APIKey, options.ModelSpec, options.ModelProtocols, options.ModelEndpoints, providerID)
 	}
 	switch options.Protocol {
 	case ProtocolOpenAIChat:
-		return StartOpenAIChatAPI(parent, options.Endpoint, options.APIKey, options.ModelSpec)
+		return startOpenAIChatAPIWithProvider(parent, options.Endpoint, options.APIKey, options.ModelSpec, providerID)
 	case ProtocolOpenAIResponses:
-		return StartOpenAIResponsesAPI(parent, options.Endpoint, options.APIKey, options.ModelSpec)
+		return startOpenAIResponsesAPIWithProvider(parent, options.Endpoint, options.APIKey, options.ModelSpec, providerID)
 	default:
 		return nil, fmt.Errorf("unsupported embedded proxy protocol %q", options.Protocol)
 	}
@@ -239,11 +247,15 @@ func StartOAuth(parent context.Context, providerName, modelSpec, credentialFile 
 // error mapping, and usage accounting are all owned by GBX and cannot change
 // with an external runtime implementation upgrade.
 func StartOpenAIChatAPI(parent context.Context, endpoint, upstreamAPIKey, modelSpec string) (*Runtime, error) {
+	return startOpenAIChatAPIWithProvider(parent, endpoint, upstreamAPIKey, modelSpec, inferModelsDevProviderFromHint("", endpoint))
+}
+
+func startOpenAIChatAPIWithProvider(parent context.Context, endpoint, upstreamAPIKey, modelSpec, providerID string) (*Runtime, error) {
 	routes := runtimeModelRoutes(modelSpec)
 	if len(routes) == 0 {
 		return nil, fmt.Errorf("OpenAI Chat runtime requires at least one model")
 	}
-	proxyRuntime, err := startOpenAIChatRuntime(parent, endpoint, upstreamAPIKey, modelSpec)
+	proxyRuntime, err := startOpenAIChatRuntimeWithProvider(parent, endpoint, upstreamAPIKey, modelSpec, providerID)
 	if err != nil {
 		return nil, err
 	}
@@ -257,6 +269,10 @@ func StartOpenAIChatAPI(parent context.Context, endpoint, upstreamAPIKey, modelS
 // usage accounting are all owned by GBX and independent of external runtime
 // upgrades.
 func StartOpenAIResponsesAPI(parent context.Context, endpoint, upstreamAPIKey, modelSpec string) (*Runtime, error) {
+	return startOpenAIResponsesAPIWithProvider(parent, endpoint, upstreamAPIKey, modelSpec, inferModelsDevProviderFromHint("", endpoint))
+}
+
+func startOpenAIResponsesAPIWithProvider(parent context.Context, endpoint, upstreamAPIKey, modelSpec, providerID string) (*Runtime, error) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -269,7 +285,7 @@ func StartOpenAIResponsesAPI(parent context.Context, endpoint, upstreamAPIKey, m
 		return nil, fmt.Errorf("OpenAI Responses runtime requires at least one model")
 	}
 
-	proxyRuntime, err := startCodexResponsesAPI(parent, endpoint, upstreamAPIKey, modelSpec)
+	proxyRuntime, err := startCodexResponsesAPIWithProvider(parent, endpoint, upstreamAPIKey, modelSpec, providerID)
 	if err != nil {
 		return nil, err
 	}

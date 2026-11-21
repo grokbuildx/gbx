@@ -60,6 +60,21 @@ func reasoningLevelEfforts(levels []protocol.ReasoningLevel) []string {
 	return out
 }
 
+// ModelsDevProviderID resolves the canonical models.dev provider identifier for
+// p, checking explicit ModelsDevProvider, models.dev catalog type, OAuth specs,
+// and endpoint/name inference in priority order.
+func ModelsDevProviderID(p provider.Provider) string {
+	if explicit := strings.TrimSpace(p.ModelsDevProvider); explicit != "" {
+		return explicit
+	}
+	if oauthName := strings.ToLower(strings.TrimSpace(p.OAuthProvider)); oauthName != "" {
+		if id := provider.OAuthModelsDevProviderID(oauthName); id != "" {
+			return id
+		}
+	}
+	return inferModelsDevProviderID(p)
+}
+
 // StaticProviderModelDetails collects offline/cached model IDs, display labels,
 // protocol model metadata, and the models.dev provider identifier for p without
 // making network requests.
@@ -68,10 +83,10 @@ func StaticProviderModelDetails(p provider.Provider) (models []string, labels ma
 	details = make(map[string]protocol.ModelInfo)
 	oauthName := strings.ToLower(strings.TrimSpace(p.OAuthProvider))
 	modelSpec := provider.RuntimeModelSpec(p)
+	modelsDevProviderID = ModelsDevProviderID(p)
 
 	switch oauthName {
 	case ProviderGrok, backendXAI:
-		modelsDevProviderID = "xai"
 		fb := xaiFallbackModels()
 		models = mergeUniqueModels(runtimeModelAliases(modelSpec), xaiModelIDs(fb))
 		for id, name := range xaiModelDisplayNames(fb) {
@@ -81,7 +96,6 @@ func StaticProviderModelDetails(p provider.Provider) (models []string, labels ma
 			details[id] = info
 		}
 	case ProviderKimi:
-		modelsDevProviderID = "kimi-for-coding"
 		spec := firstNonEmptyString(modelSpec, provider.OAuthDefaultModels(ProviderKimi))
 		routes := runtimeModelRoutes(spec)
 		models = runtimeModelAliases(spec)
@@ -89,7 +103,6 @@ func StaticProviderModelDetails(p provider.Provider) (models []string, labels ma
 			details[id] = info
 		}
 	case ProviderKiro:
-		modelsDevProviderID = "anthropic"
 		spec := firstNonEmptyString(modelSpec, provider.OAuthDefaultModels(ProviderKiro))
 		models = kiroRuntimeModels(spec)
 		for id, info := range kiroInitialModelDetails(spec, models) {
@@ -125,28 +138,26 @@ func StaticProviderModelDetails(p provider.Provider) (models []string, labels ma
 		}
 	case ProviderQoder:
 		models = runtimeModelAliases(modelSpec)
-		if len(models) == 0 {
-			fb := qoderFallbackModels()
-			for _, model := range fb {
+		fb := qoderFallbackModels()
+		useFallbackList := len(models) == 0
+		for _, model := range fb {
+			if useFallbackList {
 				models = append(models, model.ID)
-				if name := strings.TrimSpace(model.Name); name != "" && name != model.ID {
-					labels[model.ID] = name
-				}
-				if info, ok := qoderModelDetail(model); ok {
-					details[strings.ToLower(model.ID)] = info
-				}
+			}
+			if name := strings.TrimSpace(model.Name); name != "" && name != model.ID {
+				labels[model.ID] = name
+			}
+			if info, ok := qoderModelDetail(model); ok {
+				details[strings.ToLower(model.ID)] = info
 			}
 		}
 	case ProviderWorkBuddy, ProviderWorkBuddyCN:
-		modelsDevProviderID = "workbuddy"
 		models = runtimeModelAliases(modelSpec)
 	case ProviderChatGPT, ProviderCodex:
-		modelsDevProviderID = "openai"
 		spec := firstNonEmptyString(modelSpec, "gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna")
 		models = runtimeModelAliases(spec)
 	default:
 		models = runtimeModelAliases(modelSpec)
-		modelsDevProviderID = inferModelsDevProviderID(p)
 	}
 
 	for id, name := range p.ModelLabels {
@@ -193,11 +204,15 @@ func inferModelsDevProviderID(p provider.Provider) string {
 	if provider.IsModelsDevType(p.Type) {
 		return provider.ModelsDevCatalogID(p)
 	}
+	return inferModelsDevProviderFromHint(p.Name, p.Endpoint)
+}
+
+func inferModelsDevProviderFromHint(name, endpoint string) string {
 	host := ""
-	if parsed, err := url.Parse(strings.TrimSpace(p.Endpoint)); err == nil {
+	if parsed, err := url.Parse(strings.TrimSpace(endpoint)); err == nil {
 		host = strings.ToLower(parsed.Hostname())
 	}
-	haystack := strings.ToLower(strings.TrimSpace(p.Name) + " " + host + " " + strings.TrimSpace(p.Endpoint))
+	haystack := strings.ToLower(strings.TrimSpace(name) + " " + host + " " + strings.TrimSpace(endpoint))
 	switch {
 	case strings.Contains(haystack, "api.x.ai"), strings.Contains(haystack, "xai"), strings.Contains(haystack, "grok"):
 		return "xai"
@@ -205,10 +220,12 @@ func inferModelsDevProviderID(p provider.Provider) string {
 		return "openai"
 	case strings.Contains(haystack, "generativelanguage.googleapis.com"), strings.Contains(haystack, "google"), strings.Contains(haystack, "gemini"):
 		return "google"
-	case strings.Contains(haystack, "api.kimi.com"), strings.Contains(haystack, "kimi-for-coding"):
-		return "kimi-for-coding"
+	case strings.Contains(haystack, "api.kimi.com"), strings.Contains(haystack, "kimi-for-coding"), strings.Contains(haystack, "kimi-code"):
+		return "kimi-code-plan-global"
 	case strings.Contains(haystack, "api.moonshot"), strings.Contains(haystack, "moonshot"):
 		return "moonshotai"
+	case strings.Contains(haystack, "openrouter"):
+		return "openrouter"
 	case strings.Contains(haystack, "anthropic"):
 		return "anthropic"
 	case strings.Contains(haystack, "deepseek"):

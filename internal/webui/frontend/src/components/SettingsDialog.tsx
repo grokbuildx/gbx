@@ -396,8 +396,11 @@ function ProviderEditor({ api, provider, onClose, onSaved }: {
 
   const editorEffortOptions = useMemo(() => {
     const target = stripModelContextSuffix(form.defaultModel);
+    const targetLower = target.toLowerCase();
     const choices = provider?.modelChoices || [];
-    const choice = (target ? choices.find((c) => c.value === target) : undefined) || choices[0];
+    const choice = target
+      ? choices.find((c) => stripModelContextSuffix(c.value).toLowerCase() === targetLower)
+      : choices[0];
     const base: string[] =
       choice?.supportsEffort && choice.effortLevels && choice.effortLevels.length > 0
         ? [...choice.effortLevels]

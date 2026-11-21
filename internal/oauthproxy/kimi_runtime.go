@@ -619,6 +619,7 @@ func startKimiOAuth(parent context.Context, modelSpec, credentialFile string) (*
 		service.decorateHeader = authorizer.decorateHeader
 		service.normalizeBody = normalizeKimiBody
 		service.modelDetails = details
+		service.modelsDevProvider = "kimi-code-plan-global"
 	})
 	if err != nil {
 		return nil, err

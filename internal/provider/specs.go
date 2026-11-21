@@ -62,7 +62,7 @@ var oauthProviderSpecs = []OAuthProviderSpec{
 		PublicName:          "kimi",
 		Backend:             "kimi",
 		RuntimeType:         "openai",
-		ModelsDevProviderID: "kimi-for-coding",
+		ModelsDevProviderID: "kimi-code-plan-global",
 		DefaultModels:       "kimi-for-coding,kimi-for-coding-highspeed",
 	},
 	{

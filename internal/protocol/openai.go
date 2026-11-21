@@ -242,23 +242,7 @@ func ParseRemoteReasoningEfforts(
 	if len(levels) == 0 {
 		return nil, "", true
 	}
-	chosen := strings.ToLower(firstNonEmpty(serverDefault, capDefault, optionDefault, legacyDefault))
-	if chosen != "" {
-		matched := false
-		for _, level := range levels {
-			if strings.EqualFold(level.Effort, chosen) {
-				chosen = level.Effort
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			chosen = ""
-		}
-	}
-	if chosen == "" {
-		chosen = levels[0].Effort
-	}
+	chosen := ChooseDefaultEffort(levels, firstNonEmpty(serverDefault, capDefault, optionDefault, legacyDefault))
 	return levels, chosen, true
 }
 

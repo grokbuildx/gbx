@@ -78,17 +78,18 @@ type codexOAuthCredential struct {
 }
 
 type codexResponsesService struct {
-	apiKey         string
-	endpoint       string
-	models         []string
-	modelDetails   map[string]protocol.ModelInfo
-	modelRoute     map[string]string
-	modelEndpoint  map[string]string
-	authorizer     codexResponsesAuthorizer
-	client         *http.Client
-	usage          *UsageTracker
-	installationID string
-	windowID       string
+	apiKey            string
+	endpoint          string
+	models            []string
+	modelDetails      map[string]protocol.ModelInfo
+	modelRoute        map[string]string
+	modelEndpoint     map[string]string
+	modelsDevProvider string
+	authorizer        codexResponsesAuthorizer
+	client            *http.Client
+	usage             *UsageTracker
+	installationID    string
+	windowID          string
 	// xai switches the Responses data plane from Codex identity to xAI/Grok
 	// identity: xAI Grok headers replace the Codex turn headers, and the
 	// Codex-specific client_metadata block is omitted. Both backends share the
@@ -121,7 +122,16 @@ func (e *codexResponsesUpstreamError) Error() string {
 }
 
 func startCodexResponsesAPI(parent context.Context, endpoint, upstreamAPIKey, modelSpec string) (*Runtime, error) {
-	return startCodexResponsesRuntime(parent, endpoint, modelSpec, &codexStaticAuthorizer{token: strings.TrimSpace(upstreamAPIKey)})
+	return startCodexResponsesAPIWithProvider(parent, endpoint, upstreamAPIKey, modelSpec, "")
+}
+
+func startCodexResponsesAPIWithProvider(parent context.Context, endpoint, upstreamAPIKey, modelSpec, providerID string) (*Runtime, error) {
+	return startCodexResponsesRuntimeWithService(parent, endpoint, modelSpec, &codexStaticAuthorizer{token: strings.TrimSpace(upstreamAPIKey)},
+		func(apiKey, endpoint string, routes []runtimeModelRoute, auth codexResponsesAuthorizer, usage *UsageTracker) *codexResponsesService {
+			service := newCodexResponsesService(apiKey, endpoint, routes, auth, usage)
+			service.modelsDevProvider = strings.TrimSpace(providerID)
+			return service
+		})
 }
 
 func startCodexOAuth(parent context.Context, modelSpec, credentialFile string) (*Runtime, error) {
@@ -174,6 +184,7 @@ func startCodexOAuth(parent context.Context, modelSpec, credentialFile string) (
 			service := newCodexResponsesService(apiKey, endpoint, routes, auth, usage)
 			service.models = append([]string(nil), models...)
 			service.modelDetails = details
+			service.modelsDevProvider = "openai"
 			return service
 		})
 	if err != nil {
@@ -299,7 +310,7 @@ func (s *codexResponsesService) authorized(request *http.Request) bool {
 }
 
 func (s *codexResponsesService) handleModels(writer http.ResponseWriter, request *http.Request) {
-	serveModelListWithRoutes(writer, request, s.apiKey, s.models, s.modelDetails, s.modelRoute)
+	serveModelListWithProvider(writer, request, s.apiKey, s.models, s.modelDetails, s.modelRoute, s.modelsDevProvider)
 }
 
 // handleResponses serves one Responses request. The upstream speaks Responses
@@ -560,66 +571,6 @@ func codexResponsesModel(body []byte) string {
 	return strings.TrimSpace(payload.Model)
 }
 
-func codexEffortRank(effort string) int {
-	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "none":
-		return 0
-	case "minimal":
-		return 1
-	case "low":
-		return 2
-	case "medium":
-		return 3
-	case "high":
-		return 4
-	case "xhigh":
-		return 5
-	case "max":
-		return 6
-	default:
-		return -1
-	}
-}
-
-func clampEffortToLevels(desired string, levels []protocol.ReasoningLevel) string {
-	want := strings.ToLower(strings.TrimSpace(desired))
-	if want == "ultra" {
-		want = "max"
-	}
-	for _, level := range levels {
-		if strings.EqualFold(level.Effort, want) {
-			return strings.ToLower(strings.TrimSpace(level.Effort))
-		}
-	}
-	wantRank := codexEffortRank(want)
-	bestLower := ""
-	bestLowerRank := -1
-	lowest := ""
-	lowestRank := 999
-	for _, level := range levels {
-		eff := strings.ToLower(strings.TrimSpace(level.Effort))
-		rank := codexEffortRank(eff)
-		if rank < 0 {
-			continue
-		}
-		if rank < lowestRank {
-			lowestRank = rank
-			lowest = eff
-		}
-		if wantRank >= 0 && rank <= wantRank && rank > bestLowerRank {
-			bestLowerRank = rank
-			bestLower = eff
-		}
-	}
-	if bestLower != "" {
-		return bestLower
-	}
-	if lowest != "" {
-		return lowest
-	}
-	return strings.ToLower(strings.TrimSpace(levels[0].Effort))
-}
-
 func (s *codexResponsesService) normalizeXaiReasoning(model string, payload map[string]any) bool {
 	if !s.xai || payload == nil {
 		return true
@@ -640,7 +591,11 @@ func (s *codexResponsesService) normalizeXaiReasoning(model string, payload map[
 			delete(payload, "reasoning")
 			return false
 		}
-		effort = clampEffortToLevels(effort, info.ReasoningLevels)
+		if clamped := protocol.ClampReasoningLevel(effort, info.ReasoningLevels); clamped != "" {
+			effort = clamped
+		} else {
+			effort = strings.ToLower(strings.TrimSpace(info.ReasoningLevels[0].Effort))
+		}
 	}
 	reasoning["effort"] = effort
 	return effort != "none"

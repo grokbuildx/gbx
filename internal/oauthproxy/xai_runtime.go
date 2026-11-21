@@ -288,6 +288,7 @@ func startXaiOAuth(parent context.Context, modelSpec, credentialFile string) (*R
 		service := newXaiResponsesService(apiKey, endpoint, routes, auth, usage)
 		service.models = xaiModelIDs(models)
 		service.modelDetails = details
+		service.modelsDevProvider = "xai"
 		addXaiDisplayAliases(service, models)
 		return service
 	})

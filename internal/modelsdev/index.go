@@ -18,7 +18,9 @@ type reasoningEntry struct {
 	modalities          []string
 	maxOutput           int
 	priority            int
+	thinking            bool
 	ambiguous           bool
+	thinkingAmbiguous   bool
 	modalitiesAmbiguous bool
 	outputAmbiguous     bool
 }
@@ -46,6 +48,7 @@ func newIndexFromProviders(providers map[string]Provider) (*Index, error) {
 			efforts := model.Efforts()
 			modalities := model.InputModalities()
 			maxOutput := model.Limit.Output
+			thinking := model.Reasoning
 			// Prefer the canonical model owner's entry. OpenCode's two
 			// catalogs are references when the owner has no matching row.
 			priority := 3
@@ -62,15 +65,15 @@ func newIndexFromProviders(providers map[string]Provider) (*Index, error) {
 				if strings.TrimSpace(alias) == "" {
 					continue
 				}
-				addModelAlias(local, alias, efforts, modalities, maxOutput, 0)
-				addModelAlias(index.aliases, alias, efforts, modalities, maxOutput, priority*2)
-				addModelAlias(index.aliases, providerID+"/"+alias, efforts, modalities, maxOutput, priority*2)
+				addModelAlias(local, alias, efforts, modalities, maxOutput, thinking, 0)
+				addModelAlias(index.aliases, alias, efforts, modalities, maxOutput, thinking, priority*2)
+				addModelAlias(index.aliases, providerID+"/"+alias, efforts, modalities, maxOutput, thinking, priority*2)
 			}
 			if _, bare, ok := strings.Cut(model.CanonicalID, "/"); ok {
-				addModelAlias(index.aliases, bare, efforts, modalities, maxOutput, priority*2)
+				addModelAlias(index.aliases, bare, efforts, modalities, maxOutput, thinking, priority*2)
 			}
-			addModelAlias(local, model.Name, efforts, modalities, maxOutput, 1)
-			addModelAlias(index.aliases, model.Name, efforts, modalities, maxOutput, priority*2+1)
+			addModelAlias(local, model.Name, efforts, modalities, maxOutput, thinking, 1)
+			addModelAlias(index.aliases, model.Name, efforts, modalities, maxOutput, thinking, priority*2+1)
 		}
 	}
 	if len(index.aliases) == 0 {
@@ -79,7 +82,7 @@ func newIndexFromProviders(providers map[string]Provider) (*Index, error) {
 	return index, nil
 }
 
-func addModelAlias(index map[string]reasoningEntry, alias string, efforts, modalities []string, maxOutput, priority int) {
+func addModelAlias(index map[string]reasoningEntry, alias string, efforts, modalities []string, maxOutput int, thinking bool, priority int) {
 	alias = normalizeAlias(alias)
 	if alias == "" {
 		return
@@ -90,6 +93,7 @@ func addModelAlias(index map[string]reasoningEntry, alias string, efforts, modal
 			efforts:    efforts,
 			modalities: modalities,
 			maxOutput:  maxOutput,
+			thinking:   thinking,
 			priority:   priority,
 		}
 		return
@@ -97,6 +101,9 @@ func addModelAlias(index map[string]reasoningEntry, alias string, efforts, modal
 	if priority == previous.priority {
 		if !slices.Equal(previous.efforts, efforts) {
 			previous.ambiguous = true
+		}
+		if previous.thinking != thinking {
+			previous.thinkingAmbiguous = true
 		}
 		if len(modalities) > 0 {
 			if len(previous.modalities) == 0 {
@@ -127,6 +134,16 @@ func (index *Index) Efforts(providerID, modelID, displayName string) ([]string, 
 	return nil, false
 }
 
+// SupportsThinking reports whether models.dev unambiguously declares the model
+// as reasoning-capable (including budget-only or toggle-only thinking models
+// whose Efforts() slice is empty). Unknown or ambiguous models return (false, false).
+func (index *Index) SupportsThinking(providerID, modelID, displayName string) (bool, bool) {
+	if entry, ok := index.lookup(providerID, modelID, displayName, func(e reasoningEntry) bool { return !e.thinkingAmbiguous }); ok {
+		return entry.thinking, true
+	}
+	return false, false
+}
+
 // InputModalities resolves advertised input modalities (["text"] or ["text", "image"])
 // for a model when models.dev unambiguously declares them. Unknown models return (nil, false).
 func (index *Index) InputModalities(providerID, modelID, displayName string) ([]string, bool) {
@@ -152,14 +169,33 @@ func (index *Index) lookup(providerID, modelID, displayName string, accept func(
 	if index == nil {
 		return reasoningEntry{}, false
 	}
-	aliases := []string{normalizeAlias(modelID), normalizeAlias(displayName)}
-	if local := index.providers[normalizeAlias(providerID)]; local != nil {
+	local := index.providers[normalizeAlias(providerID)]
+	exact := []string{normalizeAlias(modelID), normalizeAlias(displayName)}
+	if entry, matched, rejected := lookupAliases(local, index.aliases, exact, accept); matched {
+		return entry, true
+	} else if rejected {
+		return reasoningEntry{}, false
+	}
+	secondary := secondaryAliases(exact)
+	if len(secondary) == 0 {
+		return reasoningEntry{}, false
+	}
+	entry, matched, _ := lookupAliases(local, index.aliases, secondary, accept)
+	return entry, matched
+}
+
+func lookupAliases(local, global map[string]reasoningEntry, aliases []string, accept func(reasoningEntry) bool) (reasoningEntry, bool, bool) {
+	rejected := false
+	if local != nil {
 		for _, alias := range aliases {
 			if alias == "" {
 				continue
 			}
-			if entry, ok := local[alias]; ok && accept(entry) {
-				return entry, true
+			if entry, ok := local[alias]; ok {
+				if accept(entry) {
+					return entry, true, false
+				}
+				rejected = true
 			}
 		}
 	}
@@ -167,11 +203,106 @@ func (index *Index) lookup(providerID, modelID, displayName string, accept func(
 		if alias == "" {
 			continue
 		}
-		if entry, ok := index.aliases[alias]; ok && accept(entry) {
-			return entry, true
+		if entry, ok := global[alias]; ok {
+			if accept(entry) {
+				return entry, true, false
+			}
+			rejected = true
 		}
 	}
-	return reasoningEntry{}, false
+	return reasoningEntry{}, false, rejected
+}
+
+// secondaryAliases generates lossless gateway-formatting variants for exact
+// misses without fuzzy version stripping: colon routing qualifiers (:free,
+// :thinking, etc.), -thinking suffixes, unknown vendor/ prefixes, and digit
+// separator equivalence (4.6 <-> 4-6).
+func secondaryAliases(exact []string) []string {
+	seen := make(map[string]bool, len(exact)*4)
+	for _, a := range exact {
+		if a != "" {
+			seen[a] = true
+		}
+	}
+	var out []string
+	add := func(candidate string) {
+		if candidate == "" || seen[candidate] {
+			return
+		}
+		seen[candidate] = true
+		out = append(out, candidate)
+	}
+	addWithSeparators := func(candidate string) {
+		add(candidate)
+		if swapped := swapDigitSeparator(candidate, '.', '-'); swapped != candidate {
+			add(swapped)
+		}
+		if swapped := swapDigitSeparator(candidate, '-', '.'); swapped != candidate {
+			add(swapped)
+		}
+	}
+	for _, base := range exact {
+		if base == "" {
+			continue
+		}
+		stripped := stripGatewayColonTag(base)
+		candidates := []string{base}
+		if stripped != base {
+			candidates = append(candidates, stripped)
+		}
+		for _, c := range candidates {
+			addWithSeparators(c)
+			if noThinking := strings.TrimSuffix(c, "-thinking"); noThinking != c && noThinking != "" {
+				addWithSeparators(noThinking)
+			}
+			if slash := strings.LastIndexByte(c, '/'); slash > 0 && slash < len(c)-1 {
+				tail := c[slash+1:]
+				addWithSeparators(tail)
+				if noThinking := strings.TrimSuffix(tail, "-thinking"); noThinking != tail && noThinking != "" {
+					addWithSeparators(noThinking)
+				}
+			}
+		}
+	}
+	return out
+}
+
+func stripGatewayColonTag(alias string) string {
+	idx := strings.LastIndexByte(alias, ':')
+	if idx <= 0 || idx == len(alias)-1 {
+		return alias
+	}
+	tag := alias[idx+1:]
+	// Only strip alpha-leading routing qualifiers such as :free, :thinking,
+	// :exacto, :nitro, :beta, :online, :extended.
+	if tag[0] < 'a' || tag[0] > 'z' {
+		return alias
+	}
+	for i := 1; i < len(tag); i++ {
+		c := tag[i]
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return alias
+		}
+	}
+	return alias[:idx]
+}
+
+func swapDigitSeparator(alias string, from, to byte) string {
+	if !strings.ContainsRune(alias, rune(from)) {
+		return alias
+	}
+	buf := []byte(alias)
+	changed := false
+	for i := 1; i < len(buf)-1; i++ {
+		if buf[i] == from && buf[i-1] >= '0' && buf[i-1] <= '9' && buf[i+1] >= '0' && buf[i+1] <= '9' {
+			buf[i] = to
+			changed = true
+		}
+	}
+	if !changed {
+		return alias
+	}
+	return string(buf)
 }
 
 func normalizeAlias(alias string) string {

@@ -11,7 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/grokbuildx/gbx/internal/modelsdev"
 	"github.com/grokbuildx/gbx/internal/protocol"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -39,15 +42,16 @@ func (*chatStaticAuthorizer) isOAuth() bool                                     
 // usage accounting all live here, independent of external runtime upgrades;
 // these details define how openai(chat) behaves.
 type chatCompletionsService struct {
-	apiKey        string
-	endpoint      string
-	authorizer    chatAuthorizer
-	models        []string
-	modelDetails  map[string]protocol.ModelInfo
-	modelRoute    map[string]string
-	modelEndpoint map[string]string
-	client        *http.Client
-	usage         *UsageTracker
+	apiKey            string
+	endpoint          string
+	authorizer        chatAuthorizer
+	models            []string
+	modelDetails      map[string]protocol.ModelInfo
+	modelRoute        map[string]string
+	modelEndpoint     map[string]string
+	modelsDevProvider string
+	client            *http.Client
+	usage             *UsageTracker
 	// fastRetry controls GBX's hidden 429/5xx replay loop. It defaults to true
 	// for ordinary OpenAI-compatible gateways. Subscription brokers that charge
 	// per invocation can turn it off so an ambiguous 5xx is never submitted a
@@ -98,12 +102,22 @@ func (e *chatCompletionsUpstreamError) upstreamRetryAfter() string { return e.re
 // startCodexResponsesRuntime's loopback/server lifecycle with no OAuth and no
 // compaction, since neither applies to a static-key Chat gateway.
 func startOpenAIChatRuntime(parent context.Context, endpoint, upstreamAPIKey, modelSpec string) (*Runtime, error) {
+	return startOpenAIChatRuntimeWithProvider(parent, endpoint, upstreamAPIKey, modelSpec, "")
+}
+
+func startOpenAIChatRuntimeWithProvider(parent context.Context, endpoint, upstreamAPIKey, modelSpec, providerID string) (*Runtime, error) {
 	endpoint = normalizeOpenAIBaseURL(endpoint)
 	upstreamAPIKey = strings.TrimSpace(upstreamAPIKey)
 	if endpoint == "" || upstreamAPIKey == "" {
 		return nil, fmt.Errorf("OpenAI Chat runtime requires endpoint and API key")
 	}
-	return startOpenAIChatRuntimeWithAuthorizer(parent, endpoint, modelSpec, &chatStaticAuthorizer{token: upstreamAPIKey})
+	routes := runtimeModelRoutes(modelSpec)
+	if len(routes) == 0 {
+		return nil, fmt.Errorf("OpenAI Chat runtime requires at least one model")
+	}
+	return startOpenAIChatRuntimeService(parent, endpoint, routes, &chatStaticAuthorizer{token: upstreamAPIKey}, func(service *chatCompletionsService) {
+		service.modelsDevProvider = strings.TrimSpace(providerID)
+	})
 }
 
 // startOpenAIChatRuntimeWithAuthorizer starts the same Chat Completions data
@@ -229,7 +243,7 @@ func (s *chatCompletionsService) authorized(request *http.Request) bool {
 }
 
 func (s *chatCompletionsService) handleModels(writer http.ResponseWriter, request *http.Request) {
-	serveModelListWithRoutes(writer, request, s.apiKey, s.models, s.modelDetails, s.modelRoute)
+	serveModelListWithProvider(writer, request, s.apiKey, s.models, s.modelDetails, s.modelRoute, s.modelsDevProvider)
 }
 
 func (s *chatCompletionsService) handleResponses(writer http.ResponseWriter, request *http.Request) {
@@ -265,6 +279,18 @@ func (s *chatCompletionsService) handleResponses(writer http.ResponseWriter, req
 		"stream", converted.stream, "body_bytes", len(converted.body),
 		"content_structure", chatContentStructure(converted.body))
 	response, err := s.call(requestCtx, converted)
+	if err != nil {
+		var upstreamErr *chatCompletionsUpstreamError
+		if errors.As(err, &upstreamErr) && gjson.GetBytes(converted.body, "reasoning_effort").Exists() && isRejectedReasoningEffortError(upstreamErr.status, upstreamErr.body) {
+			if stripped, stripErr := sjson.DeleteBytes(converted.body, "reasoning_effort"); stripErr == nil {
+				LogWarnEvent("reasoning_effort_rejected_fallback", "component", "openai_chat", "request_id", requestID,
+					"model", converted.model, "status", upstreamErr.status)
+				converted.body = stripped
+				converted.thinkingEnabled = false
+				response, err = s.call(requestCtx, converted)
+			}
+		}
+	}
 	if err != nil {
 		var upstreamErr *chatCompletionsUpstreamError
 		if errors.As(err, &upstreamErr) {
@@ -436,6 +462,9 @@ func (s *chatCompletionsService) convertRequest(raw []byte) (*chatCompletionsCon
 			return nil, err
 		}
 	}
+	if err := s.normalizeChatReasoning(converted); err != nil {
+		return nil, err
+	}
 	if s.normalizeBody != nil {
 		converted.body, err = s.normalizeBody(converted.body)
 		if err != nil {
@@ -448,4 +477,90 @@ func (s *chatCompletionsService) convertRequest(raw []byte) (*chatCompletionsCon
 		}
 	}
 	return converted, nil
+}
+
+func (s *chatCompletionsService) normalizeChatReasoning(converted *chatCompletionsConvertedRequest) error {
+	if converted == nil {
+		return nil
+	}
+	effortField := gjson.GetBytes(converted.body, "reasoning_effort")
+	if !effortField.Exists() {
+		return nil
+	}
+	effort := strings.ToLower(strings.TrimSpace(effortField.String()))
+	if effort == "" {
+		return nil
+	}
+	levels, known := s.knownChatReasoningLevels(converted.clientModel, converted.model)
+	if !known {
+		return nil
+	}
+	if len(levels) == 0 {
+		stripped, err := sjson.DeleteBytes(converted.body, "reasoning_effort")
+		if err != nil {
+			return err
+		}
+		converted.body = stripped
+		converted.thinkingEnabled = false
+		return nil
+	}
+	clamped := protocol.ClampReasoningLevel(effort, levels)
+	if clamped == "" {
+		stripped, err := sjson.DeleteBytes(converted.body, "reasoning_effort")
+		if err != nil {
+			return err
+		}
+		converted.body = stripped
+		converted.thinkingEnabled = false
+		return nil
+	}
+	if clamped != effort {
+		updated, err := sjson.SetBytes(converted.body, "reasoning_effort", clamped)
+		if err != nil {
+			return err
+		}
+		converted.body = updated
+	}
+	return nil
+}
+
+func (s *chatCompletionsService) knownChatReasoningLevels(clientModel, upstreamModel string) ([]protocol.ReasoningLevel, bool) {
+	for _, candidate := range []string{clientModel, upstreamModel} {
+		if info, ok := lookupModelDetail(s.modelDetails, candidate); ok && info.ReasoningKnown {
+			return info.ReasoningLevels, true
+		}
+	}
+	for _, candidate := range []string{clientModel, upstreamModel} {
+		lower := strings.ToLower(strings.TrimSpace(stripContextModelSuffix(candidate)))
+		if hasGeminiEffortSuffix(lower) || lower == "kimi-for-coding-highspeed" {
+			return nil, true
+		}
+	}
+	if index, _ := modelsdev.CachedIndex(); index != nil {
+		target := strings.TrimSpace(stripContextModelSuffix(upstreamModel))
+		if target == "" {
+			target = strings.TrimSpace(stripContextModelSuffix(clientModel))
+		}
+		if efforts, found := index.Efforts(s.modelsDevProvider, target, clientModel); found {
+			levels, _ := reasoningLevelsFromEfforts(efforts, "")
+			return levels, true
+		}
+	}
+	return nil, false
+}
+
+func isRejectedReasoningEffortError(status int, body string) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	lower := strings.ToLower(body)
+	if !strings.Contains(lower, "reasoning_effort") && !strings.Contains(lower, "reasoning effort") {
+		return false
+	}
+	for _, needle := range []string{"not supported", "unsupported", "unrecognized", "invalid", "unknown", "does not support", "extra_forbidden", "cannot be used", "not allowed"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
 }

@@ -99,6 +99,7 @@ func requestCodexModelInfos(ctx context.Context, client *http.Client, endpoint s
 			ID: id, DisplayName: model.DisplayName, ContextWindow: window,
 			MaxOutputTokens: model.MaxOutputTokens, InputModalities: modalities,
 			ReasoningLevels: model.ReasoningLevels, DefaultReasoningLevel: model.DefaultReasoningLevel,
+			ReasoningKnown: model.ReasoningLevels != nil || strings.TrimSpace(model.DefaultReasoningLevel) != "",
 		})
 	}
 	if len(models) == 0 {

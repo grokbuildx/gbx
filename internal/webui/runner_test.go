@@ -1341,6 +1341,17 @@ func TestResolveManagedDefaultEffort(t *testing.T) {
 	if got := resolveManagedDefaultEffort(p, "gpt-5.4", nil); got != "xhigh" {
 		t.Fatalf("resolveManagedDefaultEffort(ultra on gpt-5.4) = %q, want xhigh", got)
 	}
+	// Explicit provider EffortLevel must NOT leak onto a model models.dev marks
+	// as non-reasoning (even when runtime details are absent).
+	if got := resolveManagedDefaultEffort(p, "gpt-4o", nil); got != "" {
+		t.Fatalf("resolveManagedDefaultEffort(ultra on gpt-4o) = %q, want empty", got)
+	}
+	if got := clampManagedRequestEffort(p, "gpt-5.4", "ultra", nil); got != "xhigh" {
+		t.Fatalf("clampManagedRequestEffort(ultra on gpt-5.4) = %q, want xhigh", got)
+	}
+	if got := clampManagedRequestEffort(p, "gpt-4o", "high", nil); got != "" {
+		t.Fatalf("clampManagedRequestEffort(high on gpt-4o) = %q, want empty", got)
+	}
 	p.EffortLevel = ""
 	if got := resolveManagedDefaultEffort(p, "claude-opus-4-6-thinking", nil); got != "medium" {
 		t.Fatalf("resolveManagedDefaultEffort(claude-opus-4-6-thinking) = %q, want medium", got)

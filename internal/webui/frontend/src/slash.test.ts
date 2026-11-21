@@ -38,6 +38,29 @@ describe("slash /effort helpers", () => {
       effortLevels: [],
       currentEffort: "",
     });
+    expect(resolveRouteEffortInfo({ provider: "p1", model: "CLAUDE-OPUS-4-6[1M]", effort: "high" }, providers)).toEqual({
+      supportsEffort: true,
+      effortLevels: ["low", "medium", "high", "max"],
+      currentEffort: "high",
+    });
+    expect(resolveRouteEffortInfo({ provider: "p1", model: "GPT-4O" }, providers)).toEqual({
+      supportsEffort: false,
+      effortLevels: [],
+      currentEffort: "",
+    });
+    // An explicitly specified model not present in choices must NOT borrow choices[0]'s capabilities.
+    const nonReasoningFirst: ProviderView[] = [{
+      ...providers[0],
+      modelChoices: [
+        { value: "gpt-4o", label: "gpt-4o", supportsEffort: false },
+        { value: "claude-opus-4-6", label: "claude-opus-4-6", supportsEffort: true, effortLevels: ["low", "high"] },
+      ],
+    }];
+    expect(resolveRouteEffortInfo({ provider: "p1", model: "custom-new-model" }, nonReasoningFirst, "default", ["low", "medium", "high"])).toEqual({
+      supportsEffort: true,
+      effortLevels: ["low", "medium", "high"],
+      currentEffort: "",
+    });
     expect(resolveRouteEffortInfo({}, [{ ...providers[0], defaultModel: "gpt-4o[1m]" }], "p1").supportsEffort).toBe(false);
     expect(resolveRouteEffortInfo({ provider: "default" }, providers, "p1", ["low", "medium", "high", "xhigh", "max"])).toEqual({
       supportsEffort: true,
@@ -66,6 +89,7 @@ describe("slash /effort helpers", () => {
     expect(parseEffortSlashCommand("/effort ultra", true, levels)).toEqual({ matched: true, ok: true, effort: "max" });
     expect(parseEffortSlashCommand("/effort", true, levels, "")).toEqual({ matched: true, ok: true, effort: "low" });
     expect(parseEffortSlashCommand("/effort", true, levels, "max")).toEqual({ matched: true, ok: true, effort: "" });
+    expect(parseEffortSlashCommand("/effort off", true, levels)).toEqual({ matched: true, ok: false });
     expect(parseEffortSlashCommand("/effort invalid", true, levels)).toEqual({ matched: true, ok: false });
     expect(parseEffortSlashCommand("/effort high", false, [])).toEqual({ matched: true, ok: false });
   });

@@ -695,7 +695,7 @@ function Route({ session, providers, running, workspace, workspaces, workspaceId
   const provider = effectiveProvider === "default" ? undefined : providers.find((item) => item.name === effectiveProvider);
   const choices = provider?.modelChoices || [];
   const model = stripModelContextSuffix(route?.model || "");
-  const knownModel = !model || choices.some((choice) => choice.value === model);
+  const knownModel = !model || choices.some((choice) => stripModelContextSuffix(choice.value).toLowerCase() === model.toLowerCase());
   const { supportsEffort, effortLevels } = resolveRouteEffortInfo(route, providers, defaultProvider, defaultEfforts);
   const locked = !route || running;
   const title = running ? t("routeLocked") : t("routeHint");

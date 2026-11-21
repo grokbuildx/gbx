@@ -69,6 +69,7 @@ func PrepareWithOptions(ctx context.Context, configured provider.Provider, optio
 		OAuthAccountCredential: resolved.OAuthAccountCredential,
 		ModelProtocols:         resolved.ModelProtocols,
 		ModelEndpoints:         resolved.ModelEndpoints,
+		ModelsDevProvider:      oauthproxy.ModelsDevProviderID(resolved),
 		DisableHistoryCache:    options.DisableHistoryCache,
 	})
 	if err != nil {

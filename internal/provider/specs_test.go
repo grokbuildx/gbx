@@ -62,8 +62,8 @@ func TestOAuthProviderSpecRegistryConsistency(t *testing.T) {
 	if spec, ok := LookupOAuthSpec("codex"); !ok || spec.PublicName != "gpt" {
 		t.Fatalf("LookupOAuthSpec(codex) = %+v, %v", spec, ok)
 	}
-	if got := OAuthModelsDevProviderID("kimi"); got != "kimi-for-coding" {
-		t.Fatalf("OAuthModelsDevProviderID(kimi) = %q, want kimi-for-coding", got)
+	if got := OAuthModelsDevProviderID("kimi"); got != "kimi-code-plan-global" {
+		t.Fatalf("OAuthModelsDevProviderID(kimi) = %q, want kimi-code-plan-global", got)
 	}
 	if got := OAuthModelsDevProviderID("kiro"); got != "anthropic" {
 		t.Fatalf("OAuthModelsDevProviderID(kiro) = %q, want anthropic", got)

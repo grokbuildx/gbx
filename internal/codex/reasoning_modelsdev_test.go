@@ -109,6 +109,38 @@ func TestModelsDevKnownEmptyEffortsDoNotAcquireGPTDefaults(t *testing.T) {
 	}
 }
 
+func TestModelsDevPreservesAuthoritativeUpstreamReasoningKnown(t *testing.T) {
+	seedModelsDevCache(t)
+	// Upstream (e.g. Qoder/xAI live catalog) explicitly declared authoritative
+	// ReasoningKnown=true levels & default for space-bunny, and explicit empty
+	// levels for deepseek-v4.1-flash. models.dev must NOT overwrite them, while
+	// still backfilling missing InputModalities and MaxOutputTokens.
+	details := map[string]protocol.ModelInfo{
+		"space-bunny": {
+			ID:                    "space-bunny",
+			ReasoningKnown:        true,
+			ReasoningLevels:       []protocol.ReasoningLevel{{Effort: "low"}, {Effort: "xhigh"}},
+			DefaultReasoningLevel: "xhigh",
+		},
+		"deepseek-v4.1-flash": {
+			ID:             "deepseek-v4.1-flash",
+			ReasoningKnown: true,
+		},
+	}
+	updated, err := withModelsDevReasoning([]string{"space-bunny", "deepseek-v4.1-flash"}, details, nil, provider.Provider{OAuthProvider: "qoder"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bunny := updated["space-bunny"]
+	if len(bunny.ReasoningLevels) != 2 || bunny.ReasoningLevels[0].Effort != "low" || bunny.ReasoningLevels[1].Effort != "xhigh" || bunny.DefaultReasoningLevel != "xhigh" {
+		t.Fatalf("models.dev overwrote authoritative upstream reasoning levels: %+v", bunny)
+	}
+	ds := updated["deepseek-v4.1-flash"]
+	if !ds.ReasoningKnown || len(ds.ReasoningLevels) != 0 {
+		t.Fatalf("models.dev overwrote authoritative empty reasoning list: %+v", ds)
+	}
+}
+
 func seedModelsDevCache(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()

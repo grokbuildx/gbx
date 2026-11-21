@@ -232,16 +232,19 @@ func defaultLauncherWithPool(ctx context.Context, spec LaunchSpec, pool *runtime
 		rt := launch.Session.Runtime
 		spec.onRuntimeCatalog(name, rt.Models(), rt.ModelDisplayNames(), rt.ModelDetails())
 	}
+	targetModel := stripOneM(spec.Model)
+	defaultModel := stripOneM(launch.DefaultModel)
+	if targetModel == "" {
+		targetModel = defaultModel
+	}
 	if spec.routeDefaults != nil {
-		defaultModel := stripOneM(launch.DefaultModel)
-		targetModel := stripOneM(spec.Model)
-		if targetModel == "" {
-			targetModel = defaultModel
-		}
 		*spec.routeDefaults = acpRouteDefaults{
 			model:  defaultModel,
 			effort: resolveManagedDefaultEffort(p, targetModel, launch.Session),
 		}
+	}
+	if spec.Effort != "" {
+		spec.Effort = clampManagedRequestEffort(p, targetModel, spec.Effort, launch.Session)
 	}
 	args := buildArgs(spec)
 	cmd := launch.Command(args...)
@@ -256,15 +259,11 @@ func defaultLauncherWithPool(ctx context.Context, spec LaunchSpec, pool *runtime
 	return cmd, cleanup, nil
 }
 
-func resolveManagedDefaultEffort(p provider.Provider, model string, session *providersession.Session) string {
-	explicit := groklaunch.NormalizeReasoningEffort(p.EffortLevel)
-	if explicit == "none" {
-		explicit = ""
-	}
+func resolveManagedModelEffort(p provider.Provider, model string, session *providersession.Session) (supports bool, levels []string, defaultEffort string) {
 	model = strings.TrimSpace(model)
 	stripped := stripOneM(model)
 	if stripped == "" {
-		return explicit
+		return false, nil, ""
 	}
 
 	_, _, staticDetails, mdProviderID := oauthproxy.StaticProviderModelDetails(p)
@@ -309,11 +308,19 @@ func resolveManagedDefaultEffort(p provider.Provider, model string, session *pro
 	}
 
 	index, _ := modelsdev.CachedIndex()
-	supports, levels, defaultEffort := oauthproxy.ResolveGrokModelEffort(index, mdProviderID, model, displayName, detail, hasDetail)
+	return oauthproxy.ResolveGrokModelEffort(index, mdProviderID, model, displayName, detail, hasDetail)
+}
+
+func resolveManagedDefaultEffort(p provider.Provider, model string, session *providersession.Session) string {
+	explicit := groklaunch.NormalizeReasoningEffort(p.EffortLevel)
+	if explicit == "none" {
+		explicit = ""
+	}
+	if stripOneM(strings.TrimSpace(model)) == "" {
+		return explicit
+	}
+	supports, levels, defaultEffort := resolveManagedModelEffort(p, model, session)
 	if !supports || len(levels) == 0 {
-		if explicit != "" && (!hasDetail || !detail.ReasoningKnown) {
-			return explicit
-		}
 		return ""
 	}
 	if explicit != "" {
@@ -325,36 +332,27 @@ func resolveManagedDefaultEffort(p provider.Provider, model string, session *pro
 	return pickManagedEffort(levels, "medium")
 }
 
+func clampManagedRequestEffort(p provider.Provider, model, effort string, session *providersession.Session) string {
+	normalized := groklaunch.NormalizeReasoningEffort(effort)
+	if normalized == "" || normalized == "none" {
+		return normalized
+	}
+	if stripOneM(strings.TrimSpace(model)) == "" {
+		return normalized
+	}
+	supports, levels, _ := resolveManagedModelEffort(p, model, session)
+	if !supports || len(levels) == 0 {
+		return ""
+	}
+	return pickManagedEffort(levels, normalized)
+}
+
 func pickManagedEffort(levels []string, target string) string {
-	for _, lvl := range levels {
-		if lvl == target {
-			return lvl
-		}
+	if len(levels) == 0 {
+		return ""
 	}
-	rank := map[string]int{
-		"minimal": 1,
-		"low":     2,
-		"medium":  3,
-		"high":    4,
-		"xhigh":   5,
-		"max":     6,
-		"ultra":   7,
-	}
-	wantRank, ok := rank[target]
-	if !ok {
-		return levels[0]
-	}
-	best := ""
-	bestRank := -1
-	for _, lvl := range levels {
-		r := rank[lvl]
-		if r <= wantRank && r > bestRank {
-			best = lvl
-			bestRank = r
-		}
-	}
-	if best != "" {
-		return best
+	if clamped := protocol.ClampEffort(target, levels); clamped != "" {
+		return clamped
 	}
 	return levels[0]
 }
@@ -1265,8 +1263,6 @@ func applyACPSessionMode(ctx context.Context, conn *acp.ClientSideConnection, se
 	})
 }
 
-var grokEffortLadder = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
-
 // applyACPSessionRoute syncs the conversation's requested model and reasoning
 // effort onto the ACP session. Grok Build's session/load restores the saved
 // session's Turn-1 model and effort over CLI -m / --reasoning-effort, so
@@ -1370,39 +1366,7 @@ func matchExactOptionValue(allowed []string, desired string) string {
 }
 
 func matchAllowedEffort(allowed []string, desired string) string {
-	if len(allowed) == 0 {
-		return ""
-	}
-	for _, candidate := range allowed {
-		if strings.EqualFold(candidate, desired) {
-			return candidate
-		}
-	}
-	desiredIdx := -1
-	for i, tier := range grokEffortLadder {
-		if strings.EqualFold(tier, desired) {
-			desiredIdx = i
-			break
-		}
-	}
-	if desiredIdx < 0 {
-		return ""
-	}
-	for i := desiredIdx - 1; i >= 0; i-- {
-		for _, candidate := range allowed {
-			if strings.EqualFold(candidate, grokEffortLadder[i]) {
-				return candidate
-			}
-		}
-	}
-	for i := desiredIdx + 1; i < len(grokEffortLadder); i++ {
-		for _, candidate := range allowed {
-			if strings.EqualFold(candidate, grokEffortLadder[i]) {
-				return candidate
-			}
-		}
-	}
-	return ""
+	return protocol.ClampEffort(desired, allowed)
 }
 
 func slashCommandsFromInitMeta(meta map[string]any) []string {

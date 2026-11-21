@@ -11,7 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/grokbuildx/gbx/internal/modelsdev"
 	"github.com/grokbuildx/gbx/internal/protocol"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // anthropicMessagesUpstreamError is a non-2xx Messages response, relayed to
@@ -38,15 +41,16 @@ func (e *anthropicMessagesUpstreamError) upstreamRetryAfter() string { return e.
 // upstream speaks Anthropic Messages. Each model may live on its own base URL
 // (models.dev provider.api), falling back to the provider endpoint.
 type anthropicMessagesService struct {
-	apiKey        string
-	endpoint      string
-	upstreamKey   string
-	models        []string
-	modelDetails  map[string]protocol.ModelInfo
-	modelRoute    map[string]string
-	modelEndpoint map[string]string
-	client        *http.Client
-	usage         *UsageTracker
+	apiKey            string
+	endpoint          string
+	upstreamKey       string
+	models            []string
+	modelDetails      map[string]protocol.ModelInfo
+	modelRoute        map[string]string
+	modelEndpoint     map[string]string
+	modelsDevProvider string
+	client            *http.Client
+	usage             *UsageTracker
 }
 
 func newAnthropicMessagesService(apiKey, endpoint string, routes []runtimeModelRoute, endpoints map[string]string, upstreamKey string, usage *UsageTracker) *anthropicMessagesService {
@@ -111,6 +115,18 @@ func (s *anthropicMessagesService) handleResponses(writer http.ResponseWriter, r
 	response, err := retryUpstream(requestCtx, "anthropic_messages", func() (*http.Response, error) {
 		return s.callOnce(requestCtx, converted)
 	})
+	if err != nil {
+		var upstreamErr *anthropicMessagesUpstreamError
+		if errors.As(err, &upstreamErr) && converted.thinkingEnabled && gjson.GetBytes(converted.body, "thinking").Exists() && isRejectedThinkingError(upstreamErr.status, upstreamErr.body) {
+			if stripped, stripErr := sjson.DeleteBytes(converted.body, "thinking"); stripErr == nil {
+				LogWarnEvent("anthropic_thinking_rejected_fallback", "component", "anthropic_messages", "request_id", requestID,
+					"model", converted.model, "status", upstreamErr.status)
+				converted.body = stripped
+				converted.thinkingEnabled = false
+				response, err = s.callOnce(requestCtx, converted)
+			}
+		}
+	}
 	if err != nil {
 		var upstreamErr *anthropicMessagesUpstreamError
 		if errors.As(err, &upstreamErr) {
@@ -226,5 +242,56 @@ func (s *anthropicMessagesService) convertRequest(raw []byte) (*anthropicConvert
 			return nil, err
 		}
 	}
+	if err := s.normalizeAnthropicThinking(converted); err != nil {
+		return nil, err
+	}
 	return converted, nil
+}
+
+func (s *anthropicMessagesService) normalizeAnthropicThinking(converted *anthropicConvertedRequest) error {
+	if converted == nil || !converted.thinkingEnabled || !gjson.GetBytes(converted.body, "thinking").Exists() {
+		return nil
+	}
+	disable := false
+	if index, _ := modelsdev.CachedIndex(); index != nil {
+		if supports, ok := index.SupportsThinking(s.modelsDevProvider, converted.model, converted.clientModel); ok {
+			if supports {
+				return nil
+			}
+			disable = true
+		}
+	}
+	if !disable {
+		if info, ok := lookupModelDetail(s.modelDetails, converted.clientModel); ok && info.ReasoningKnown && len(info.ReasoningLevels) == 0 {
+			disable = true
+		} else if info, ok := lookupModelDetail(s.modelDetails, converted.model); ok && info.ReasoningKnown && len(info.ReasoningLevels) == 0 {
+			disable = true
+		}
+	}
+	if !disable {
+		return nil
+	}
+	stripped, err := sjson.DeleteBytes(converted.body, "thinking")
+	if err != nil {
+		return err
+	}
+	converted.body = stripped
+	converted.thinkingEnabled = false
+	return nil
+}
+
+func isRejectedThinkingError(status int, body string) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	lower := strings.ToLower(body)
+	if !strings.Contains(lower, "thinking") {
+		return false
+	}
+	for _, needle := range []string{"not supported", "unsupported", "unrecognized", "invalid", "not enabled", "cannot be used", "does not support", "unknown field", "extra_forbidden"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
 }

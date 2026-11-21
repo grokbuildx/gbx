@@ -4,14 +4,17 @@ import (
 	"strings"
 
 	"github.com/grokbuildx/gbx/internal/modelsdev"
+	"github.com/grokbuildx/gbx/internal/oauthproxy"
 	"github.com/grokbuildx/gbx/internal/protocol"
 	"github.com/grokbuildx/gbx/internal/provider"
 )
 
-// Converted models share the cached models.dev effort metadata. Provider
-// metadata still supplies names, images and prices when explicitly declared,
-// while models.dev backfills missing modalities and output limits on known IDs.
-// Native Responses bypasses effort overrides; unknown models remain text-only.
+// Converted models share the cached models.dev effort metadata when the
+// upstream catalog has not already declared authoritative per-model reasoning
+// levels (ReasoningKnown). Provider metadata still supplies names, images and
+// prices when explicitly declared, while models.dev backfills missing
+// modalities and output limits on known IDs. Native Responses bypasses effort
+// overrides; unknown models remain text-only.
 func withModelsDevReasoning(models []string, details map[string]protocol.ModelInfo, names map[string]string, configured provider.Provider) (map[string]protocol.ModelInfo, error) {
 	return withModelsDevMetadata(models, details, names, configured, true)
 }
@@ -25,14 +28,7 @@ func withModelsDevMetadata(models []string, details map[string]protocol.ModelInf
 	if details == nil {
 		details = make(map[string]protocol.ModelInfo, len(models))
 	}
-	providerID := configured.ModelsDevProvider
-	if providerID == "" {
-		if provider.IsModelsDevType(configured.Type) {
-			providerID = provider.ModelsDevCatalogID(configured)
-		} else {
-			providerID = provider.OAuthModelsDevProviderID(configured.OAuthProvider)
-		}
-	}
+	providerID := oauthproxy.ModelsDevProviderID(configured)
 	for _, id := range models {
 		key, info, _ := lookupModelInfo(details, id)
 		name := lookupModelDisplayName(names, id)
@@ -52,7 +48,7 @@ func withModelsDevMetadata(models []string, details map[string]protocol.ModelInf
 				modified = true
 			}
 		}
-		if !includeReasoning {
+		if !includeReasoning || info.ReasoningKnown {
 			if modified {
 				details[key] = info
 			}

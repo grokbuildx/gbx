@@ -28,7 +28,10 @@ export function resolveRouteEffortInfo(
   const provider = providers.find((item) => item.name === provName);
   const choices = provider?.modelChoices || [];
   const model = stripModelContextSuffix(route?.model || provider?.defaultModel || "");
-  const selectedChoice = (model ? choices.find((choice) => choice.value === model) : undefined) || choices[0];
+  const modelLower = model.toLowerCase();
+  const selectedChoice = model
+    ? choices.find((choice) => stripModelContextSuffix(choice.value).toLowerCase() === modelLower)
+    : choices[0];
   const supportsEffort = selectedChoice ? selectedChoice.supportsEffort !== false : true;
   const effortLevels: readonly string[] = !supportsEffort
     ? []
@@ -97,7 +100,7 @@ export function parseEffortSlashCommand(
   if (exact) {
     return { matched: true, ok: true, effort: exact };
   }
-  if (arg === "default" || arg === "auto" || arg === "reset" || arg === "off") {
+  if (arg === "default" || arg === "auto" || arg === "reset") {
     return { matched: true, ok: true, effort: "" };
   }
   if (arg === "ultra") {

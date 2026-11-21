@@ -81,6 +81,10 @@ func buildMixedRoutes(modelSpec string, protocols map[string]string) (mixedRoute
 // Completions adapter, and Anthropic Messages through its Messages adapter.
 // endpoints overrides the base URL per lower-case model ID.
 func StartMixedProtocolAPIKeyRuntime(parent context.Context, endpoint, upstreamAPIKey, modelSpec string, protocols, endpoints map[string]string) (*Runtime, error) {
+	return startMixedProtocolAPIKeyRuntimeWithProvider(parent, endpoint, upstreamAPIKey, modelSpec, protocols, endpoints, inferModelsDevProviderFromHint("", endpoint))
+}
+
+func startMixedProtocolAPIKeyRuntimeWithProvider(parent context.Context, endpoint, upstreamAPIKey, modelSpec string, protocols, endpoints map[string]string, providerID string) (*Runtime, error) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -93,7 +97,7 @@ func StartMixedProtocolAPIKeyRuntime(parent context.Context, endpoint, upstreamA
 	if err != nil {
 		return nil, err
 	}
-	proxyRuntime, err := startMixedProtocolRouter(parent, endpoint, upstreamAPIKey, routes, endpoints)
+	proxyRuntime, err := startMixedProtocolRouterWithProvider(parent, endpoint, upstreamAPIKey, routes, endpoints, providerID)
 	if err != nil {
 		return nil, err
 	}
@@ -105,17 +109,22 @@ func StartMixedProtocolAPIKeyRuntime(parent context.Context, endpoint, upstreamA
 // mixedProtocolRouter exposes the Responses front and dispatches each request
 // by model to the service for that model's upstream protocol.
 type mixedProtocolRouter struct {
-	apiKey      string
-	models      []string
-	responses   map[string]bool
-	chat        map[string]bool
-	messages    map[string]bool
-	codex       *codexResponsesService
-	chatSvc     *chatCompletionsService
-	messagesSvc *anthropicMessagesService
+	apiKey            string
+	models            []string
+	modelsDevProvider string
+	responses         map[string]bool
+	chat              map[string]bool
+	messages          map[string]bool
+	codex             *codexResponsesService
+	chatSvc           *chatCompletionsService
+	messagesSvc       *anthropicMessagesService
 }
 
 func startMixedProtocolRouter(parent context.Context, endpoint, upstreamAPIKey string, routes mixedRouteSet, endpoints map[string]string) (*Runtime, error) {
+	return startMixedProtocolRouterWithProvider(parent, endpoint, upstreamAPIKey, routes, endpoints, "")
+}
+
+func startMixedProtocolRouterWithProvider(parent context.Context, endpoint, upstreamAPIKey string, routes mixedRouteSet, endpoints map[string]string, providerID string) (*Runtime, error) {
 	apiKey, err := sessionAPIKey()
 	if err != nil {
 		return nil, err
@@ -152,19 +161,22 @@ func startMixedProtocolRouter(parent context.Context, endpoint, upstreamAPIKey s
 	}
 	usage := NewUsageTracker()
 	router := &mixedProtocolRouter{
-		apiKey: apiKey, models: append([]string(nil), routes.models...), responses: responseModels,
-		chat: chatModels, messages: messageModels,
+		apiKey: apiKey, models: append([]string(nil), routes.models...), modelsDevProvider: strings.TrimSpace(providerID),
+		responses: responseModels, chat: chatModels, messages: messageModels,
 	}
 	if len(responseRoutes) > 0 {
 		router.codex = newCodexResponsesService(apiKey, endpoint, responseRoutes, &codexStaticAuthorizer{token: upstreamAPIKey}, usage)
+		router.codex.modelsDevProvider = router.modelsDevProvider
 		router.codex.setModelEndpoints(responseRoutes, endpoints)
 	}
 	if len(chatRoutes) > 0 {
 		router.chatSvc = newChatCompletionsService(apiKey, endpoint, chatRoutes, upstreamAPIKey, usage)
+		router.chatSvc.modelsDevProvider = router.modelsDevProvider
 		router.chatSvc.setModelEndpoints(chatRoutes, endpoints)
 	}
 	if len(messageRoutes) > 0 {
 		router.messagesSvc = newAnthropicMessagesService(apiKey, endpoint, messageRoutes, endpoints, upstreamAPIKey, usage)
+		router.messagesSvc.modelsDevProvider = router.modelsDevProvider
 	}
 	proxyRuntime, err := startLoopbackServer(parent, "mixed-protocol router", router.handlerForContext(parent), apiKey, usage)
 	if err != nil {
@@ -219,7 +231,7 @@ func (r *mixedProtocolRouter) handleModels(writer http.ResponseWriter, request *
 	if r.messagesSvc != nil {
 		mergeService(r.messagesSvc.modelRoute, r.messagesSvc.modelDetails)
 	}
-	serveModelListWithRoutes(writer, request, r.apiKey, r.models, details, routes)
+	serveModelListWithProvider(writer, request, r.apiKey, r.models, details, routes, r.modelsDevProvider)
 }
 
 // handleResponses dispatches one Responses request to the service that owns

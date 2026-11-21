@@ -176,7 +176,7 @@ func parseXaiModels(body []byte) ([]xaiModel, error) {
 				maxOut = resolved
 			}
 		}
-		levels, defaultLevel, known := entry.ReasoningLevels, strings.TrimSpace(entry.DefaultReasoningLevel), len(entry.ReasoningLevels) > 0
+		levels, defaultLevel, known := entry.ReasoningLevels, strings.TrimSpace(entry.DefaultReasoningLevel), entry.ReasoningLevels != nil
 		if !known {
 			levels, defaultLevel, known = protocol.ParseRemoteReasoningEfforts(
 				entry.SupportsReasoningEffort,

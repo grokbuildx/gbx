@@ -106,6 +106,10 @@ func serveModelListWithDetails(writer http.ResponseWriter, request *http.Request
 }
 
 func serveModelListWithRoutes(writer http.ResponseWriter, request *http.Request, key string, models []string, details map[string]protocol.ModelInfo, routes map[string]string) {
+	serveModelListWithProvider(writer, request, key, models, details, routes, "")
+}
+
+func serveModelListWithProvider(writer http.ResponseWriter, request *http.Request, key string, models []string, details map[string]protocol.ModelInfo, routes map[string]string, providerID string) {
 	if !modelsRequestAllowed(writer, request, key) {
 		return
 	}
@@ -138,19 +142,19 @@ func serveModelListWithRoutes(writer http.ResponseWriter, request *http.Request,
 		}
 		if index != nil {
 			if _, ok := entry["input_modalities"]; !ok {
-				if mod, found := index.InputModalities("", target, firstNonEmptyString(displayName, model)); found && len(mod) > 0 {
+				if mod, found := index.InputModalities(providerID, target, firstNonEmptyString(displayName, model)); found && len(mod) > 0 {
 					entry["input_modalities"] = mod
 				}
 			}
 			if _, ok := entry["max_output_tokens"]; !ok {
-				if maxOut, found := index.MaxOutputTokens("", target, firstNonEmptyString(displayName, model)); found && maxOut > 0 {
+				if maxOut, found := index.MaxOutputTokens(providerID, target, firstNonEmptyString(displayName, model)); found && maxOut > 0 {
 					entry["max_output_tokens"] = maxOut
 				}
 			}
 		}
 		levels, defaultLevel, known := info.ReasoningLevels, info.DefaultReasoningLevel, info.ReasoningKnown || len(info.ReasoningLevels) > 0
 		if !known {
-			levels, defaultLevel, known = resolveFallbackModelReasoning(index, "", target, firstNonEmptyString(displayName, model))
+			levels, defaultLevel, known = resolveFallbackModelReasoning(index, providerID, target, firstNonEmptyString(displayName, model))
 		}
 		applyModelEntryReasoning(entry, levels, defaultLevel, known)
 		data = append(data, entry)
@@ -180,15 +184,9 @@ func resolveFallbackModelReasoning(index *modelsdev.Index, providerID, target, d
 		return nil, "", true
 	}
 	if index != nil {
-		candidates := []string{bare}
-		if trimmed := strings.TrimSuffix(lower, "-thinking"); trimmed != "" && !strings.EqualFold(trimmed, bare) {
-			candidates = append(candidates, trimmed)
-		}
-		for _, candidate := range candidates {
-			if efforts, found := index.Efforts(providerID, candidate, displayOrAlias); found {
-				levels, chosen := reasoningLevelsFromEfforts(efforts, "")
-				return levels, chosen, true
-			}
+		if efforts, found := index.Efforts(providerID, bare, displayOrAlias); found {
+			levels, chosen := reasoningLevelsFromEfforts(efforts, "")
+			return levels, chosen, true
 		}
 	}
 	if lower == "kimi-for-coding" {
@@ -223,25 +221,7 @@ func reasoningLevelsFromEfforts(efforts []string, preferredDefault string) ([]pr
 }
 
 func chooseDefaultEffort(levels []protocol.ReasoningLevel, preferred string) string {
-	if len(levels) == 0 {
-		return ""
-	}
-	want := strings.ToLower(strings.TrimSpace(preferred))
-	if want != "" {
-		for _, level := range levels {
-			if strings.EqualFold(level.Effort, want) {
-				return strings.ToLower(strings.TrimSpace(level.Effort))
-			}
-		}
-	}
-	for _, candidate := range []string{"medium", "high", "low"} {
-		for _, level := range levels {
-			if strings.EqualFold(level.Effort, candidate) {
-				return candidate
-			}
-		}
-	}
-	return strings.ToLower(strings.TrimSpace(levels[0].Effort))
+	return protocol.ChooseDefaultEffort(levels, preferred)
 }
 
 // applyModelEntryReasoning writes both Grok Build's reasoning-effort schema

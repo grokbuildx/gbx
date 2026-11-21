@@ -918,6 +918,7 @@ func startWorkBuddyOAuth(parent context.Context, providerName, modelSpec, creden
 	proxyRuntime, err := startOpenAIChatRuntimeService(parent, deployment.baseURL, routes, nil, func(service *chatCompletionsService) {
 		service.normalizeBody = sanitizeWorkBuddyPayload
 		service.modelDetails = details
+		service.modelsDevProvider = "workbuddy"
 		service.roundTrip = func(ctx context.Context, converted *chatCompletionsConvertedRequest) (*http.Response, error) {
 			return upstream.do(ctx, "/v2/chat/completions", "", nil, converted.body, true)
 		}

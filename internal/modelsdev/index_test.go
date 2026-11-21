@@ -44,11 +44,48 @@ func TestReasoningIndexResolvesProviderCanonicalAndReferenceEntries(t *testing.T
 		{"", "ordered", "", []string{"low", "high", "max"}, true},
 		{"", "retired", "", []string{"high"}, true},
 		{"", "shared-v2", "", nil, false},
+		{"", "owner/shared:free", "", []string{"low", "high", "max"}, true},
+		{"", "shared:thinking", "", []string{"low", "high", "max"}, true},
+		{"", "shared-thinking", "", []string{"low", "high", "max"}, true},
+		{"", "azure/shared", "", []string{"low", "high", "max"}, true},
+		{"", "custom-gw/plain:free", "", nil, true},
 	} {
 		efforts, found := index.Efforts(test.provider, test.id, test.name)
 		if found != test.found || !slices.Equal(efforts, test.efforts) {
 			t.Errorf("%s/%s (%s): %v found=%t, want %v found=%t", test.provider, test.id, test.name, efforts, found, test.efforts, test.found)
 		}
+	}
+
+	// Digit separator normalization (4.6 <-> 4-6) resolves without fuzzy version stripping.
+	sepIndex, err := newIndex([]byte(`{
+		"anthropic":{"models":{"claude-opus-4-6":{"id":"claude-opus-4-6","canonical_model_id":"anthropic/claude-opus-4-6","reasoning":true,"reasoning_options":[{"type":"effort","values":["low","medium","high","max"]}]}}},
+		"openai":{"models":{"gpt-5.4":{"id":"gpt-5.4","canonical_model_id":"openai/gpt-5.4","reasoning":true,"reasoning_options":[{"type":"effort","values":["low","medium","high","xhigh"]}]}}}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if efforts, found := sepIndex.Efforts("", "anthropic/claude-opus-4.6:free", ""); !found || !slices.Equal(efforts, []string{"low", "medium", "high", "max"}) {
+		t.Fatalf("claude-opus-4.6 dotted variant = %v found=%t", efforts, found)
+	}
+	if efforts, found := sepIndex.Efforts("", "gpt-5-4", ""); !found || !slices.Equal(efforts, []string{"low", "medium", "high", "xhigh"}) {
+		t.Fatalf("gpt-5-4 hyphen variant = %v found=%t", efforts, found)
+	}
+	if _, found := sepIndex.Efforts("", "claude-opus-4-7", ""); found {
+		t.Fatal("must not fuzzy-strip version numbers")
+	}
+
+	// SupportsThinking distinguishes budget/toggle thinking models from non-reasoning models.
+	if supports, ok := index.SupportsThinking("", "budget", ""); !ok || !supports {
+		t.Fatalf("SupportsThinking(budget) = (%t, %t), want (true, true)", supports, ok)
+	}
+	if supports, ok := index.SupportsThinking("", "toggle", ""); !ok || !supports {
+		t.Fatalf("SupportsThinking(toggle) = (%t, %t), want (true, true)", supports, ok)
+	}
+	if supports, ok := index.SupportsThinking("", "plain", ""); !ok || supports {
+		t.Fatalf("SupportsThinking(plain) = (%t, %t), want (false, true)", supports, ok)
+	}
+	if _, ok := index.SupportsThinking("", "nonexistent", ""); ok {
+		t.Fatal("SupportsThinking(nonexistent) should be unknown")
 	}
 }
 
