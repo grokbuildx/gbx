@@ -214,12 +214,15 @@ func isImageContentItem(item map[string]any) bool {
 	if urlValue, ok := item["image_url"].(string); ok && urlValue != "" {
 		return true
 	}
+	if _, ok := item["image_url"].(map[string]any); ok {
+		return true
+	}
 	return false
 }
 
 func isInlineImageData(value string) bool {
 	trimmed := strings.ToLower(strings.TrimSpace(value))
-	return strings.HasPrefix(trimmed, "data:image/")
+	return strings.HasPrefix(trimmed, "data:image/") || strings.HasPrefix(trimmed, "data:;base64,")
 }
 
 func inputItems(raw json.RawMessage) ([]map[string]any, error) {
@@ -451,12 +454,15 @@ func (h *responseHistory) get(id, route, owner string) ([]map[string]any, bool) 
 	}
 	return items, true
 }
+
+const maxCachedHistoryImages = 6
+
 func (h *responseHistory) put(id, route, owner string, items []map[string]any) {
 	if id == "" {
 		return
 	}
-	raw, err := json.Marshal(items)
-	if err != nil || len(raw) > maxBodyBytes {
+	raw, ok := marshalBoundedHistoryItems(items, maxBodyBytes)
+	if !ok {
 		return
 	}
 	h.Lock()
@@ -485,6 +491,128 @@ func (h *responseHistory) put(id, route, owner string, items []map[string]any) {
 	}
 	h.entries[id] = historyEntry{Route: route, Owner: owner, Items: raw, At: time.Now()}
 	h.bytes += len(raw)
+}
+
+func marshalBoundedHistoryItems(items []map[string]any, limit int) ([]byte, bool) {
+	totalImages := countInlineHistoryImages(items)
+	candidates := []int{maxCachedHistoryImages, 2, 1, 0}
+	if totalImages <= maxCachedHistoryImages {
+		raw, err := json.Marshal(items)
+		if err == nil && len(raw) <= limit {
+			return raw, true
+		}
+		candidates = []int{2, 1, 0}
+	}
+	for _, keep := range candidates {
+		pruned := pruneInlineHistoryImages(items, totalImages, keep)
+		raw, err := json.Marshal(pruned)
+		if err == nil && len(raw) <= limit {
+			return raw, true
+		}
+	}
+	return nil, false
+}
+
+func countInlineHistoryImages(items []map[string]any) int {
+	total := 0
+	for _, item := range items {
+		total += countInlineImagesValue(item)
+	}
+	return total
+}
+
+func countInlineImagesValue(value any) int {
+	switch v := value.(type) {
+	case string:
+		if isInlineImageData(v) {
+			return 1
+		}
+		return 0
+	case []any:
+		n := 0
+		for _, elem := range v {
+			n += countInlineImagesValue(elem)
+		}
+		return n
+	case map[string]any:
+		if isImageContentItem(v) {
+			return 1
+		}
+		n := 0
+		for _, elem := range v {
+			n += countInlineImagesValue(elem)
+		}
+		return n
+	default:
+		return 0
+	}
+}
+
+func pruneInlineHistoryImages(items []map[string]any, totalImages, keepNewest int) []map[string]any {
+	dropLimit := totalImages - keepNewest
+	if dropLimit <= 0 {
+		return items
+	}
+	dropped := 0
+	out := make([]map[string]any, len(items))
+	for i, item := range items {
+		if pruned, ok := pruneInlineImagesValue(item, &dropped, dropLimit).(map[string]any); ok {
+			out[i] = pruned
+		} else {
+			out[i] = item
+		}
+	}
+	return out
+}
+
+func pruneInlineImagesValue(value any, dropped *int, dropLimit int) any {
+	if *dropped >= dropLimit {
+		return value
+	}
+	switch v := value.(type) {
+	case string:
+		if isInlineImageData(v) {
+			*dropped++
+			return "[historical screenshot omitted]"
+		}
+		return v
+	case []any:
+		out := make([]any, len(v))
+		changed := false
+		for i, elem := range v {
+			before := *dropped
+			next := pruneInlineImagesValue(elem, dropped, dropLimit)
+			if *dropped != before {
+				changed = true
+			}
+			out[i] = next
+		}
+		if !changed {
+			return v
+		}
+		return out
+	case map[string]any:
+		if isImageContentItem(v) {
+			*dropped++
+			return map[string]any{"type": "input_text", "text": "[historical screenshot omitted]"}
+		}
+		out := make(map[string]any, len(v))
+		changed := false
+		for k, elem := range v {
+			before := *dropped
+			next := pruneInlineImagesValue(elem, dropped, dropLimit)
+			if *dropped != before {
+				changed = true
+			}
+			out[k] = next
+		}
+		if !changed {
+			return v
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func (h *responseHistory) remove(id, route, owner string) {

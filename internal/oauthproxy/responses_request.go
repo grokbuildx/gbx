@@ -30,6 +30,7 @@ type responsesWireRequest struct {
 	Temperature       *float64            `json:"temperature"`
 	TopP              *float64            `json:"top_p"`
 	ServiceTier       string              `json:"service_tier"`
+	Truncation        string              `json:"truncation"`
 	PromptCacheKey    string              `json:"prompt_cache_key"`
 	User              string              `json:"user"`
 	Stop              json.RawMessage     `json:"stop"`
@@ -60,10 +61,12 @@ type conversationPart struct {
 	Kind string
 	// Text holds message text, or the readable summary of a reasoning part.
 	Text string
-	// MediaType and Data describe a base64 image; URL a remote one.
+	// MediaType and Data describe a base64 image; URL a remote one; Detail
+	// preserves Responses/Chat image detail ("original", "high", "low", "auto").
 	MediaType string
 	Data      string
 	URL       string
+	Detail    string
 	// CallID, Name and Arguments describe a tool call. Name is the flattened
 	// declaration name and Arguments a JSON object.
 	CallID    string
@@ -174,6 +177,7 @@ type conversationRequest struct {
 	TopP            *float64
 	Stop            []string
 	ServiceTier     string
+	Truncation      string
 	CacheKey        string
 	User            string
 	registry        toolRegistry
@@ -643,13 +647,19 @@ func responsesContentParts(value any) ([]conversationPart, error) {
 }
 
 func computerToolDescription(tool map[string]any) string {
-	desc := "Interact with a computer display using screenshots, mouse clicks, cursor movement, scrolling, and keyboard input."
+	desc := "Interact with a computer display using screenshots, mouse actions, scrolling, and keyboard input. Pass either a single action (type + action fields) or a batched actions array."
 	var details []string
 	if env, _ := tool["environment"].(string); env != "" {
 		details = append(details, "environment="+env)
 	}
 	width := responsesTextValue(tool["display_width"])
+	if width == "" {
+		width = responsesTextValue(tool["display_width_px"])
+	}
 	height := responsesTextValue(tool["display_height"])
+	if height == "" {
+		height = responsesTextValue(tool["display_height_px"])
+	}
 	if width != "" && height != "" {
 		details = append(details, "display="+width+"x"+height)
 	}
@@ -659,40 +669,70 @@ func computerToolDescription(tool map[string]any) string {
 	return desc
 }
 
-func computerToolSchema() map[string]any {
+func computerActionProperties() map[string]any {
 	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"type": map[string]any{
-				"type": "string",
-				"enum": []string{"screenshot", "click", "double_click", "move", "type", "keypress", "scroll", "wait", "drag"},
-			},
-			"x":        map[string]any{"type": "integer"},
-			"y":        map[string]any{"type": "integer"},
-			"button":   map[string]any{"type": "string", "enum": []string{"left", "right", "wheel", "back", "forward"}},
-			"text":     map[string]any{"type": "string"},
-			"keys":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"scroll_x": map[string]any{"type": "integer"},
-			"scroll_y": map[string]any{"type": "integer"},
-			"path": map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"type":       "object",
-					"properties": map[string]any{"x": map[string]any{"type": "integer"}, "y": map[string]any{"type": "integer"}},
-					"required":   []string{"x", "y"},
-				},
+		"type": map[string]any{
+			"type": "string",
+			"enum": []string{
+				"screenshot", "click", "double_click", "triple_click",
+				"move", "mouse_down", "mouse_up", "type", "keypress",
+				"scroll", "wait", "drag",
 			},
 		},
-		"required": []string{"type"},
+		"x":        map[string]any{"type": "integer"},
+		"y":        map[string]any{"type": "integer"},
+		"button":   map[string]any{"type": "string", "enum": []string{"left", "right", "wheel", "back", "forward"}},
+		"text":     map[string]any{"type": "string"},
+		"keys":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"scroll_x": map[string]any{"type": "integer"},
+		"scroll_y": map[string]any{"type": "integer"},
+		"ms":       map[string]any{"type": "integer"},
+		"path": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"x": map[string]any{"type": "integer"}, "y": map[string]any{"type": "integer"}},
+				"required":   []string{"x", "y"},
+			},
+		},
+	}
+}
+
+func computerToolSchema() map[string]any {
+	props := computerActionProperties()
+	props["actions"] = map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type":       "object",
+			"properties": computerActionProperties(),
+			"required":   []string{"type"},
+		},
+	}
+	return map[string]any{
+		"type":       "object",
+		"properties": props,
+	}
+}
+
+func normalizeImageDetail(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "original", "high", "low", "auto":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return ""
 	}
 }
 
 func responsesImagePart(p map[string]any) (conversationPart, error) {
 	source, _ := p["image_url"].(string)
+	rawDetail, _ := p["detail"].(string)
 	if nested, ok := p["image_url"].(map[string]any); ok {
 		source, _ = nested["url"].(string)
 		if source == "" {
 			source, _ = nested["image_url"].(string)
+		}
+		if rawDetail == "" {
+			rawDetail, _ = nested["detail"].(string)
 		}
 	}
 	if source == "" {
@@ -714,7 +754,12 @@ func responsesImagePart(p map[string]any) (conversationPart, error) {
 			}
 		}
 	}
-	return conversationImage(source)
+	part, err := conversationImage(source)
+	if err != nil {
+		return conversationPart{}, err
+	}
+	part.Detail = normalizeImageDetail(rawDetail)
+	return part, nil
 }
 
 func conversationImage(source string) (conversationPart, error) {
@@ -805,8 +850,10 @@ func parseResponsesRequest(raw []byte) (*conversationRequest, error) {
 		Model: model, Tools: tools, registry: registry,
 		ParallelToolCalls: wire.ParallelToolCalls, MaxOutputTokens: wire.MaxOutputTokens,
 		Stream: wire.Stream, Temperature: wire.Temperature, TopP: wire.TopP,
-		ServiceTier: strings.TrimSpace(wire.ServiceTier), CacheKey: strings.TrimSpace(wire.PromptCacheKey),
-		User: strings.TrimSpace(wire.User), rawBytes: len(raw), rawTokens: estimateApproxTokensBytes(raw),
+		ServiceTier: strings.TrimSpace(wire.ServiceTier),
+		Truncation:  strings.ToLower(strings.TrimSpace(wire.Truncation)),
+		CacheKey:    strings.TrimSpace(wire.PromptCacheKey),
+		User:        strings.TrimSpace(wire.User), rawBytes: len(raw), rawTokens: estimateApproxTokensBytes(raw),
 	}
 	if len(wire.Instructions) > 0 && string(wire.Instructions) != "null" {
 		var instructions string
@@ -841,6 +888,7 @@ func parseResponsesRequest(raw []byte) (*conversationRequest, error) {
 	if len(request.Turns) == 0 {
 		return nil, fmt.Errorf("Responses input has no conversation messages")
 	}
+	request.pruneHistoricalToolScreenshots()
 	request.System += toolCallingInstructions(tools, registry)
 	choice, err := responsesToolChoice(wire.ToolChoice, registry)
 	if err != nil {
@@ -848,6 +896,44 @@ func parseResponsesRequest(raw []byte) (*conversationRequest, error) {
 	}
 	request.ToolChoice = choice
 	return request, nil
+}
+
+const maxHistoricalToolScreenshots = 4
+
+// pruneHistoricalToolScreenshots bounds image accumulation across long Computer
+// Use tool loops on converted backends. Images in the latest turn and direct
+// user-message attachments stay intact; only tool-result screenshots in earlier
+// turns beyond maxHistoricalToolScreenshots are replaced with text placeholders.
+func (r *conversationRequest) pruneHistoricalToolScreenshots() {
+	if len(r.Turns) <= 1 {
+		return
+	}
+	type imageRef struct {
+		turnIdx int
+		partIdx int
+		outIdx  int
+	}
+	var refs []imageRef
+	for turnIdx := 0; turnIdx < len(r.Turns)-1; turnIdx++ {
+		turn := r.Turns[turnIdx]
+		for partIdx, part := range turn.Parts {
+			if part.Kind != partToolResult {
+				continue
+			}
+			for outIdx, piece := range part.Output {
+				if piece.Kind == partImage {
+					refs = append(refs, imageRef{turnIdx: turnIdx, partIdx: partIdx, outIdx: outIdx})
+				}
+			}
+		}
+	}
+	dropCount := len(refs) - maxHistoricalToolScreenshots
+	if dropCount <= 0 {
+		return
+	}
+	for _, ref := range refs[:dropCount] {
+		r.Turns[ref.turnIdx].Parts[ref.partIdx].Output[ref.outIdx] = textPart("[earlier screenshot omitted]")
+	}
 }
 
 func responsesStructuredFormat(raw json.RawMessage) (*conversationFormat, error) {
@@ -896,15 +982,42 @@ func responsesToolChoice(value any, registry toolRegistry) (conversationToolChoi
 		if function, ok := choice["function"].(map[string]any); ok && name == "" {
 			name, _ = function["name"].(string)
 		}
-		if choice["type"] == "tool_search" {
-			name = "tool_search"
+		kind, _ := choice["type"].(string)
+		builtinKind := ""
+		switch {
+		case kind == "tool_search":
+			builtinKind = "tool_search"
+		case kind == "computer" || kind == "computer_use_preview" || strings.HasPrefix(kind, "computer_use"):
+			builtinKind = "computer"
+		case kind == "shell":
+			builtinKind = "shell"
+		case kind == "local_shell":
+			builtinKind = "local_shell"
+		case kind == "apply_patch":
+			builtinKind = "apply_patch"
+		}
+		if name == "" && builtinKind != "" {
+			name = builtinKind
 		}
 		namespace, _ := choice["namespace"].(string)
 		wire := toolWireName(namespace, name)
-		if _, ok := registry[wire]; !ok {
-			return conversationToolChoice{}, fmt.Errorf("tool_choice is not in tools")
+		if _, ok := registry[wire]; ok {
+			return conversationToolChoice{Mode: toolChoiceTool, Name: wire}, nil
 		}
-		return conversationToolChoice{Mode: toolChoiceTool, Name: wire}, nil
+		if builtinKind != "" && namespace == "" {
+			matched := ""
+			matches := 0
+			for candidate, spec := range registry {
+				if spec.Kind == builtinKind {
+					matched = candidate
+					matches++
+				}
+			}
+			if matches == 1 {
+				return conversationToolChoice{Mode: toolChoiceTool, Name: matched}, nil
+			}
+		}
+		return conversationToolChoice{}, fmt.Errorf("tool_choice is not in tools")
 	default:
 		return conversationToolChoice{}, fmt.Errorf("unsupported tool_choice")
 	}
@@ -1051,6 +1164,11 @@ func (r *conversationRequest) readItems(items []map[string]any) error {
 			output, err := responsesToolOutputParts(kind, item["output"])
 			if err != nil {
 				return err
+			}
+			if kind == "computer_call_output" {
+				if currentURL, _ := item["current_url"].(string); strings.TrimSpace(currentURL) != "" {
+					output = append([]conversationPart{textPart("Current URL: " + strings.TrimSpace(currentURL))}, output...)
+				}
 			}
 			if id == "" || unavailable[id] {
 				label := fmt.Sprintf("Historical tool result (%s):", id)

@@ -43,13 +43,15 @@ func newResponsesHistoryCache() *responsesHistoryCache {
 	}
 }
 
+const responsesHistoryMaxRetainedImages = 6
+
 func (c *responsesHistoryCache) put(id string, items []any, now time.Time) {
 	id = strings.TrimSpace(id)
 	if id == "" || len(items) == 0 {
 		return
 	}
-	encoded, err := json.Marshal(items)
-	if err != nil || len(encoded) == 0 || len(encoded) > responsesHistoryMaxEntrySize {
+	encoded, ok := marshalBoundedResponsesHistory(items, responsesHistoryMaxEntrySize)
+	if !ok {
 		return
 	}
 	c.mu.Lock()
@@ -74,6 +76,191 @@ func (c *responsesHistoryCache) put(id string, items []any, now time.Time) {
 	}
 	c.order = append(c.order, id)
 	c.totalSize += len(encoded)
+}
+
+func marshalBoundedResponsesHistory(items []any, limit int) ([]byte, bool) {
+	totalImages := countResponsesHistoryImages(items)
+	candidates := []int{responsesHistoryMaxRetainedImages, 2, 1, 0}
+	if totalImages <= responsesHistoryMaxRetainedImages {
+		encoded, err := json.Marshal(items)
+		if err == nil && len(encoded) > 0 && len(encoded) <= limit {
+			return encoded, true
+		}
+		candidates = []int{2, 1, 0}
+	}
+	for _, keep := range candidates {
+		pruned := pruneResponsesHistoryImages(items, totalImages, keep)
+		encoded, err := json.Marshal(pruned)
+		if err == nil && len(encoded) > 0 && len(encoded) <= limit {
+			return encoded, true
+		}
+	}
+	return nil, false
+}
+
+func isResponsesHistoryImageMap(m map[string]any) bool {
+	kind, _ := m["type"].(string)
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "input_image", "computer_screenshot", "image", "image_url":
+		return true
+	}
+	if urlVal, ok := m["image_url"].(string); ok && urlVal != "" {
+		return true
+	}
+	if _, ok := m["image_url"].(map[string]any); ok {
+		return true
+	}
+	return false
+}
+
+func isResponsesHistoryInlineImageString(value string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(trimmed, "data:image/") || strings.HasPrefix(trimmed, "data:;base64,")
+}
+
+func countResponsesHistoryImages(value any) int {
+	switch v := value.(type) {
+	case string:
+		if isResponsesHistoryInlineImageString(v) {
+			return 1
+		}
+		return 0
+	case []any:
+		n := 0
+		for _, elem := range v {
+			n += countResponsesHistoryImages(elem)
+		}
+		return n
+	case map[string]any:
+		if isResponsesHistoryImageMap(v) {
+			return 1
+		}
+		n := 0
+		for _, elem := range v {
+			n += countResponsesHistoryImages(elem)
+		}
+		return n
+	default:
+		return 0
+	}
+}
+
+func pruneResponsesHistoryImages(items []any, totalImages, keepNewest int) []any {
+	dropLimit := totalImages - keepNewest
+	if dropLimit <= 0 {
+		return items
+	}
+	dropped := 0
+	demotedCalls := make(map[string]bool)
+	out := make([]any, len(items))
+	changed := false
+	for i, raw := range items {
+		if dropped >= dropLimit {
+			out[i] = raw
+			continue
+		}
+		if item, ok := raw.(map[string]any); ok && stringValue(item["type"]) == "computer_call_output" {
+			if imgCount := countResponsesHistoryImages(item["output"]); imgCount > 0 {
+				dropped += imgCount
+				changed = true
+				callID := builtinCallID(item)
+				if callID != "" {
+					demotedCalls[callID] = true
+				}
+				summary := "[historical screenshot omitted]"
+				if currentURL := strings.TrimSpace(stringValue(item["current_url"])); currentURL != "" {
+					summary = "Current URL: " + currentURL + "\n" + summary
+				}
+				if callID != "" {
+					summary = "Previous computer call output (" + callID + "):\n" + summary
+				}
+				out[i] = map[string]any{
+					"type":    "message",
+					"role":    "user",
+					"content": []any{map[string]any{"type": "input_text", "text": summary}},
+				}
+				continue
+			}
+		}
+		before := dropped
+		next := pruneResponsesHistoryValue(raw, &dropped, dropLimit)
+		if dropped != before {
+			changed = true
+		}
+		out[i] = next
+	}
+	if len(demotedCalls) > 0 {
+		for i, raw := range out {
+			item, ok := raw.(map[string]any)
+			if !ok || stringValue(item["type"]) != "computer_call" {
+				continue
+			}
+			callID := builtinCallID(item)
+			if !demotedCalls[callID] {
+				continue
+			}
+			args := string(builtinCallArguments("computer_call", item))
+			out[i] = map[string]any{
+				"type":    "message",
+				"role":    "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "Previous computer call (" + callID + "):\n" + args}},
+			}
+		}
+	}
+	if !changed {
+		return items
+	}
+	return out
+}
+
+func pruneResponsesHistoryValue(value any, dropped *int, dropLimit int) any {
+	if *dropped >= dropLimit {
+		return value
+	}
+	switch v := value.(type) {
+	case string:
+		if isResponsesHistoryInlineImageString(v) {
+			*dropped++
+			return "[historical screenshot omitted]"
+		}
+		return v
+	case []any:
+		out := make([]any, len(v))
+		changed := false
+		for i, elem := range v {
+			before := *dropped
+			next := pruneResponsesHistoryValue(elem, dropped, dropLimit)
+			if *dropped != before {
+				changed = true
+			}
+			out[i] = next
+		}
+		if !changed {
+			return v
+		}
+		return out
+	case map[string]any:
+		if isResponsesHistoryImageMap(v) {
+			*dropped++
+			return map[string]any{"type": "input_text", "text": "[historical screenshot omitted]"}
+		}
+		out := make(map[string]any, len(v))
+		changed := false
+		for k, elem := range v {
+			before := *dropped
+			next := pruneResponsesHistoryValue(elem, dropped, dropLimit)
+			if *dropped != before {
+				changed = true
+			}
+			out[k] = next
+		}
+		if !changed {
+			return v
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func (c *responsesHistoryCache) get(id string, now time.Time) ([]any, bool) {

@@ -184,22 +184,18 @@ func (a *responseAssembler) item(index int, complete bool) map[string]any {
 			return map[string]any{"id": block.ItemID, "type": "tool_search_call", "call_id": block.ID,
 				"execution": "client", "arguments": arguments, "status": status}
 		case "computer":
-			payload := map[string]any{}
-			_ = decodeProtocolJSON([]byte(block.Arguments), &payload)
-			if nested, ok := payload["action"].(map[string]any); ok {
-				payload = nested
-			}
+			action, actions := normalizeComputerCallPayload(block.Arguments)
 			item := map[string]any{
 				"id":                    block.ItemID,
 				"type":                  "computer_call",
 				"call_id":               block.ID,
-				"action":                payload,
 				"pending_safety_checks": []any{},
 				"status":                status,
 			}
-			if actions, ok := payload["actions"].([]any); ok && len(payload) == 1 {
+			if len(actions) > 0 {
 				item["actions"] = actions
-				delete(item, "action")
+			} else {
+				item["action"] = action
 			}
 			return item
 		case "shell":
@@ -491,6 +487,11 @@ func (a *responseAssembler) addToolUse(id, name, partialJSON string) error {
 	if spec.Kind == "custom" {
 		if _, ok := input["input"].(string); !ok {
 			return fmt.Errorf("provider returned invalid custom tool input")
+		}
+	}
+	if spec.Kind == "computer" {
+		if err := validateComputerToolInput(input); err != nil {
+			return err
 		}
 	}
 	if err := a.retain(len(partialJSON)); err != nil {
@@ -787,4 +788,42 @@ func (a *responseAssembler) emit(event string, data map[string]any) error {
 		a.flusher.Flush()
 	}
 	return nil
+}
+
+func normalizeComputerCallPayload(raw string) (map[string]any, []any) {
+	payload := map[string]any{}
+	_ = decodeProtocolJSON([]byte(raw), &payload)
+	if nested, ok := payload["action"].(map[string]any); ok {
+		payload = nested
+	}
+	actionType, _ := payload["type"].(string)
+	if actions, ok := payload["actions"].([]any); ok && len(actions) > 0 && strings.TrimSpace(actionType) == "" {
+		return nil, actions
+	}
+	return payload, nil
+}
+
+func validateComputerToolInput(input map[string]any) error {
+	payload := input
+	if nested, ok := payload["action"].(map[string]any); ok {
+		payload = nested
+	}
+	actionType, _ := payload["type"].(string)
+	if strings.TrimSpace(actionType) != "" {
+		return nil
+	}
+	if actions, ok := payload["actions"].([]any); ok && len(actions) > 0 {
+		for _, raw := range actions {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				return fmt.Errorf("provider returned invalid computer tool action")
+			}
+			entryType, _ := entry["type"].(string)
+			if strings.TrimSpace(entryType) == "" {
+				return fmt.Errorf("provider returned invalid computer tool action")
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("provider returned invalid computer tool action")
 }

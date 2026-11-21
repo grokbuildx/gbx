@@ -54,9 +54,50 @@ func responsesNeedFlattening(payload map[string]any) bool {
 			"apply_patch_call", "apply_patch_call_output",
 			"mcp_call", "mcp_list_tools", "mcp_approval_request", "mcp_approval_response":
 			return true
+		case "function_call_output":
+			if responsesOutputNeedsImageNormalization(item["output"]) {
+				return true
+			}
 		}
 		if namespace, _ := item["namespace"].(string); namespace != "" {
 			return true
+		}
+	}
+	return false
+}
+
+func responsesOutputNeedsImageNormalization(raw any) bool {
+	switch value := raw.(type) {
+	case map[string]any:
+		return responsesImagePartNeedsNormalization(value)
+	case []any:
+		for _, elem := range value {
+			if m, ok := elem.(map[string]any); ok && responsesImagePartNeedsNormalization(m) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func responsesImagePartNeedsNormalization(part map[string]any) bool {
+	kind, _ := part["type"].(string)
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "computer_screenshot", "image", "image_url":
+		return true
+	case "input_image":
+		if _, isMap := part["image_url"].(map[string]any); isMap {
+			return true
+		}
+		if urlVal, _ := part["image_url"].(string); strings.HasPrefix(strings.TrimSpace(urlVal), "data:") {
+			if header, _, ok := strings.Cut(strings.TrimSpace(urlVal), ","); ok {
+				meta := strings.TrimPrefix(header, "data:")
+				// Standard data:image/<type>;base64 has no extra parameters or empty MIME.
+				mime, isBase64 := strings.CutSuffix(meta, ";base64")
+				if !isBase64 || strings.TrimSpace(mime) == "" || strings.Contains(mime, ";") {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -118,6 +159,10 @@ func convertResponsesForUpstream(raw []byte, sessionID string) (*codexResponsesC
 	switch request.ServiceTier {
 	case "priority", "flex", "default", "auto":
 		body["service_tier"] = request.ServiceTier
+	}
+	switch request.Truncation {
+	case "auto", "disabled":
+		body["truncation"] = request.Truncation
 	}
 	if len(request.Tools) > 0 {
 		tools := make([]any, 0, len(request.Tools))
@@ -185,7 +230,7 @@ func codexTurnItems(turn conversationTurn) ([]any, error) {
 		case partText:
 			content = append(content, map[string]any{"type": textType, "text": part.Text})
 		case partImage:
-			content = append(content, map[string]any{"type": "input_image", "image_url": part.imageURL()})
+			content = append(content, responsesInputImagePart(part))
 		case partReasoning:
 			if turn.Role != "assistant" || !strings.HasPrefix(part.Signature, codexReasoningSignaturePrefix) {
 				continue
@@ -208,7 +253,7 @@ func codexTurnItems(turn conversationTurn) ([]any, error) {
 				parts := make([]any, 0, len(part.Output))
 				for _, piece := range part.Output {
 					if piece.Kind == partImage {
-						parts = append(parts, map[string]any{"type": "input_image", "image_url": piece.imageURL()})
+						parts = append(parts, responsesInputImagePart(piece))
 					} else if piece.Text != "" {
 						parts = append(parts, map[string]any{"type": "input_text", "text": piece.Text})
 					}
@@ -220,6 +265,14 @@ func codexTurnItems(turn conversationTurn) ([]any, error) {
 	}
 	flush()
 	return result, nil
+}
+
+func responsesInputImagePart(part conversationPart) map[string]any {
+	out := map[string]any{"type": "input_image", "image_url": part.imageURL()}
+	if part.Detail != "" {
+		out["detail"] = part.Detail
+	}
+	return out
 }
 
 // The client persists a reasoning item's encrypted_content verbatim. Carry the

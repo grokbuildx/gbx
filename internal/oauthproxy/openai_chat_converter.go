@@ -120,7 +120,7 @@ func chatConvertTurn(turn conversationTurn) []map[string]any {
 			if len(images) > 0 {
 				contentParts = append(contentParts, map[string]any{"type": "text", "text": "Images from tool result " + part.CallID + ":"})
 				for _, image := range images {
-					contentParts = append(contentParts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": image.imageURL()}})
+					contentParts = append(contentParts, map[string]any{"type": "image_url", "image_url": chatImageURLObject(image)})
 				}
 			}
 		case partReasoning:
@@ -132,7 +132,7 @@ func chatConvertTurn(turn conversationTurn) []map[string]any {
 		case partText:
 			contentParts = append(contentParts, map[string]any{"type": "text", "text": part.Text})
 		case partImage:
-			contentParts = append(contentParts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": part.imageURL()}})
+			contentParts = append(contentParts, map[string]any{"type": "image_url", "image_url": chatImageURLObject(part)})
 		case partToolCall:
 			if assistant && part.CallID != "" {
 				toolCalls = append(toolCalls, map[string]any{
@@ -220,4 +220,18 @@ func chatToolChoice(choice conversationToolChoice) (any, bool) {
 	default:
 		return nil, false
 	}
+}
+
+// chatImageURLObject encodes an image part for Chat Completions-style backends.
+// Responses' "original" detail is mapped to "high" because Chat Completions
+// validates image_url.detail against auto|low|high.
+func chatImageURLObject(part conversationPart) map[string]any {
+	out := map[string]any{"url": part.imageURL()}
+	switch part.Detail {
+	case "original", "high":
+		out["detail"] = "high"
+	case "low", "auto":
+		out["detail"] = part.Detail
+	}
+	return out
 }

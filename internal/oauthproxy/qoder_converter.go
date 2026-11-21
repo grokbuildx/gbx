@@ -269,7 +269,7 @@ func qoderTransformUserTurn(turn conversationTurn) ([]any, string) {
 			allText.WriteString(part.Text)
 		case partImage:
 			if imageURL := part.imageURL(); imageURL != "" {
-				parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageURL}})
+				parts = append(parts, map[string]any{"type": "image_url", "image_url": chatImageURLObject(part)})
 			}
 		case partToolResult:
 			content := part.outputText()
@@ -285,7 +285,7 @@ func qoderTransformUserTurn(turn conversationTurn) ([]any, string) {
 					if imageURL := sub.imageURL(); imageURL != "" {
 						hasImage = true
 						toolText = append(toolText, "[image attached in the following user message]")
-						toolImages = append(toolImages, map[string]any{"type": "text", "text": "Image from tool result " + part.CallID + ":"}, map[string]any{"type": "image_url", "image_url": map[string]any{"url": imageURL}})
+						toolImages = append(toolImages, map[string]any{"type": "text", "text": "Image from tool result " + part.CallID + ":"}, map[string]any{"type": "image_url", "image_url": chatImageURLObject(sub)})
 					}
 				}
 			}

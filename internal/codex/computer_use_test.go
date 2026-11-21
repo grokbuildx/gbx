@@ -260,3 +260,106 @@ func TestCompactionItemsSanitizesScreenshotsAndSummarizesAllToolTypes(t *testing
 		}
 	}
 }
+
+func TestXaiAPIKeyResponsesProviderGetsCodeModeAndLocalCompaction(t *testing.T) {
+	var compactUpstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/responses/compact") {
+			compactUpstreamHits.Add(1)
+			http.Error(w, "xAI does not implement /responses/compact", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_xai_api\",\"object\":\"response\",\"status\":\"in_progress\",\"output\":[]}}\n\n")
+		_, _ = io.WriteString(w, "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"in_progress\",\"content\":[]}}\n\n")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"xAI summary\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"xAI summary\"}]}}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_xai_api\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"xAI summary\"}]}]}}\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+
+	runtime, err := oauthproxy.StartOpenAIResponsesAPI(context.Background(), upstream.URL+"/v1", "fake-xai-key", "grok-4-20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runtime.Stop)
+
+	configured := provider.Provider{
+		Name:              "xai-api",
+		Type:              "openai_responses",
+		Endpoint:          upstream.URL + "/v1",
+		APIKey:            "fake-xai-key",
+		Model:             "grok-4-20",
+		ModelsDevProvider: "xai",
+	}
+	g, err := New(context.Background(), runtime, configured, Options{Desktop: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(g.Close)
+
+	g.inheritClientToolMode(Catalog{Models: []Model{{
+		"slug":       "gpt-5.4",
+		"tool_mode":  "code_mode_only",
+		"shell_type": "unified_exec",
+	}}})
+
+	entry := g.Models()[0]
+	if entry["tool_mode"] != "code_mode_only" || entry["shell_type"] != "unified_exec" || entry["supports_search_tool"] != true {
+		t.Fatalf("xAI API-key responses model missed code_mode_only/search capabilities: %+v", entry)
+	}
+
+	alias := entry["slug"].(string)
+	compactPayload, _ := json.Marshal(map[string]any{
+		"model": alias,
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": "summarize session"},
+		},
+	})
+	compactReq, _ := http.NewRequest(http.MethodPost, g.BaseURL()+"/responses/compact", bytes.NewReader(compactPayload))
+	compactReq.Header.Set("Authorization", "Bearer fake-native-key")
+	compactResp, err := http.DefaultClient.Do(compactReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compactResp.Body.Close()
+	if compactResp.StatusCode != http.StatusOK || compactUpstreamHits.Load() != 0 {
+		bodyBytes, _ := io.ReadAll(compactResp.Body)
+		t.Fatalf("expected local compaction on xAI API-key responses provider, status=%d hits=%d body=%s", compactResp.StatusCode, compactUpstreamHits.Load(), bodyBytes)
+	}
+}
+
+func TestResponseHistoryPrunesOldScreenshotsUnderSizeLimit(t *testing.T) {
+	shot := "data:image/png;base64," + strings.Repeat("X", 1024)
+	items := make([]map[string]any, 0, 8)
+	for step := 1; step <= 8; step++ {
+		items = append(items, map[string]any{
+			"type":    "computer_call_output",
+			"call_id": "cu_step",
+			"output":  map[string]any{"type": "computer_screenshot", "image_url": shot},
+		})
+	}
+
+	var history responseHistory
+	history.put("resp_big", "gbx/p/m", "owner-1", items)
+	got, ok := history.get("resp_big", "gbx/p/m", "owner-1")
+	if !ok {
+		t.Fatal("expected history entry with 8 screenshots to be cached")
+	}
+	// Caller slice must stay untouched.
+	if origOut, _ := items[0]["output"].(map[string]any); origOut["type"] != "computer_screenshot" {
+		t.Fatalf("caller history slice mutated: %+v", origOut)
+	}
+	encoded, _ := json.Marshal(got)
+	if strings.Count(string(encoded), shot) != maxCachedHistoryImages {
+		t.Fatalf("retained screenshots = %d, want %d", strings.Count(string(encoded), shot), maxCachedHistoryImages)
+	}
+	if strings.Count(string(encoded), "[historical screenshot omitted]") != 2 {
+		t.Fatalf("expected 2 omitted screenshots, got: %s", encoded)
+	}
+
+	tight, ok := marshalBoundedHistoryItems(items, 2048)
+	if !ok || len(tight) > 2048 {
+		t.Fatalf("expected bounded history marshaling under tight cap, ok=%v len=%d", ok, len(tight))
+	}
+}

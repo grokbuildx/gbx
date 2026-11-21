@@ -159,9 +159,10 @@ func buildProviderCatalog(runtime *oauthproxy.Runtime, configured provider.Provi
 	p.Type = provider.EffectiveType(p)
 	oauth := strings.ToLower(strings.TrimSpace(p.OAuthProvider))
 	codexOAuth := oauth == "gpt" || oauth == "codex"
+	xaiAPI := oauth == "" && strings.EqualFold(oauthproxy.ModelsDevProviderID(p), "xai")
 	mixed := oauth == "" && len(p.ModelProtocols) > 0
 	native := codexOAuth ||
-		oauth == "" && !mixed && provider.IsOpenAIResponsesType(p.Type)
+		oauth == "" && !mixed && !xaiAPI && provider.IsOpenAIResponsesType(p.Type)
 	details, names := runtime.ModelDetails(), runtime.ModelDisplayNames()
 	models := runtime.Models()
 	details = withGPTReasoningDefaults(models, details)
@@ -178,7 +179,7 @@ func buildProviderCatalog(runtime *oauthproxy.Runtime, configured provider.Provi
 		if modelProtocol == "" {
 			modelProtocol = p.ModelProtocols[strings.TrimSuffix(strings.ToLower(model), "[1m]")]
 		}
-		modelNative := native || mixed && provider.IsOpenAIResponsesType(modelProtocol)
+		modelNative := native || mixed && !xaiAPI && provider.IsOpenAIResponsesType(modelProtocol)
 		routes[alias] = Route{Provider: p.Name, Alias: alias, Model: model, NativeResponses: modelNative, CodexNativeTools: codexOAuth, MaxOutputTokens: info.MaxOutputTokens}
 		entry := newModel(alias, model, details, names)
 		if modelNative && !codexOAuth {

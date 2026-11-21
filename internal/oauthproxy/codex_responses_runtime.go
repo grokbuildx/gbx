@@ -130,6 +130,9 @@ func startCodexResponsesAPIWithProvider(parent context.Context, endpoint, upstre
 		func(apiKey, endpoint string, routes []runtimeModelRoute, auth codexResponsesAuthorizer, usage *UsageTracker) *codexResponsesService {
 			service := newCodexResponsesService(apiKey, endpoint, routes, auth, usage)
 			service.modelsDevProvider = strings.TrimSpace(providerID)
+			if strings.EqualFold(service.modelsDevProvider, "xai") {
+				service.flattenTools = true
+			}
 			return service
 		})
 }
@@ -363,6 +366,9 @@ func (s *codexResponsesService) serveConverted(writer http.ResponseWriter, reque
 		if s.xai {
 			converted.thinkingEnabled = s.normalizeXaiReasoning(route, body)
 		}
+		if s.isXaiBackend() {
+			normalizeXaiImageDetail(body)
+		}
 		converted.body, _ = json.Marshal(body)
 	}
 	LogDebugEvent("request_converted", "component", "codex_responses", "request_id", requestID,
@@ -399,6 +405,10 @@ func (s *codexResponsesService) serveConverted(writer http.ResponseWriter, reque
 	}
 	LogDebugEvent("request_complete", "component", "codex_responses", "request_id", requestID,
 		"model", converted.model, "status", http.StatusOK, "stream", converted.stream, "duration", logDuration(started))
+}
+
+func (s *codexResponsesService) isXaiBackend() bool {
+	return s.xai || strings.EqualFold(strings.TrimSpace(s.modelsDevProvider), "xai")
 }
 
 func (s *codexResponsesService) writeUpstreamError(writer http.ResponseWriter, requestID, model string, started time.Time, err error) {
@@ -454,7 +464,7 @@ func (s *codexResponsesService) call(ctx context.Context, body []byte, sessionID
 			return nil, err
 		}
 	}
-	if !s.xai && ctx.Value(codexCompactRequest{}) != true {
+	if !s.isXaiBackend() && ctx.Value(codexCompactRequest{}) != true {
 		var err error
 		body, err = s.addClientMetadata(body, sessionID)
 		if err != nil {
@@ -601,6 +611,41 @@ func (s *codexResponsesService) normalizeXaiReasoning(model string, payload map[
 	return effort != "none"
 }
 
+// normalizeXaiImageDetail maps OpenAI Responses' "original" image detail value
+// to "high" on xAI Responses endpoints, which only accept auto|low|high.
+func normalizeXaiImageDetail(payload map[string]any) {
+	if payload == nil {
+		return
+	}
+	if input, ok := payload["input"]; ok {
+		rewriteXaiImageDetail(input)
+	}
+}
+
+func rewriteXaiImageDetail(value any) {
+	switch v := value.(type) {
+	case []any:
+		for _, elem := range v {
+			rewriteXaiImageDetail(elem)
+		}
+	case map[string]any:
+		kind := strings.ToLower(strings.TrimSpace(stringValue(v["type"])))
+		if kind == "input_image" || kind == "image_url" || kind == "computer_screenshot" {
+			if strings.EqualFold(strings.TrimSpace(stringValue(v["detail"])), "original") {
+				v["detail"] = "high"
+			}
+			if nested, ok := v["image_url"].(map[string]any); ok {
+				if strings.EqualFold(strings.TrimSpace(stringValue(nested["detail"])), "original") {
+					nested["detail"] = "high"
+				}
+			}
+		}
+		for _, elem := range v {
+			rewriteXaiImageDetail(elem)
+		}
+	}
+}
+
 func (s *codexResponsesService) addClientMetadata(body []byte, sessionID string) ([]byte, error) {
 	var payload map[string]any
 	if err := decodeProtocolJSON(body, &payload); err != nil {
@@ -671,6 +716,9 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 		}
 		if s.xai {
 			s.normalizeXaiReasoning(resolved, payload)
+		}
+		if s.isXaiBackend() {
+			normalizeXaiImageDetail(payload)
 		}
 		sanitizePassthroughResponsesInput(payload)
 	}
