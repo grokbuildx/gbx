@@ -92,6 +92,7 @@ func Update(fn func(*provider.Config) error) error {
 		if err := fn(cfg); err != nil {
 			return err
 		}
+		normalize(cfg)
 		return write(path, cfg)
 	})
 }

@@ -17,21 +17,33 @@ export function SubscriptionLogin({ api, onDone }: { api: Api; onDone: () => voi
   const [login, setLogin] = useState<{ id: string; output: string[]; urls: string[]; done: boolean; ok: boolean; cancelled?: boolean; error?: string } | null>(null);
   const [error, setError] = useState("");
 
+  const loginId = login?.id ?? "";
+  const loginDone = login?.done ?? true;
   useEffect(() => {
-    if (!login || login.done) return;
+    if (!loginId || loginDone) return;
+    let cancelled = false;
+    let inFlight = false;
     const timer = setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const status = await api.oauthStatus(login.id);
+        const status = await api.oauthStatus(loginId);
+        if (cancelled) return;
         // The link is shown for the user to open: a page opened from a timer
         // would be blocked as a pop-up.
         setLogin(status);
         if (status.done && status.ok) onDone();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        inFlight = false;
       }
     }, 800);
-    return () => clearInterval(timer);
-  }, [login, api, onDone]);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [loginId, loginDone, api, onDone]);
 
   const start = async () => {
     setError("");

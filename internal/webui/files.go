@@ -320,16 +320,28 @@ func writeStale(w http.ResponseWriter, stale *staleFileError) {
 // and returns the new content's hash.
 func saveVerified(file string, content []byte, expectedHash string) (string, error) {
 	mode := fs.FileMode(0o644)
-	current, err := os.ReadFile(file)
+	existing, err := os.Open(file)
 	switch {
 	case err == nil:
-		sum := sha256.Sum256(current)
-		if hash := hex.EncodeToString(sum[:]); hash != expectedHash {
+		info, statErr := existing.Stat()
+		if statErr != nil {
+			_ = existing.Close()
+			return "", statErr
+		}
+		if !info.Mode().IsRegular() {
+			_ = existing.Close()
+			return "", fmt.Errorf("not a regular file")
+		}
+		hasher := sha256.New()
+		_, copyErr := io.Copy(hasher, existing)
+		_ = existing.Close()
+		if copyErr != nil {
+			return "", copyErr
+		}
+		if hash := hex.EncodeToString(hasher.Sum(nil)); hash != expectedHash {
 			return "", &staleFileError{Hash: hash}
 		}
-		if info, err := os.Stat(file); err == nil {
-			mode = info.Mode().Perm()
-		}
+		mode = info.Mode().Perm()
 	case errors.Is(err, fs.ErrNotExist):
 		if expectedHash != "" {
 			return "", &staleFileError{}

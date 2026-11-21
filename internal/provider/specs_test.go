@@ -72,3 +72,16 @@ func TestOAuthProviderSpecRegistryConsistency(t *testing.T) {
 		t.Fatalf("OAuthModelsDevProviderID(workbuddycn) = %q, want workbuddy", got)
 	}
 }
+
+func TestValidateProviderName(t *testing.T) {
+	for _, valid := range []string{"deepseek", "work_1", "gpt.eu", "alice+work@example.com", "A-Z_0.9"} {
+		if err := ValidateProviderName(valid); err != nil {
+			t.Fatalf("ValidateProviderName(%q) unexpected error: %v", valid, err)
+		}
+	}
+	for _, invalid := range []string{"", "   ", "default", "DEFAULT", ".", "..", "a/b", `a\b`, "a b", "foo?bar", "foo#bar"} {
+		if err := ValidateProviderName(invalid); err == nil {
+			t.Fatalf("ValidateProviderName(%q) = nil, want error", invalid)
+		}
+	}
+}

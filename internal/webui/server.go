@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -622,11 +623,14 @@ var grokVersion = func() func() string {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			out, err := exec.CommandContext(ctx, path, "--version").Output()
-			if err != nil {
+			cmd := exec.CommandContext(ctx, path, "--version")
+			cmd.Env = cleanGrokCLISubcommandEnv(os.Environ())
+			out := limitedBuffer{limit: 64 << 10}
+			cmd.Stdout = &out
+			if err := cmd.Run(); err != nil {
 				return
 			}
-			version = strings.TrimSpace(string(out))
+			version = strings.TrimSpace(out.String())
 		})
 		return version
 	}
@@ -1031,6 +1035,9 @@ func (s *Server) handleSessionMeta(w http.ResponseWriter, r *http.Request, sessi
 			session.cancelDelete()
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		if s.schedules != nil {
+			s.schedules.removeSession(session.ID())
 		}
 		w.WriteHeader(http.StatusNoContent)
 

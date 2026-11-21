@@ -180,6 +180,8 @@ func (a *kimiOAuthAuthorizer) refresh(ctx context.Context, credential *kimiOAuth
 	}
 	if token.ExpiresIn > 0 {
 		credential.expiresAt = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second)
+	} else {
+		credential.expiresAt = time.Time{}
 	}
 	if token.Email != "" {
 		credential.email = token.Email
@@ -190,8 +192,12 @@ func (a *kimiOAuthAuthorizer) refresh(ctx context.Context, credential *kimiOAuth
 	if token.Email != "" {
 		credential.metadata["email"] = token.Email
 	}
+	delete(credential.metadata, "expires_at")
+	delete(credential.metadata, "expiry")
 	if !credential.expiresAt.IsZero() {
 		credential.metadata["expired"] = credential.expiresAt.UTC().Format(time.RFC3339)
+	} else {
+		delete(credential.metadata, "expired")
 	}
 	credential.metadata["last_refresh"] = time.Now().UTC().Format(time.RFC3339)
 	if err := writeCodexCredentialAtomic(a.path, credential.metadata); err != nil {

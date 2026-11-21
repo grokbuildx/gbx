@@ -69,6 +69,11 @@ func SetPrimaryRemote(alias string) error {
 	if err != nil {
 		return err
 	}
+	unlock, err := lockCloudRegistry(localDir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	registry, err := loadRegistry(localDir)
 	if err != nil {
 		return err
@@ -86,6 +91,11 @@ func RenameRemote(alias, newAlias string) error {
 	if err != nil {
 		return err
 	}
+	unlock, err := lockCloudRegistry(localDir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	registry, err := loadRegistry(localDir)
 	if err != nil {
 		return err
@@ -128,6 +138,11 @@ func SetRemoteMirror(alias string, enabled bool) error {
 	if err != nil {
 		return err
 	}
+	unlock, err := lockCloudRegistry(localDir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	registry, err := loadRegistry(localDir)
 	if err != nil {
 		return err
@@ -472,6 +487,17 @@ func attachRemote(
 		RemoteDir: remoteDir, RemoteLabel: remoteLabel,
 		Enabled: true, Mirror: true,
 	}
+	unlockReg, err := lockCloudRegistry(localDir)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	defer unlockReg()
+	if latest, loadErr := loadRegistry(localDir); loadErr == nil {
+		registry = latest
+	}
+	if registry.Aliases[alias] != "" && registry.Aliases[alias] != remoteID {
+		return LoginResult{}, fmt.Errorf("cloud remote %q already exists", alias)
+	}
 	if err := writeJSONAtomic(remoteConfigPath(localDir, remoteID), remoteConfig, 0o600); err != nil {
 		return LoginResult{}, err
 	}
@@ -538,6 +564,15 @@ func LogoutRemote(ctx context.Context, alias string, options LogoutOptions) (Log
 			return LogoutResult{}, err
 		}
 		result.TokenRevoked = revoked
+	}
+	unlockReg, err := lockCloudRegistry(localDir)
+	if err != nil {
+		return LogoutResult{}, err
+	}
+	defer unlockReg()
+	registry, err = loadRegistry(localDir)
+	if err != nil {
+		return LogoutResult{}, err
 	}
 	if err := removeRemoteFromRegistry(localDir, registry, remoteID, resolvedAlias, &result); err != nil {
 		return LogoutResult{}, err

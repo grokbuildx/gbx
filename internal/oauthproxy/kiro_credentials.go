@@ -427,8 +427,14 @@ func (p *kiroCredentialPool) refreshCredential(ctx context.Context, credential *
 	if refreshed.ProfileARN != "" {
 		credential.metadata["profile_arn"] = refreshed.ProfileARN
 	}
+	delete(credential.metadata, "expired")
+	delete(credential.metadata, "expiry")
 	if refreshed.ExpiresIn > 0 {
-		credential.metadata["expires_at"] = time.Now().UTC().Add(time.Duration(refreshed.ExpiresIn) * time.Second).Format(time.RFC3339)
+		credential.expiresAt = time.Now().UTC().Add(time.Duration(refreshed.ExpiresIn) * time.Second)
+		credential.metadata["expires_at"] = credential.expiresAt.Format(time.RFC3339)
+	} else {
+		credential.expiresAt = time.Time{}
+		delete(credential.metadata, "expires_at")
 	}
 	normalized, err := json.Marshal(credential.metadata)
 	if err != nil {

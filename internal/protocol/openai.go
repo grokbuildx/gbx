@@ -179,7 +179,7 @@ func GetOpenAIModelInfosContext(ctx context.Context, baseURL, apiKey string) ([]
 		if maxOutput == 0 {
 			maxOutput = m.MaxOutputTokens
 		}
-		levels, defaultLevel, known := m.ReasoningLevels, strings.TrimSpace(m.DefaultReasoningLevel), len(m.ReasoningLevels) > 0
+		levels, defaultLevel, known := m.ReasoningLevels, strings.TrimSpace(m.DefaultReasoningLevel), m.ReasoningLevels != nil
 		if !known {
 			levels, defaultLevel, known = ParseRemoteReasoningEfforts(
 				m.SupportsReasoningEffort,

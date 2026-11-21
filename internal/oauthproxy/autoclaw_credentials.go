@@ -355,6 +355,8 @@ func (a *autoClawOAuthAuthorizer) refresh(ctx context.Context, observed *autoCla
 	credential.metadata["app_version"] = version
 	refreshedAt := time.Now().UTC()
 	credential.metadata["last_refresh"] = refreshedAt.Format(time.RFC3339Nano)
+	delete(credential.metadata, "expired")
+	delete(credential.metadata, "expiry")
 	if expiresAt := autoclawJWTExpiry(credential.accessToken); !expiresAt.IsZero() {
 		credential.expiresAt = expiresAt
 		credential.metadata["expires_at"] = expiresAt.UTC().Format(time.RFC3339)

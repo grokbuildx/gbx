@@ -19,6 +19,7 @@ interface Props {
   onRefresh: () => void;
   // A file the overview asked to show.
   focus: string;
+  onConsumeFocus?: () => void;
   onWide: (wide: boolean) => void;
   onError: (error: unknown) => void;
 }
@@ -26,7 +27,7 @@ interface Props {
 const staged = (file: GitFile) => !file.untracked && file.index !== "." && file.index !== "?";
 const unstaged = (file: GitFile) => file.untracked || file.worktree !== ".";
 
-export function GitPanel({ api, status, onStatus, onRefresh, focus, onWide, onError }: Props) {
+export function GitPanel({ api, status, onStatus, onRefresh, focus, onConsumeFocus, onWide, onError }: Props) {
   const { t, lang } = useI18n();
   const [tab, setTab] = useState<Tab>("changes");
   const [viewing, setViewing] = useState<Viewing>(null);
@@ -73,7 +74,8 @@ export function GitPanel({ api, status, onStatus, onRefresh, focus, onWide, onEr
       setTab("changes");
       void showFile(file, !unstaged(file));
     }
-  }, [focus, status, showFile]);
+    onConsumeFocus?.();
+  }, [focus, status, showFile, onConsumeFocus]);
 
   useEffect(() => {
     if (tab === "history" && commits === null) api.gitLog(100).then((result) => setCommits(result.commits)).catch(onError);

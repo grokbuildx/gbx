@@ -1061,21 +1061,7 @@ func applyProviderInput(p *provider.Provider, input *ProviderInput, clearKey boo
 }
 
 func validateProviderName(name string) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Errorf("name is required")
-	}
-	if provider.IsDefaultProvider(name) {
-		return fmt.Errorf("the name %q is reserved for Grok Build's own configuration", name)
-	}
-	for _, char := range name {
-		switch {
-		case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z', char >= '0' && char <= '9', char == '-', char == '_', char == '.':
-		default:
-			return fmt.Errorf("name may only contain letters, digits, '-', '_' and '.'")
-		}
-	}
-	return nil
+	return provider.ValidateProviderName(name)
 }
 
 func validatorForConfig(cfg *provider.Config, name string) error {

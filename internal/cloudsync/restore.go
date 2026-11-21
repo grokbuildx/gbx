@@ -40,10 +40,7 @@ func (m *Manager) backupCurrent(tag string) (string, error) {
 	return path, nil
 }
 
-func (m *Manager) applySnapshot(files []snapshotFile) (err error) {
-	if err := validateSnapshotFiles(files); err != nil {
-		return err
-	}
+func (m *Manager) applySnapshot(files []snapshotFile) error {
 	if err := os.MkdirAll(m.localDir, 0o700); err != nil {
 		return err
 	}
@@ -54,6 +51,16 @@ func (m *Manager) applySnapshot(files []snapshotFile) (err error) {
 		return fmt.Errorf("lock gbx config for restore: %w", err)
 	}
 	defer unlockConfig()
+	return m.applySnapshotLocked(files)
+}
+
+func (m *Manager) applySnapshotLocked(files []snapshotFile) (err error) {
+	if err := validateSnapshotFiles(files); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(m.localDir, 0o700); err != nil {
+		return err
+	}
 
 	stage, err := os.MkdirTemp(m.localDir, ".pull-stage-*")
 	if err != nil {
@@ -76,6 +83,9 @@ func (m *Manager) applySnapshot(files []snapshotFile) (err error) {
 		if err := writeAtomic(target, file.Data, 0o600); err != nil {
 			return fmt.Errorf("stage %s: %w", file.Path, err)
 		}
+	}
+	if err := os.Chmod(stageAuth, 0o700); err != nil {
+		return err
 	}
 
 	suffix, err := randomDeviceID()
@@ -130,9 +140,6 @@ func (m *Manager) applySnapshot(files []snapshotFile) (err error) {
 	}
 	if hadAuth {
 		_ = os.RemoveAll(authBackup)
-	}
-	if err := os.Chmod(authPath, 0o700); err != nil {
-		return err
 	}
 	return nil
 }

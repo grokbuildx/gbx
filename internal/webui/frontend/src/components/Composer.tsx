@@ -181,6 +181,16 @@ export function Composer(props: Props) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "u") {
+        const target = event.target as HTMLElement | null;
+        if (box.current?.closest(".hidden")) return;
+        if (target?.closest(".xterm") || target?.closest(".cm-editor")) return;
+        if (
+          target &&
+          (target.isContentEditable ||
+            ((target.tagName === "INPUT" || target.tagName === "TEXTAREA") && !box.current?.contains(target)))
+        ) {
+          return;
+        }
         event.preventDefault();
         picker.current?.click();
       }

@@ -66,6 +66,41 @@ type gitResult struct {
 	code   int
 }
 
+const (
+	maxGitStdoutBytes = 16 << 20
+	maxGitStderrBytes = 256 << 10
+)
+
+// limitedBuffer captures at most limit bytes while always reporting len(p)
+// written so child processes never stall on a full stdout/stderr pipe.
+type limitedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		b.truncated = true
+		return len(p), nil
+	}
+	remaining := b.limit - b.buf.Len()
+	if remaining <= 0 {
+		b.truncated = true
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		_, _ = b.buf.Write(p[:remaining])
+		b.truncated = true
+		return len(p), nil
+	}
+	_, _ = b.buf.Write(p)
+	return len(p), nil
+}
+
+func (b *limitedBuffer) Bytes() []byte  { return b.buf.Bytes() }
+func (b *limitedBuffer) String() string { return b.buf.String() }
+
 func (s *Server) git(ctx context.Context, ws Workspace, stdin []byte, args ...string) (gitResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -82,7 +117,8 @@ func (s *Server) git(ctx context.Context, ws Workspace, stdin []byte, args ...st
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	var stdout, stderr bytes.Buffer
+	stdout := limitedBuffer{limit: maxGitStdoutBytes}
+	stderr := limitedBuffer{limit: maxGitStderrBytes}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()

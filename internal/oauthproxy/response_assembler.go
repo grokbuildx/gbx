@@ -431,16 +431,16 @@ func (a *responseAssembler) addOpaqueReasoning(data string) error {
 	if data == "" {
 		return nil
 	}
-	if err := a.start(); err != nil {
-		return err
-	}
-	if err := a.closeActive(); err != nil {
-		return err
-	}
 	if len(a.blocks) >= assemblerMaxBlocks {
 		return fmt.Errorf("upstream response exceeds %d content blocks", assemblerMaxBlocks)
 	}
 	if err := a.retain(len(data)); err != nil {
+		return err
+	}
+	if err := a.start(); err != nil {
+		return err
+	}
+	if err := a.closeActive(); err != nil {
 		return err
 	}
 	index := a.appendBlock(assemblerBlock{Type: blockOpaque, ItemID: assemblerItemID(gbxReasoningIDPrefix), Data: data})
@@ -468,12 +468,6 @@ func (a *responseAssembler) validateToolUseName(name string) error {
 // addToolUse emits one complete tool call. name is the name the upstream
 // returned; it is mapped back to the client's own declaration.
 func (a *responseAssembler) addToolUse(id, name, partialJSON string) error {
-	if err := a.start(); err != nil {
-		return err
-	}
-	if err := a.closeActive(); err != nil {
-		return err
-	}
 	if len(a.blocks) >= assemblerMaxBlocks {
 		return fmt.Errorf("upstream response exceeds %d content blocks", assemblerMaxBlocks)
 	}
@@ -500,6 +494,12 @@ func (a *responseAssembler) addToolUse(id, name, partialJSON string) error {
 		}
 	}
 	if err := a.retain(len(partialJSON)); err != nil {
+		return err
+	}
+	if err := a.start(); err != nil {
+		return err
+	}
+	if err := a.closeActive(); err != nil {
 		return err
 	}
 	itemID := "fc_" + id

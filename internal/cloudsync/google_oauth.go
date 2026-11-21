@@ -14,11 +14,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/grokbuildx/gbx/internal/browser"
+	"github.com/grokbuildx/gbx/internal/fsutil"
 	"golang.org/x/oauth2"
 )
 
@@ -163,11 +165,21 @@ func authorizeGoogleDriveAt(ctx context.Context, authPath string, notice io.Writ
 	)
 
 	resultChannel := make(chan callbackResult, 1)
+	var callbackOnce sync.Once
 	server := &http.Server{
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       30 * time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Referrer-Policy", "no-referrer")
 			if request.URL.Path != "/oauth2/callback" {
 				http.NotFound(w, request)
+				return
+			}
+			if request.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
 			query := request.URL.Query()
@@ -178,11 +190,19 @@ func authorizeGoogleDriveAt(ctx context.Context, authPath string, notice io.Writ
 				return
 			}
 			result := checkGoogleCallback(query, state)
-			select {
-			case resultChannel <- result:
-			default:
-			}
+			accepted := false
+			callbackOnce.Do(func() {
+				accepted = true
+				select {
+				case resultChannel <- result:
+				default:
+				}
+			})
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if !accepted {
+				_, _ = fmt.Fprint(w, "<!doctype html><title>GBX authorization complete</title><h1>Authorization already completed</h1><p>You can close this tab and return to GBX.</p>")
+				return
+			}
 			if result.err == nil {
 				_, _ = fmt.Fprint(w, "<!doctype html><title>GBX connected</title><h1>Google Drive connected</h1><p>You can close this tab and return to GBX.</p>")
 			} else {
@@ -240,7 +260,9 @@ func authorizeGoogleDriveAt(ctx context.Context, authPath string, notice io.Writ
 		return nil, callback.err
 	}
 
-	exchangeCtx := context.WithValue(ctx, oauth2.HTTPClient, newGoogleHTTPClient())
+	exchangeBaseCtx, cancelExchange := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelExchange()
+	exchangeCtx := context.WithValue(exchangeBaseCtx, oauth2.HTTPClient, newGoogleHTTPClient())
 	token, err := config.Exchange(
 		exchangeCtx,
 		callback.code,
@@ -300,7 +322,23 @@ func loadGoogleToken(path string) (*oauth2.Token, error) {
 	return stored.Token, nil
 }
 
+func lockGoogleToken(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	return fsutil.AcquireFileLock(context.Background(), path+".lock")
+}
+
 func saveGoogleToken(path string, token *oauth2.Token) error {
+	unlock, err := lockGoogleToken(path)
+	if err != nil {
+		return fmt.Errorf("lock Google Drive authorization: %w", err)
+	}
+	defer unlock()
+	return saveGoogleTokenLocked(path, token)
+}
+
+func saveGoogleTokenLocked(path string, token *oauth2.Token) error {
 	if token == nil || token.RefreshToken == "" {
 		return fmt.Errorf("refuse to save incomplete Google Drive authorization")
 	}
@@ -311,6 +349,11 @@ func saveGoogleToken(path string, token *oauth2.Token) error {
 }
 
 func revokeGoogleAuthorization(ctx context.Context, authPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	revokeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	token, err := loadGoogleToken(authPath)
 	if err != nil {
 		return err
@@ -321,7 +364,7 @@ func revokeGoogleAuthorization(ctx context.Context, authPath string) error {
 	}
 	form := url.Values{"token": []string{value}}
 	request, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, "https://oauth2.googleapis.com/revoke",
+		revokeCtx, http.MethodPost, "https://oauth2.googleapis.com/revoke",
 		strings.NewReader(form.Encode()),
 	)
 	if err != nil {
@@ -349,6 +392,22 @@ type savingTokenSource struct {
 func (source *savingTokenSource) Token() (*oauth2.Token, error) {
 	source.mu.Lock()
 	defer source.mu.Unlock()
+	if source.last != nil && source.last.Valid() {
+		return source.last, nil
+	}
+	var unlock func()
+	if source.authPath != "" {
+		var err error
+		unlock, err = lockGoogleToken(source.authPath)
+		if err != nil {
+			return nil, fmt.Errorf("lock Google Drive authorization: %w", err)
+		}
+		defer unlock()
+		if onDisk, loadErr := loadGoogleToken(source.authPath); loadErr == nil && onDisk.Valid() {
+			source.last = onDisk
+			return onDisk, nil
+		}
+	}
 	token, err := source.source.Token()
 	if err != nil {
 		return nil, err
@@ -358,8 +417,10 @@ func (source *savingTokenSource) Token() (*oauth2.Token, error) {
 		if token.RefreshToken == "" && source.last != nil {
 			token.RefreshToken = source.last.RefreshToken
 		}
-		if err := saveGoogleToken(source.authPath, token); err != nil {
-			return nil, err
+		if source.authPath != "" {
+			if err := saveGoogleTokenLocked(source.authPath, token); err != nil {
+				return nil, err
+			}
 		}
 		source.last = token
 	}

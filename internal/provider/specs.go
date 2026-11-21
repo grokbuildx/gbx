@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -191,6 +192,33 @@ func IsReservedProviderName(name string) bool {
 	}
 	_, ok := oauthSpecByAny[lower]
 	return ok
+}
+
+// ValidateProviderName enforces a uniform provider identifier contract shared
+// by CLI commands and the Web UI API, rejecting path separators ('/', '\'),
+// dot segments, control/URL syntax characters, and the reserved "default" name.
+func ValidateProviderName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return fmt.Errorf("name is required")
+	}
+	if IsDefaultProvider(trimmed) || strings.EqualFold(trimmed, DefaultProvider) {
+		return fmt.Errorf("the name %q is reserved for Grok Build's own configuration", trimmed)
+	}
+	if trimmed == "." || trimmed == ".." {
+		return fmt.Errorf("invalid provider name %q", trimmed)
+	}
+	for _, char := range trimmed {
+		switch {
+		case char >= 'a' && char <= 'z',
+			char >= 'A' && char <= 'Z',
+			char >= '0' && char <= '9',
+			char == '-', char == '_', char == '.', char == '@', char == '+':
+		default:
+			return fmt.Errorf("name may only contain letters, digits, '-', '_', '.', '@' and '+'")
+		}
+	}
+	return nil
 }
 
 // PromoteDefaultModel moves the model matching preferred (case-insensitive,

@@ -168,6 +168,9 @@ func RunProviderSet(args []string) error {
 			p = existing
 			isUpdate = true
 		} else {
+			if err := provider.ValidateProviderName(targetName); err != nil {
+				return err
+			}
 			p.Name = targetName
 		}
 	}

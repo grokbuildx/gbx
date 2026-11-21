@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -282,4 +283,52 @@ func TestProviderSetDefaultModelFlag(t *testing.T) {
 		t.Fatal("expected error for default provider")
 	}
 	resetSetFlags()
+}
+
+func TestProviderListUsedByIncludesAdditionalProviders(t *testing.T) {
+	cfg := &provider.Config{
+		ActiveProvider: "primary",
+		Providers: map[string]provider.Provider{
+			"primary": {Name: "primary", Type: "openai", Endpoint: "https://a.example/v1", APIKey: "sk-a", Model: "m1"},
+			"extra":   {Name: "extra", Type: "openai", Endpoint: "https://b.example/v1", APIKey: "sk-b", Model: "m2"},
+			"unused":  {Name: "unused", Type: "openai", Endpoint: "https://c.example/v1", APIKey: "sk-c", Model: "m3"},
+		},
+	}
+	prev := runningProxyProviders
+	runningProxyProviders = func(ctx context.Context) []string {
+		return []string{"primary", "extra"}
+	}
+	t.Cleanup(func() { runningProxyProviders = prev })
+
+	if got := providerUsageSummary(cfg, "primary", "primary", "extra"); got != "Grok Build+Codex" {
+		t.Fatalf("primary usage = %q, want Grok Build+Codex", got)
+	}
+	if got := providerUsageSummary(cfg, "extra", "primary", "extra"); got != "Codex" {
+		t.Fatalf("extra usage = %q, want Codex", got)
+	}
+	if got := providerUsageSummary(cfg, "unused", "primary", "extra"); got != "-" {
+		t.Fatalf("unused usage = %q, want -", got)
+	}
+
+	var out strings.Builder
+	if err := printProviders(&out, cfg, false, "empty", "Registered providers:"); err != nil {
+		t.Fatalf("printProviders: %v", err)
+	}
+	table := out.String()
+	if !strings.Contains(table, "extra") || !strings.Contains(table, "Codex") {
+		t.Fatalf("expected extra provider to show Codex in USED BY:\n%s", table)
+	}
+}
+
+func TestCLIRejectsSlashProviderNames(t *testing.T) {
+	seedProviders(t, "src", "src")
+	if err := runProviderCopy("src", "bad/name", true); err == nil {
+		t.Fatal("expected runProviderCopy to reject slash in target name")
+	}
+	if err := runProviderMove("src", "bad/name", true); err == nil {
+		t.Fatal("expected runProviderMove to reject slash in target name")
+	}
+	if err := validateProviderAlias("bad/alias"); err == nil {
+		t.Fatal("expected validateProviderAlias to reject slash in alias")
+	}
 }

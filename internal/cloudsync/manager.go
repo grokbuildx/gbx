@@ -283,6 +283,15 @@ func (m *Manager) loadState() (localSyncState, error) {
 }
 
 func (m *Manager) saveState(state localSyncState) error {
+	unlock, err := lockCloudState(m.localDir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return m.saveStateLocked(state)
+}
+
+func (m *Manager) saveStateLocked(state localSyncState) error {
 	var profile localProfileStateV2
 	if err := readJSONFile(m.profileStateFile, &profile); err != nil {
 		return err
@@ -398,6 +407,11 @@ func (m *Manager) Tag(value string) (TagResult, error) {
 	if err != nil {
 		return TagResult{}, err
 	}
+	unlock, err := lockCloudState(m.localDir)
+	if err != nil {
+		return TagResult{}, err
+	}
+	defer unlock()
 	state, err := m.loadState()
 	if err != nil {
 		return TagResult{}, err
@@ -406,7 +420,7 @@ func (m *Manager) Tag(value string) (TagResult, error) {
 	state.PendingHash = hash
 	state.ExplicitTag = true
 	state.LastOperation = "tag"
-	if err := m.saveState(state); err != nil {
+	if err := m.saveStateLocked(state); err != nil {
 		return TagResult{}, err
 	}
 	return TagResult{Tag: tag, Hash: hash}, nil

@@ -146,6 +146,9 @@ func validateProviderAlias(alias string) error {
 	if alias == "" {
 		return fmt.Errorf("alias cannot be empty")
 	}
+	if err := provider.ValidateProviderName(alias); err != nil {
+		return fmt.Errorf("invalid alias %q: %w", alias, err)
+	}
 	return nil
 }
 

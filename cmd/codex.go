@@ -52,20 +52,43 @@ func proxyProvider(name string) (provider.Provider, error) {
 	return p, nil
 }
 
-// runningProxyProvider reports the provider a live standalone proxy serves. A
-// stale journal of a dead proxy does not count: startup recovery restores it.
+// runningProxyProvider reports the primary provider a live standalone proxy
+// serves. A stale journal of a dead proxy does not count: startup recovery
+// restores it.
 var runningProxyProvider = func(ctx context.Context) (string, bool) {
+	providers := runningProxyProviders(ctx)
+	if len(providers) == 0 {
+		return "", false
+	}
+	return providers[0], true
+}
+
+// runningProxyProviders reports all providers (primary plus any --with-provider
+// bindings) served by a live standalone Codex proxy.
+var runningProxyProviders = func(ctx context.Context) []string {
 	m, err := proxymanager.Default()
 	if err != nil {
-		return "", false
+		return nil
 	}
 	s, err := m.Read()
 	if err != nil || s == nil {
-		return "", false
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	return s.Provider, m.Running(ctx, s)
+	if !m.Running(ctx, s) {
+		return nil
+	}
+	out := make([]string, 0, 1+len(s.AdditionalProviders))
+	if name := strings.TrimSpace(s.Provider); name != "" {
+		out = append(out, name)
+	}
+	for _, extra := range s.AdditionalProviders {
+		if name := strings.TrimSpace(extra); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func runProxyStart(cmd *cobra.Command, args []string) error {

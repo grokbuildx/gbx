@@ -1,12 +1,15 @@
 package cloudsync
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/grokbuildx/gbx/internal/fsutil"
 )
 
 var errRegistryNotConfigured = errors.New("cloud sync registry is not configured")
@@ -186,6 +189,22 @@ func defaultRemoteAlias(provider string) string {
 	default:
 		return providerICloud
 	}
+}
+
+func lockCloudRegistry(localDir string) (func(), error) {
+	root := cloudRoot(localDir)
+	if err := ensureLocalCloudDirectory(root); err != nil {
+		return nil, err
+	}
+	return fsutil.AcquireFileLock(context.Background(), filepath.Join(root, ".registry.lock"))
+}
+
+func lockCloudState(localDir string) (func(), error) {
+	root := cloudRoot(localDir)
+	if err := ensureLocalCloudDirectory(root); err != nil {
+		return nil, err
+	}
+	return fsutil.AcquireFileLock(context.Background(), filepath.Join(root, ".state.lock"))
 }
 
 func saveRegistry(localDir string, registry cloudRegistry) error {

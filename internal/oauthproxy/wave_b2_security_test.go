@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -241,5 +242,33 @@ func TestKiroBudgetTrimStripsToolSpecificationDescription(t *testing.T) {
 		if _, hasDesc := spec["description"]; hasDesc {
 			t.Fatal("expected toolSpecification.description to be stripped under budget pressure")
 		}
+	}
+}
+
+func TestAnthropicStreamBoundsActiveBlocksAndAssemblerValidatesBeforeStart(t *testing.T) {
+	reqParsed, err := parseResponsesRequest([]byte(`{"model":"claude-m","input":"hi","tools":[{"type":"function","name":"allowed_tool","parameters":{"type":"object"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := reqParsed.adapter("claude-m")
+
+	// 1. addToolUse must reject undeclared tools BEFORE calling start().
+	rec := httptest.NewRecorder()
+	assembler := newResponseAssembler(&adapter, rec)
+	if err := assembler.addToolUse("call_1", "undeclared_tool", `{}`); err == nil {
+		t.Fatal("expected undeclared tool error")
+	}
+	if assembler.started || rec.Body.Len() > 0 {
+		t.Fatalf("expected assembler not to start on validation failure: started=%v body=%q", assembler.started, rec.Body.String())
+	}
+
+	// 2. Anthropic SSE active blocks map must be capped.
+	var sse strings.Builder
+	for i := 0; i <= anthropicMaxActiveBlocks; i++ {
+		sse.WriteString(`data: {"type":"content_block_start","index":` + strconv.Itoa(i) + `,"content_block":{"type":"tool_use","id":"id","name":"allowed_tool"}}` + "\n\n")
+	}
+	assembler2 := newResponseAssembler(&adapter, nil)
+	if err := processAnthropicMessagesStream(strings.NewReader(sse.String()), assembler2); err == nil || !strings.Contains(err.Error(), "active content blocks") {
+		t.Fatalf("processAnthropicMessagesStream error = %v, want active content blocks cap", err)
 	}
 }

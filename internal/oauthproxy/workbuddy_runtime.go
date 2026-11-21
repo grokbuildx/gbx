@@ -145,11 +145,19 @@ func (s *workbuddyCredentialStore) authorize(ctx context.Context, forceRefresh b
 		refreshed.Domain = token.Domain
 	}
 	now := time.Now()
-	if refreshed.ExpiresAt == 0 && refreshed.ExpiresIn > 0 {
-		refreshed.ExpiresAt = now.Add(time.Duration(refreshed.ExpiresIn) * time.Second).UnixMilli()
+	if refreshed.ExpiresAt <= 0 {
+		if refreshed.ExpiresIn > 0 {
+			refreshed.ExpiresAt = now.Add(time.Duration(refreshed.ExpiresIn) * time.Second).UnixMilli()
+		} else {
+			refreshed.ExpiresAt = 0
+		}
 	}
-	if refreshed.RefreshExpiresAt == 0 && refreshed.RefreshExpiresIn > 0 {
-		refreshed.RefreshExpiresAt = now.Add(time.Duration(refreshed.RefreshExpiresIn) * time.Second).UnixMilli()
+	if refreshed.RefreshExpiresAt <= 0 {
+		if refreshed.RefreshExpiresIn > 0 {
+			refreshed.RefreshExpiresAt = now.Add(time.Duration(refreshed.RefreshExpiresIn) * time.Second).UnixMilli()
+		} else {
+			refreshed.RefreshExpiresAt = 0
+		}
 	}
 	credential.metadata["access_token"] = refreshed.AccessToken
 	credential.metadata["refresh_token"] = refreshed.RefreshToken

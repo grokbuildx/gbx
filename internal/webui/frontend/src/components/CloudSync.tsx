@@ -57,19 +57,31 @@ export function CloudSync({ api, onPulled }: { api: Api; onPulled: () => void })
     void load();
   }, [load]);
 
+  const loginId = login?.id ?? "";
+  const loginDone = login?.done ?? true;
   useEffect(() => {
-    if (!login || login.done) return;
+    if (!loginId || loginDone) return;
+    let cancelled = false;
+    let inFlight = false;
     const timer = setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const status = await api.cloudLoginStatus(login.id);
+        const status = await api.cloudLoginStatus(loginId);
+        if (cancelled) return;
         setLogin(status);
         if (status.done) void load();
       } catch (err) {
-        setLoadError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
+      } finally {
+        inFlight = false;
       }
     }, 800);
-    return () => clearInterval(timer);
-  }, [login, api, load]);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [loginId, loginDone, api, load]);
 
   const run = async (action: "push" | "pull" | "primary" | "logout", remote: string, force = false) => {
     setBusy(action + remote);

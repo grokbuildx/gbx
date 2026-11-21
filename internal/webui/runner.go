@@ -875,12 +875,14 @@ func (t *Timeline) cancelEntry(entry *turn, force bool) {
 			cancelCtx, stop := context.WithTimeout(context.Background(), 2*time.Second)
 			defer stop()
 			_ = conn.Cancel(cancelCtx, acp.CancelNotification{SessionId: sessionID})
+			waitTimer := time.NewTimer(2 * time.Second)
+			defer waitTimer.Stop()
 			select {
 			case <-entry.reapedCh:
 				return
 			case <-entry.done:
 				return
-			case <-time.After(2 * time.Second):
+			case <-waitTimer.C:
 			}
 			if cancel != nil {
 				cancel()
@@ -909,10 +911,12 @@ func interrupt(entry *turn) {
 	}
 	entry.signalInterrupt()
 	go func() {
+		killTimer := time.NewTimer(2 * time.Second)
+		defer killTimer.Stop()
 		select {
 		case <-entry.reapedCh:
 		case <-entry.done:
-		case <-time.After(2 * time.Second):
+		case <-killTimer.C:
 			entry.killTree()
 		}
 	}()
@@ -1121,9 +1125,11 @@ func (t *Timeline) pump(
 		waitDone <- err
 	}()
 	var waitErr error
+	exitTimer := time.NewTimer(2 * time.Second)
 	select {
 	case waitErr = <-waitDone:
-	case <-time.After(2 * time.Second):
+		exitTimer.Stop()
+	case <-exitTimer.C:
 		entry.killTree()
 		waitErr = <-waitDone
 	}
@@ -1926,5 +1932,6 @@ func readLines(r io.Reader, limit int, out []string) []string {
 			out = append(out, line)
 		}
 	}
+	_, _ = io.Copy(io.Discard, r)
 	return out
 }

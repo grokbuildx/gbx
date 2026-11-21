@@ -117,7 +117,7 @@ func (w *workspaceSet) loadAdded(path string, locked bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.addedPath, w.locked = path, locked
-	data, err := os.ReadFile(path)
+	data, err := fsutil.ReadRegularFileLimited(path, 2<<20)
 	if err != nil {
 		return
 	}
@@ -164,6 +164,19 @@ func (w *workspaceSet) add(path string) (Workspace, error) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.locked {
+		return Workspace{}, ErrWorkspacesLocked
+	}
+	for _, existing := range w.fixed {
+		if existing.real == workspace.real {
+			return existing, nil
+		}
+	}
+	for _, existing := range w.added {
+		if existing.real == workspace.real {
+			return existing, nil
+		}
+	}
 	workspace.Added = true
 	w.added = append(w.added, workspace)
 	w.gen++
@@ -181,10 +194,15 @@ func (w *workspaceSet) remove(id string) bool {
 	defer w.mu.Unlock()
 	for i, workspace := range w.added {
 		if workspace.ID == id {
+			prev := append([]Workspace(nil), w.added...)
 			w.added = append(w.added[:i:i], w.added[i+1:]...)
 			w.gen++
 			w.cached = nil
-			_ = w.saveAddedLocked()
+			if err := w.saveAddedLocked(); err != nil {
+				w.added = prev
+				w.gen++
+				return false
+			}
 			return true
 		}
 	}

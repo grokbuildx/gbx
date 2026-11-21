@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+const anthropicMaxActiveBlocks = 256
+
 // anthropicStreamBlock is one Messages content block under decoding.
 type anthropicStreamBlock struct {
 	kind      string
@@ -83,6 +85,9 @@ func (s *anthropicStreamState) process(payload []byte) error {
 		}
 		if err := json.Unmarshal(event.ContentBlock, &block); err != nil {
 			return fmt.Errorf("decode Anthropic content block: %w", err)
+		}
+		if _, exists := s.blocks[event.Index]; !exists && len(s.blocks) >= anthropicMaxActiveBlocks {
+			return fmt.Errorf("Anthropic Messages stream exceeds %d active content blocks", anthropicMaxActiveBlocks)
 		}
 		state := &anthropicStreamBlock{kind: block.Type, id: block.ID, name: block.Name}
 		s.blocks[event.Index] = state

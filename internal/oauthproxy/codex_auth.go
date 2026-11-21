@@ -78,9 +78,11 @@ func loginCodex(ctx context.Context, authDir string, opts LoginOptions) (LoginRe
 	fmt.Println("Waiting for Codex authentication callback...")
 
 	var result codexLoginCallback
+	timer := time.NewTimer(5 * time.Minute)
+	defer timer.Stop()
 	select {
 	case result = <-resultCh:
-	case <-time.After(5 * time.Minute):
+	case <-timer.C:
 		return LoginResult{}, fmt.Errorf("Codex authentication timed out")
 	case <-ctx.Done():
 		return LoginResult{}, fmt.Errorf("Codex authentication: %w", ctx.Err())

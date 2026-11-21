@@ -138,6 +138,7 @@ export function App() {
   });
   const [panelWide, setPanelWide] = useState(false);
   const [gitFocus, setGitFocus] = useState("");
+  const clearGitFocus = useCallback(() => setGitFocus(""), []);
   // Bumped when a turn ends, so open panels reload what Claude may have changed.
   const [refreshKey, setRefreshKey] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -559,25 +560,37 @@ export function App() {
   // A session the composer created for its first upload keeps the composer
   // (and the files in it): its key stays "new".
   const adopted = useRef<string | null>(null);
+  const currentIdRef = useRef<string | null>(currentId);
+  currentIdRef.current = currentId;
+  const creatingSession = useRef<Promise<Session | null> | null>(null);
 
   const create = async (adopt = false): Promise<Session | null> => {
-    try {
-      const session = await api.createSession(activeWorkspace?.id || "", newWorktree, draftRoute);
-      setNewWorktree(false);
-      if (adopt) adopted.current = session.id;
-      mergeSession(session);
-      select(session.id);
-      return session;
-    } catch (error) {
-      fail(error);
-      return null;
-    }
+    if (creatingSession.current) return creatingSession.current;
+    const promise = (async () => {
+      try {
+        const session = await api.createSession(activeWorkspace?.id || "", newWorktree, draftRoute);
+        setNewWorktree(false);
+        if (adopt) adopted.current = session.id;
+        currentIdRef.current = session.id;
+        mergeSession(session);
+        select(session.id);
+        return session;
+      } catch (error) {
+        fail(error);
+        return null;
+      } finally {
+        creatingSession.current = null;
+      }
+    })();
+    creatingSession.current = promise;
+    return promise;
   };
 
   // Starting a new session is lazy: the first message or file creates it.
   const startNew = () => {
     if (page === "project" && !canLeave()) return;
     setPage("chat");
+    currentIdRef.current = null;
     setCurrentId(null);
     setActiveTerm(null);
     setDraftOpen(true);
@@ -586,7 +599,7 @@ export function App() {
   };
 
   const ensureSession = async (): Promise<string | null> => {
-    if (currentId) return currentId;
+    if (currentIdRef.current) return currentIdRef.current;
     const session = await create(true);
     return session?.id || null;
   };
@@ -1159,7 +1172,7 @@ export function App() {
               )}
               {viewed && <AgentBanner tool={viewed} onBack={() => setAgentView(null)} />}
               <Thread
-                key={viewed?.key || "main"}
+                key={viewed ? `${!currentId || adopted.current === currentId ? "new" : currentId}:${viewed.key}` : !currentId || adopted.current === currentId ? "new" : currentId}
                 items={shownItems}
                 running={viewed ? toolActive(viewed) : conversation.running}
                 loading={conversation.loading}
@@ -1250,7 +1263,7 @@ export function App() {
                   {panel === "git" && (
                     <div className="min-h-0 flex-1">
                       <Suspense fallback={null}>
-                        <GitPanel key={scopeKey} api={wsApi} status={git} onStatus={setGit} onRefresh={loadGit} focus={gitFocus} onWide={setPanelWide} onError={fail} />
+                        <GitPanel key={scopeKey} api={wsApi} status={git} onStatus={setGit} onRefresh={loadGit} focus={gitFocus} onConsumeFocus={clearGitFocus} onWide={setPanelWide} onError={fail} />
                       </Suspense>
                     </div>
                   )}

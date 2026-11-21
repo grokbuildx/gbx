@@ -120,7 +120,13 @@ func (c *Cache) Index() (*Index, error) {
 	}
 
 	indexCache.Lock()
-	indexCache.files[c.Path] = cachedIndex{index: index, size: stat.Size(), modified: stat.ModTime()}
+	current, exists := indexCache.files[c.Path]
+	if !exists || !stat.ModTime().Before(current.modified) {
+		if diskInfo, statErr := os.Stat(c.Path); statErr != nil ||
+			(diskInfo.Size() == stat.Size() && diskInfo.ModTime().Equal(stat.ModTime())) {
+			indexCache.files[c.Path] = cachedIndex{index: index, size: stat.Size(), modified: stat.ModTime()}
+		}
+	}
 	indexCache.Unlock()
 	return index, nil
 }

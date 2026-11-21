@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -41,7 +40,7 @@ type scheduler struct {
 
 func newScheduler(path string) *scheduler {
 	sched := &scheduler{path: path}
-	if data, err := os.ReadFile(path); err == nil {
+	if data, err := fsutil.ReadRegularFileLimited(path, 4<<20); err == nil {
 		_ = json.Unmarshal(data, &sched.items)
 	}
 	return sched
@@ -72,7 +71,11 @@ func (s *scheduler) add(item Schedule) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.items = append(s.items, item)
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		s.items = s.items[:len(s.items)-1]
+		return err
+	}
+	return nil
 }
 
 func (s *scheduler) remove(session, id string) bool {
@@ -80,12 +83,41 @@ func (s *scheduler) remove(session, id string) bool {
 	defer s.mu.Unlock()
 	for i, item := range s.items {
 		if item.ID == id && (session == "" || item.Session == session) {
-			s.items = append(s.items[:i], s.items[i+1:]...)
-			_ = s.saveLocked()
+			prev := append([]Schedule(nil), s.items...)
+			s.items = append(s.items[:i:i], s.items[i+1:]...)
+			if err := s.saveLocked(); err != nil {
+				s.items = prev
+				return false
+			}
 			return true
 		}
 	}
 	return false
+}
+
+func (s *scheduler) removeSession(session string) {
+	if session == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := make([]Schedule, 0, len(s.items))
+	removed := false
+	for _, item := range s.items {
+		if item.Session == session {
+			removed = true
+			continue
+		}
+		kept = append(kept, item)
+	}
+	if !removed {
+		return
+	}
+	prev := s.items
+	s.items = kept
+	if err := s.saveLocked(); err != nil {
+		s.items = prev
+	}
 }
 
 func (s *scheduler) due(now time.Time) []Schedule {

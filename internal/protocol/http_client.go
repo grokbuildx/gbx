@@ -14,11 +14,17 @@ const (
 	maxProbeDiscardBytes = 64 << 10
 )
 
-func newProbeHTTPClient(timeout time.Duration) *http.Client {
+// NewProbeHTTPClient returns an HTTP client for credentialed API/model probes
+// that refuses cross-origin redirects so API keys are never leaked.
+func NewProbeHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout:       timeout,
 		CheckRedirect: checkSameOriginRedirect,
 	}
+}
+
+func newProbeHTTPClient(timeout time.Duration) *http.Client {
+	return NewProbeHTTPClient(timeout)
 }
 
 // checkSameOriginRedirect refuses cross-origin redirects so API keys carried in

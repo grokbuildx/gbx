@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/grokbuildx/gbx/internal/fsutil"
 )
 
 // maxRetainedUntaggedSnapshots bounds historical untagged snapshots kept in a
@@ -242,6 +244,11 @@ func (m *Manager) remoteIndexRevision() (string, error) {
 
 func (m *Manager) clearPendingPush() error {
 	if m.profileStateFile == "" {
+		unlock, err := lockCloudState(m.localDir)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		state, err := m.loadState()
 		if err != nil {
 			return err
@@ -249,8 +256,13 @@ func (m *Manager) clearPendingPush() error {
 		state.PendingTag = ""
 		state.PendingHash = ""
 		state.ExplicitTag = false
-		return m.saveState(state)
+		return m.saveStateLocked(state)
 	}
+	unlock, err := lockCloudState(m.localDir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	var profile localProfileStateV2
 	if err := readJSONFile(m.profileStateFile, &profile); err != nil {
 		return err
@@ -493,24 +505,44 @@ func (m *Manager) Pull(tagValue string, force bool) (PullResult, error) {
 	if err != nil {
 		return PullResult{}, err
 	}
-	index, err := m.loadRemoteIndex()
-	if err != nil {
+	var (
+		index   remoteIndex
+		id      string
+		record  snapshotRecord
+		payload snapshotPayload
+	)
+	if err := func() error {
+		if m.provider == providerGoogleDrive {
+			releaseCache, lockErr := lockGoogleCache(context.Background(), m.remoteDir)
+			if lockErr != nil {
+				return fmt.Errorf("lock Google Drive sync cache: %w", lockErr)
+			}
+			defer releaseCache()
+		}
+		var loadErr error
+		index, loadErr = m.loadRemoteIndex()
+		if loadErr != nil {
+			return loadErr
+		}
+		id = index.Tags[tag]
+		if id == "" {
+			return fmt.Errorf("remote tag %q does not exist", tag)
+		}
+		var ok bool
+		record, ok = index.Snapshots[id]
+		if !ok {
+			return fmt.Errorf("remote index references missing snapshot %q", id)
+		}
+		payload, loadErr = m.loadSnapshot(id)
+		if loadErr != nil {
+			return loadErr
+		}
+		if payload.Hash != record.Hash || payload.Hash != hashSnapshotFiles(payload.Files) {
+			return fmt.Errorf("encrypted snapshot integrity metadata does not match its contents")
+		}
+		return nil
+	}(); err != nil {
 		return PullResult{}, err
-	}
-	id := index.Tags[tag]
-	if id == "" {
-		return PullResult{}, fmt.Errorf("remote tag %q does not exist", tag)
-	}
-	record, ok := index.Snapshots[id]
-	if !ok {
-		return PullResult{}, fmt.Errorf("remote index references missing snapshot %q", id)
-	}
-	payload, err := m.loadSnapshot(id)
-	if err != nil {
-		return PullResult{}, err
-	}
-	if payload.Hash != record.Hash || payload.Hash != hashSnapshotFiles(payload.Files) {
-		return PullResult{}, fmt.Errorf("encrypted snapshot integrity metadata does not match its contents")
 	}
 	state, err := m.loadState()
 	if err != nil {
@@ -524,44 +556,60 @@ func (m *Manager) Pull(tagValue string, force bool) (PullResult, error) {
 		)
 	}
 
-	localFiles, localHash, localErr := collectLocalFiles()
-	if localErr != nil && !errors.Is(localErr, ErrNoLocalData) {
-		return PullResult{}, localErr
-	}
-	if localHash == payload.Hash {
-		state.LastRemoteID = id
-		state.LastLocalHash = localHash
-		if record.CreatedAt.After(state.LastRemoteCreatedAt) {
-			state.LastRemoteCreatedAt = record.CreatedAt
-		}
-		state.PendingTag = ""
-		state.PendingHash = ""
-		state.ExplicitTag = false
-		state.LastOperation = "pull"
-		state.LastSyncAt = nowUTC()
-		if err := m.saveState(state); err != nil {
-			return PullResult{}, err
-		}
-		return PullResult{Tag: tag, Hash: payload.Hash, ID: id, Downloaded: false}, nil
-	}
-	// A device that has never synchronized and has no providers or OAuth
-	// logins holds only gbx's own defaults, which the pull may replace (the
-	// backup below still keeps them).
-	freshInstall := state.LastLocalHash == "" && !localFilesHaveProviders(localFiles)
-	if localHash != "" && !force && !freshInstall {
-		if state.LastLocalHash == "" || localHash != state.LastLocalHash {
-			return PullResult{}, fmt.Errorf("local configuration has unsynchronized changes; run `gbx cloud push`, tag it, or use `gbx cloud pull --force`")
-		}
-	}
-	backupPath, err := m.backupCurrent(tag)
-	if err != nil {
+	if err := os.MkdirAll(m.localDir, 0o700); err != nil {
 		return PullResult{}, err
 	}
-	if err := m.applySnapshot(payload.Files); err != nil {
+	var (
+		downloaded bool
+		backupPath string
+		localHash  string
+	)
+	if err := func() error {
+		// Hold the config lock across local-change inspection, backup, and
+		// restore so a concurrent `gbx set` or OAuth write cannot be clobbered
+		// between collectLocalFiles and applySnapshot.
+		unlockConfig, lockErr := fsutil.AcquireFileLock(context.Background(), filepath.Join(m.localDir, ".config.lock"))
+		if lockErr != nil {
+			return fmt.Errorf("lock gbx config for pull: %w", lockErr)
+		}
+		defer unlockConfig()
+
+		localFiles, hash, localErr := collectLocalFiles()
+		if localErr != nil && !errors.Is(localErr, ErrNoLocalData) {
+			return localErr
+		}
+		localHash = hash
+		if localHash == payload.Hash {
+			return nil
+		}
+		// A device that has never synchronized and has no providers or OAuth
+		// logins holds only gbx's own defaults, which the pull may replace (the
+		// backup below still keeps them).
+		freshInstall := state.LastLocalHash == "" && !localFilesHaveProviders(localFiles)
+		if localHash != "" && !force && !freshInstall {
+			if state.LastLocalHash == "" || localHash != state.LastLocalHash {
+				return fmt.Errorf("local configuration has unsynchronized changes; run `gbx cloud push`, tag it, or use `gbx cloud pull --force`")
+			}
+		}
+		var backupErr error
+		backupPath, backupErr = m.backupCurrent(tag)
+		if backupErr != nil {
+			return backupErr
+		}
+		if applyErr := m.applySnapshotLocked(payload.Files); applyErr != nil {
+			return applyErr
+		}
+		downloaded = true
+		return nil
+	}(); err != nil {
 		return PullResult{}, err
 	}
+
 	state.LastRemoteID = id
 	state.LastLocalHash = payload.Hash
+	if !downloaded {
+		state.LastLocalHash = localHash
+	}
 	if record.CreatedAt.After(state.LastRemoteCreatedAt) {
 		state.LastRemoteCreatedAt = record.CreatedAt
 	}
@@ -575,7 +623,7 @@ func (m *Manager) Pull(tagValue string, force bool) (PullResult, error) {
 	}
 	return PullResult{
 		Tag: tag, Hash: payload.Hash, ID: id,
-		Downloaded: true, BackupPath: backupPath,
+		Downloaded: downloaded, BackupPath: backupPath,
 	}, nil
 }
 

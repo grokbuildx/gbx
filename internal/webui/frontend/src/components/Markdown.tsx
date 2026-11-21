@@ -1,10 +1,26 @@
-import { memo, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
+import type { PluggableList } from "unified";
 import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
 import { Check, Copy } from "lucide-react";
 import { useI18n } from "../i18n";
+
+let cachedHighlightPlugins: PluggableList | null = null;
+let highlightLoader: Promise<PluggableList> | null = null;
+
+function loadHighlightPlugins(): Promise<PluggableList> {
+  if (cachedHighlightPlugins) return Promise.resolve(cachedHighlightPlugins);
+  if (!highlightLoader) {
+    highlightLoader = import("rehype-highlight").then((mod) => {
+      cachedHighlightPlugins = [[mod.default, { detect: false }]];
+      return cachedHighlightPlugins;
+    });
+  }
+  return highlightLoader;
+}
+
+const hasFencedCode = (text: string) => text.includes("```") || text.includes("~~~");
 
 // Model output is rendered without raw HTML (react-markdown's default) and
 // with its default URL filter, so a reply cannot inject markup or script URLs.
@@ -61,6 +77,25 @@ function languageOf(children: ReactNode): string {
 }
 
 export const Markdown = memo(function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
+  const needsHighlight = hasFencedCode(text);
+  const [rehypePlugins, setRehypePlugins] = useState<PluggableList | undefined>(() =>
+    needsHighlight && cachedHighlightPlugins ? cachedHighlightPlugins : undefined,
+  );
+  useEffect(() => {
+    if (!needsHighlight || rehypePlugins) return;
+    if (cachedHighlightPlugins) {
+      setRehypePlugins(cachedHighlightPlugins);
+      return;
+    }
+    let cancelled = false;
+    void loadHighlightPlugins().then((plugins) => {
+      if (!cancelled) setRehypePlugins(plugins);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsHighlight, rehypePlugins]);
+
   return (
     <div
       className={
@@ -73,7 +108,7 @@ export const Markdown = memo(function Markdown({ text, streaming }: { text: stri
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeHighlight, { detect: false }]]}
+        rehypePlugins={rehypePlugins}
         components={{
           pre: CodeBlock,
           a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,

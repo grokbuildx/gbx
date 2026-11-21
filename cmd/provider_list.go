@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -55,33 +56,30 @@ func printProviders(out io.Writer, cfg *provider.Config, showAll bool, emptyMess
 	}
 
 	fmt.Fprintln(out, heading)
-	proxyName, running := runningProxyProvider(context.Background())
-	if !running {
-		proxyName = ""
-	}
+	proxyNames := runningProxyProviders(context.Background())
 	if showAll {
 		fmt.Fprintln(out, provider.DefaultProvider)
-		fmt.Fprintf(out, "    Used By  : %s\n", providerUsageSummary(cfg, provider.DefaultProvider, proxyName))
+		fmt.Fprintf(out, "    Used By  : %s\n", providerUsageSummary(cfg, provider.DefaultProvider, proxyNames...))
 		description := defaultProviderDescription()
 		fmt.Fprintf(out, "    Type     : %s\n", description)
 		if len(names) > 0 {
 			fmt.Fprintln(out)
 		}
-		return printProviderDetails(out, cfg, names, proxyName)
+		return printProviderDetails(out, cfg, names, proxyNames)
 	}
 
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tUSED BY\tTYPE/AUTH\tMODELS")
 	defaultType := "grok-build/own-config"
 	fmt.Fprintf(tw, "%s\t%s\t%s\t-\n", provider.DefaultProvider,
-		providerUsageSummary(cfg, provider.DefaultProvider, proxyName), defaultType)
+		providerUsageSummary(cfg, provider.DefaultProvider, proxyNames...), defaultType)
 	for _, name := range names {
 		p := cfg.Providers[name]
 		fmt.Fprintf(
 			tw,
 			"%s\t%s\t%s\t%s\n",
 			name,
-			providerUsageSummary(cfg, name, proxyName),
+			providerUsageSummary(cfg, name, proxyNames...),
 			providerTypeAuthSummary(p),
 			formatModelCount(p.Model),
 		)
@@ -90,11 +88,11 @@ func printProviders(out io.Writer, cfg *provider.Config, showAll bool, emptyMess
 	return tw.Flush()
 }
 
-func printProviderDetails(out io.Writer, cfg *provider.Config, names []string, proxyName string) error {
+func printProviderDetails(out io.Writer, cfg *provider.Config, names []string, proxyNames []string) error {
 	for i, name := range names {
 		p := cfg.Providers[name]
 		fmt.Fprintln(out, name)
-		fmt.Fprintf(out, "    Used By  : %s\n", providerUsageSummary(cfg, name, proxyName))
+		fmt.Fprintf(out, "    Used By  : %s\n", providerUsageSummary(cfg, name, proxyNames...))
 		fmt.Fprintf(out, "    Type     : %s\n", provider.ProtocolLabelForProvider(p))
 		fmt.Fprintf(out, "    Auth     : %s\n", providerAuthLabel(p))
 		if p.OAuthProvider != "" {
@@ -116,14 +114,14 @@ func printProviderDetails(out io.Writer, cfg *provider.Config, names []string, p
 	return nil
 }
 
-// providerUsageSummary names the consumers of a provider. proxyName is the
-// provider a running standalone proxy serves, or empty.
-func providerUsageSummary(cfg *provider.Config, name, proxyName string) string {
+// providerUsageSummary names the consumers of a provider. proxyNames lists all
+// providers a running standalone proxy serves (primary and --with-provider).
+func providerUsageSummary(cfg *provider.Config, name string, proxyNames ...string) string {
 	usedBy := make([]string, 0, 3)
 	if name == cfg.ActiveProvider {
 		usedBy = append(usedBy, "Grok Build")
 	}
-	if name == proxyName {
+	if name != "" && slices.Contains(proxyNames, name) {
 		usedBy = append(usedBy, "Codex")
 	}
 	if len(usedBy) == 0 {

@@ -655,12 +655,12 @@ func probeModelStatus(parent context.Context, url string, payload map[string]any
 		req.Header.Set(name, value)
 	}
 
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	resp, err := protocol.NewProbeHTTPClient(timeout).Do(req)
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8<<10))
 	return resp.StatusCode, nil
 }
 

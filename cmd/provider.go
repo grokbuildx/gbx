@@ -224,6 +224,9 @@ func runProviderCopy(sourceName, targetName string, force bool) error {
 			"%q is reserved for Grok Build's own configuration; choose another name",
 		), target)
 	}
+	if err := provider.ValidateProviderName(target); err != nil {
+		return err
+	}
 	if source == target {
 		return fmt.Errorf("%s", locale.T("源和目标名称不能相同", "source and target must be different"))
 	}
@@ -351,6 +354,9 @@ func runProviderMove(sourceName, targetName string, force bool) error {
 			"%q 是保留名（Grok Build 自身配置），请换一个名称",
 			"%q is reserved for Grok Build's own configuration; choose another name",
 		), target)
+	}
+	if err := provider.ValidateProviderName(target); err != nil {
+		return err
 	}
 	if source == target {
 		fmt.Println(locale.T("源和目标名称相同，无需操作。", "Source and target are the same, nothing to do."))

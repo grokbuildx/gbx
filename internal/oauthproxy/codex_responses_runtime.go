@@ -1007,6 +1007,8 @@ func (a *codexOAuthAuthorizer) refresh(ctx context.Context, credential *codexOAu
 	}
 	if token.ExpiresIn > 0 {
 		credential.expiresAt = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second)
+	} else {
+		credential.expiresAt = time.Time{}
 	}
 	if accountID, email := codexJWTIdentity(token.IDToken); accountID != "" || email != "" {
 		if accountID != "" {
@@ -1028,8 +1030,12 @@ func (a *codexOAuthAuthorizer) refresh(ctx context.Context, credential *codexOAu
 	if credential.email != "" {
 		credential.metadata["email"] = credential.email
 	}
+	delete(credential.metadata, "expires_at")
+	delete(credential.metadata, "expiry")
 	if !credential.expiresAt.IsZero() {
 		credential.metadata["expired"] = credential.expiresAt.UTC().Format(time.RFC3339)
+	} else {
+		delete(credential.metadata, "expired")
 	}
 	credential.metadata["last_refresh"] = time.Now().UTC().Format(time.RFC3339)
 	if err := writeCodexCredentialAtomic(a.path, credential.metadata); err != nil {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/grokbuildx/gbx/internal/fsutil"
 	"github.com/grokbuildx/gbx/internal/groklaunch"
 	"github.com/grokbuildx/gbx/internal/provider"
 )
@@ -264,8 +265,13 @@ func mcpServers(ctx context.Context, ws Workspace) []MCPEntry {
 		cmd := exec.CommandContext(listCtx, grokPath, "mcp", "list", "--json")
 		cmd.Dir = ws.real
 		cmd.Env = cleanGrokCLISubcommandEnv(os.Environ())
-		out, err := cmd.Output()
+		stdout := limitedBuffer{limit: 4 << 20}
+		stderr := limitedBuffer{limit: 64 << 10}
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err := cmd.Run()
 		cancel()
+		out := stdout.Bytes()
 		if err == nil {
 			if idx := strings.IndexByte(string(out), '['); idx >= 0 {
 				var listed []struct {
@@ -308,7 +314,7 @@ func mcpServers(ctx context.Context, ws Workspace) []MCPEntry {
 		}
 	}
 
-	if data, err := os.ReadFile(filepath.Join(ws.real, ".mcp.json")); err == nil {
+	if data, err := fsutil.ReadRegularFileLimited(filepath.Join(ws.real, ".mcp.json"), 2<<20); err == nil {
 		var config struct {
 			MCPServers map[string]struct {
 				Type    string            `json:"type"`
@@ -467,9 +473,11 @@ func (s *Server) runGrokMCP(w http.ResponseWriter, r *http.Request, ws Workspace
 	cmd := exec.CommandContext(ctx, grokPath, append([]string{"mcp"}, args...)...)
 	cmd.Dir = ws.real
 	cmd.Env = cleanGrokCLISubcommandEnv(os.Environ())
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		writeError(w, http.StatusBadRequest, firstNonEmpty(redactSecrets(strings.TrimSpace(string(output))), err.Error()))
+	output := limitedBuffer{limit: 256 << 10}
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Run(); err != nil {
+		writeError(w, http.StatusBadRequest, firstNonEmpty(redactSecrets(strings.TrimSpace(output.String())), err.Error()))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": mcpServers(r.Context(), ws)})

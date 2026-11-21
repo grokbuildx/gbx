@@ -64,7 +64,11 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request, session *Se
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			if meta, err = session.RelabelMeta(func(meta *Meta) { meta.ShareToken = token }); err != nil {
+			if meta, err = session.RelabelMeta(func(meta *Meta) {
+				if meta.ShareToken == "" {
+					meta.ShareToken = token
+				}
+			}); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
