@@ -77,8 +77,8 @@ gbx --provider deepseek -p "你好"   # 仅本次使用 deepseek，不改变默�
 | `gbx --provider <name> [Grok 参数]` | 本次启动指定 provider，不改变默认选择 |
 | `gbx oauth <name> [alias]` / `gbx oauth prune` | 订阅登录 / 清理未使用凭据 |
 | `gbx provider cp\|mv\|rm\|models\|preview` | provider 管理与模型池探测 |
-| `gbx codex start` / `-p <name>` / `status` / `stop` | Codex 模型接入：向模型选择器加入当前配置的模型 |
-| `gbx serve [-p <name>] [--workspace <dir>]` | 在本地浏览器中使用 Grok Build 会话 |
+| `gbx codex run` / `start` / `status` / `stop` | Codex 接入：启动代理并打开 ChatGPT / Codex（关客户端自动停） |
+| `gbx serve run` / `start` / `status` / `stop` | 在本地浏览器中使用 Grok Build（默认关浏览器自动退出，或 `start` 后台常驻） |
 | `gbx cloud login\|push\|pull\|status\|remote\|tag\|logout` | 加密云同步（iCloud / Google Drive） |
 | `gbx bypass [on\|off]` | 启动时附加 `--always-approve`，仅在可信环境使用 |
 | `gbx log [on\|off] [--level debug]` | 会话日志（默认关闭，写入 `~/.gbx/logs/`） |
@@ -90,10 +90,13 @@ gbx --provider deepseek -p "你好"   # 仅本次使用 deepseek，不改变默�
 ### 浏览器会话
 
 ```bash
-gbx serve -p deepseek --workspace .
+gbx serve                        # 等同 gbx serve run：打开浏览器，关页面自动退出
+gbx serve run -p deepseek -w .   # 指定 provider 与项目目录，关闭所有页面自动停止
+gbx serve start                  # 后台常驻启动（关闭浏览器不退出）
+gbx serve status / gbx serve stop
 ```
 
-在浏览器里新建会话、流式查看回复、停止回合，并允许或拒绝 Grok 发出的工具审批。页面还提供项目文件与 Git 面板、网页终端，以及 Provider、OAuth 登录和云同步设置。`-p` 指定新会话默认使用的 Provider，省略时使用当前选中的 Provider。`--workspace` 可重复指定项目目录（默认当前目录），`--workspace-root` 将其直接子目录都作为项目。`--model` / `--effort` 设置新会话的默认模型与推理强度。服务仅监听本机 `127.0.0.1`，访问需使用终端打印的会话链接。`--no-open` 只打印链接，`--port` 指定端口，`--socket` 改用本机 Unix socket，`--no-shell` 关闭网页终端。
+在浏览器里新建会话、流式查看回复、停止回合，并允许或拒绝 Grok 发出的工具审批。页面还提供项目文件与 Git 面板、网页终端，以及 Provider、OAuth 登录和云同步设置。默认模式（`gbx serve` / `gbx serve run`）启动后会立即打开浏览器，并在关闭所有已打开页面后自动退出（带短暂刷新宽限）；`gbx serve start` 在后台常驻运行（加 `-o` 可同时打开浏览器），关闭浏览器不会停止服务，直到执行 `gbx serve stop`。`-p` 指定新会话默认 Provider，`-w`/`--workspace` 可重复指定项目目录（默认当前目录），`--workspace-root` 将其直接子目录都作为项目，`-m`/`--model` 与 `--effort` 设置默认模型与推理强度。服务仅监听本机 `127.0.0.1`，访问需使用终端打印的会话链接。`--no-open` 只打印链接，`--port` 指定端口，`--socket` 改用本机 Unix socket，`--no-shell` 关闭网页终端。
 
 会话历史保存在 `~/.gbx/serve/sessions/`，重启后仍在。需要安装支持 ACP v1 会话加载的 Grok Build。
 
@@ -244,8 +247,8 @@ Extra arguments reach Grok Build and can start a billed session. Put `--provider
 | `gbx --provider <name> [Grok args]` | Use a provider for one launch without changing the selection |
 | `gbx oauth <name> [alias]` / `gbx oauth prune` | Subscription login / remove unused credentials |
 | `gbx provider cp\|mv\|rm\|models\|preview` | Provider management and model pool probing |
-| `gbx codex start` / `-p <name>` / `status` / `stop` | Connect the selected provider's models to Codex |
-| `gbx serve [-p <name>] [--workspace <dir>]` | Use Grok Build conversations in a local browser |
+| `gbx codex run` / `start` / `status` / `stop` | Connect provider models and open ChatGPT / Codex (auto-stop on quit) |
+| `gbx serve run` / `start` / `status` / `stop` | Use Grok Build in a local browser (auto-exit on close, or `start` in background) |
 | `gbx cloud login\|push\|pull\|status\|remote\|tag\|logout` | Encrypted sync (iCloud / Google Drive) |
 | `gbx bypass [on\|off]` | Add `--always-approve` on launch; trusted environments only |
 | `gbx log [on\|off] [--level debug]` | Per-session logs (off by default, in `~/.gbx/logs/`) |
@@ -257,37 +260,43 @@ Every subcommand supports `--help`.
 ### Browser sessions
 
 ```bash
-gbx serve -p deepseek --workspace .
+gbx serve                        # same as gbx serve run: open browser, exit when tabs close
+gbx serve run -p deepseek -w .   # select provider & workspace, auto-exit on browser close
+gbx serve start                  # start detached in background (survives closing browser)
+gbx serve status / gbx serve stop
 ```
 
-Start a session, stream replies, stop a turn, and allow or deny the tool approvals that Grok requests. The page also includes a project file and Git panel, a web terminal, and settings for providers, OAuth login and cloud sync. `-p` selects the provider for new sessions; omit it to use the active one. Repeat `--workspace` to add project directories (default: the current directory). `--workspace-root` treats each direct subdirectory as a project. `--model` and `--effort` set the default model and reasoning effort for new sessions. The server listens on `127.0.0.1` and requires the session link printed in the terminal. Use `--no-open` to print the link without opening it, `--port` to select a port, `--socket` to listen on a local Unix socket instead, or `--no-shell` to disable the web terminal.
+Start a session, stream replies, stop a turn, and allow or deny the tool approvals that Grok requests. The page also includes a project file and Git panel, a web terminal, and settings for providers, OAuth login and cloud sync. Default mode (`gbx serve` / `gbx serve run`) opens your browser and automatically exits after all open tabs close (with a short reload grace window); `gbx serve start` runs detached in the background (pass `-o` to also open a browser) and stays alive until `gbx serve stop`. `-p` selects the provider for new sessions; omit it to use the active one. Repeat `-w`/`--workspace` to add project directories (default: the current directory). `--workspace-root` treats each direct subdirectory as a project. `-m`/`--model` and `--effort` set the default model and reasoning effort for new sessions. The server listens on `127.0.0.1` and requires the session link printed in the terminal. Use `--no-open` to print the link without opening it, `--port` to select a port, `--socket` to listen on a local Unix socket instead, or `--no-shell` to disable the web terminal.
 
 Session history is stored in `~/.gbx/serve/sessions/` and survives restarts. Grok Build must support ACP v1 session loading.
 
 ### Codex model integration
 
 ```bash
-gbx codex start        # use the provider selected with gbx use
-gbx codex -p deepseek  # or explicitly select this proxy's provider
-# restart Codex and select a GBX model
-gbx codex stop        # restores your original Codex settings
+gbx codex run              # connect active provider & open ChatGPT (auto-stop on quit)
+gbx codex run deepseek -r  # select provider and gently restart if already open
+gbx codex run -i           # independent mode (--independent / --solo), no OpenAI login
+gbx codex run -a codex     # explicitly open Codex.app (default prefers ChatGPT.app)
+gbx codex start            # background mode for Codex CLI / IDE / Linux
+gbx codex stop             # manual disconnect & config restore (rarely needed in desktop mode)
 ```
 
-- Bound provider edits automatically refresh the catalog and routes. New requests use new runtimes while existing responses finish. Codex decides when its picker refreshes; local JSON does not promise in-process reload, so restart Codex if its list is stale.
-- Attach multiple providers: `gbx codex start deepseek --with-provider gpt --with-provider grok`. Each route retains its own account. Later starts inherit additional bindings; `--with-provider ''` clears them. Use `gbx codex start --refresh` to rediscover models explicitly.
-- Local catalogs are the default. Independent mode can opt into `gbx codex start --independent --catalog remote`; `--catalog local` restores the fallback. Shared mode keeps merged JSON because built-in OpenAI rejects localhost remote catalog URLs. Remote fetching and background app-server updates are verified; immediate Desktop picker refresh is not promised. Gateway/catalog updates and client-picker reload are separate capabilities in every mode.
-- To use another provider after OpenAI quota is exhausted, run `gbx codex start --independent` and restart Codex. The custom GBX provider has its own session credential and a GBX-only picker. `gbx codex start --shared` restores the merged native/GBX picker. Starts and menu switches inherit the running mode; after stopping, a start without a mode flag defaults to shared.
-- Codex chats resume with their saved model provider. Independent chats use `gbx_proxy`; switching to shared or stopping removes that definition, so those chats can report an unconfigured provider or `Model unavailable`. Restore `gbx codex start --independent` and restart Codex to resume the original chat, or fork its history to use the other provider. Do not rewrite chat records. See [OpenAI Docs](https://learn.chatgpt.com/docs/codex-sdk#resume-a-thread-without-loading-its-history).
+- `gbx codex` / `gbx codex run` starts the proxy, immediately launches **ChatGPT.app** (falling back to **Codex.app**; choose explicitly with `-a chatgpt|codex`), and **automatically stops the proxy and restores `~/.codex/config.toml` when you quit the app** (`Cmd+Q` on macOS). If the app is already running, it prompts interactively to restart gently (or pass `-r` / `--restart` to restart without prompting). Use `gbx codex start` (or `run --no-open`) for background/CLI/IDE use without opening a desktop app.
+- Bound provider edits automatically refresh the catalog and routes. New requests use new runtimes while existing responses finish. Codex decides when its picker refreshes; local JSON does not promise in-process reload, so restart the app if its list is stale.
+- Attach multiple providers: `gbx codex run deepseek -w gpt -w grok` (`-w` / `--with` / `--with-provider`). Each route retains its own account. Later starts inherit additional bindings; `-w ''` clears them. Use `gbx codex run -R` (`--refresh`) to rediscover models explicitly.
+- Local catalogs are the default. Independent mode can opt into `gbx codex run -i -c remote` (`--catalog remote`); `-c local` restores the fallback. Shared mode keeps merged JSON because built-in OpenAI rejects localhost remote catalog URLs. Remote fetching and background app-server updates are verified; immediate Desktop picker refresh is not promised. Gateway/catalog updates and client-picker reload are separate capabilities in every mode.
+- To use another provider after OpenAI quota is exhausted, run `gbx codex run -i` (`--independent` / `--solo`). The custom GBX provider has its own session credential and a GBX-only picker. `gbx codex run -s` (`--shared`) restores the merged native/GBX picker. Starts and menu switches inherit the running mode; after stopping, a start without a mode flag defaults to shared.
+- Codex chats resume with their saved model provider. Independent chats use `gbx_proxy`; switching to shared or stopping removes that definition, so those chats can report an unconfigured provider or `Model unavailable`. Restore `gbx codex run -i` and restart Codex to resume the original chat, or fork its history to use the other provider. Do not rewrite chat records. See [OpenAI Docs](https://learn.chatgpt.com/docs/codex-sdk#resume-a-thread-without-loading-its-history).
 - `gbx use` only affects `gbx` launches, not a running proxy.
-- Open Codex once to create its profile; startup updates `~/.codex/config.toml` (honors `CODEX_HOME`). Restart Codex to see native models and the selected provider's models in one picker. Labels show only model names, with a short `GBX` marker for a collision with a native name. WorkBuddy's internal revisions sharing a name appear once.
+- Open Codex / ChatGPT once to create its profile; startup updates `~/.codex/config.toml` (honors `CODEX_HOME`). Labels show only model names, with a short `GBX` marker for a collision with a native name. WorkBuddy's internal revisions sharing a name appear once.
 - GBX models in Codex follow the provider's context/compaction setting: Default uses 200K, or 1M for models marked `[1m]` in the model pool; Balanced uses the selected 500K / 800K budget. All compact at 85%. GBX generates replayable summaries for translated protocols; native Responses models retain upstream compaction.
 - Translated models support Codex client tool search: GBX adapts search to an ordinary function call, Codex searches local tools, and GBX loads the returned definitions instead of sending all deferred tools up front. Codex executes actual tools and enforces permissions. The model must be able to use the search function and the discovered definitions correctly.
 - Models that advertise image input can read screenshots. Translated models follow the installed native catalog's client tool mode; Codex still executes computer use and checks permissions. Within shared mode, normal conversation history can switch between translated models and native GPT. Native GPT compaction cannot be decrypted. Converted models can validate the matching local chat/checkpoint and recover a bounded visible-history excerpt with a notice that older details may be missing. Missing or mismatched records fail explicitly.
-- Translated models use per-model effort tiers from the models.dev metadata cache. OAuth login and confirmed `gbx set` saves refresh it; `gbx set --refresh-models` updates metadata alone. Network failures use `~/.gbx/cache/modelsdev.json`; missing/unmatched metadata retains compatibility settings. The running proxy refreshes metadata; restart Codex to reload a local JSON catalog. Native Responses models retain their own metadata.
+- Translated models use per-model effort tiers from the models.dev metadata cache. OAuth login and confirmed `gbx set` saves refresh it; `gbx set --refresh-models` updates metadata alone. Network failures use `~/.gbx/cache/modelsdev.json`; missing/unmatched metadata retains compatibility settings. The running proxy refreshes metadata; restart the app to reload a local JSON catalog. Native Responses models retain their own metadata.
 - Codex retains its native OpenAI provider and login. Native requests keep their original ChatGPT / OpenAI route; only the separate `gbx/<provider>/<model>` allow-list goes to GBX, with native credentials removed. WebSockets receive 426 to fall back to HTTP Responses.
 - Native metadata comes from an existing catalog or `models_cache.json`, with the installed Codex's `debug models --bundled` as fallback; native names are never hardcoded. Without a cache, install a recent Codex CLI or make the desktop app's bundled Codex discoverable. A conflicting custom provider or default-profile catalog override is reported instead of changing its routing.
-- macOS shows a menu bar icon with the checked current provider, configuration switching and Disconnect Codex. A switch updates the GBX selection and leaves Codex running; restart Codex yourself to load the new catalog. A failed proxy start restores the previous proxy and reports the error. The icon exits with the proxy, including crashes. Set `GBX_PROXY_NO_MENUBAR=1` in a headless environment to disable it.
-- The proxy manages only Codex configuration; ordinary Grok Build launches remain independent. Stop and crash recovery restore only unchanged Codex fields owned by the proxy, retaining later edits. Upgrading an older shared proxy also restores its legacy Claude settings once. Restart Codex after starting, switching or stopping to reload its catalog.
+- macOS shows a menu bar icon with the checked current provider, configuration switching, `Restart ChatGPT` / `Restart Codex`, and `Disconnect Codex`. Switching providers hot-reloads the gateway and prompts whether to gently restart the desktop app right away (with a restart guard so the proxy stays alive) or later from the menu bar. A failed proxy start restores the previous proxy and reports the error. The icon exits automatically with the proxy (including when the tracked app quits or on crash). Set `GBX_PROXY_NO_MENUBAR=1` (or `GBX_PROXY_NO_APP=1`) in a headless environment to disable desktop UI integration.
+- The proxy manages only Codex configuration; ordinary Grok Build launches remain independent. Stop, auto-stop, and crash recovery restore only unchanged Codex fields owned by the proxy, retaining later edits. Upgrading an older shared proxy also restores its legacy Claude settings once.
 - After a crash, the next `gbx` command restores settings from `~/.gbx/proxy/state.json`; startup diagnostics are in `~/.gbx/proxy/proxy.log`.
 
 ### Protocols

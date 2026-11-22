@@ -272,6 +272,8 @@ export class Api {
   // EventSource cannot set a header, so the stream takes the token as a query.
   streamURL = (id: string, since: number) =>
     appURL(`/api/sessions/${id}/stream?since=${since}` + (this.token ? `&token=${encodeURIComponent(this.token)}` : ""));
+  presenceURL = () =>
+    appURL("/api/presence" + (this.token ? `?token=${encodeURIComponent(this.token)}` : ""));
 
   config = () => this.request<ConfigView>("/api/config");
   putConfig = (body: { active?: { normal: string }; activeProvider?: string; lang?: string; bypassMode?: boolean; logLevel?: string; serveSandbox?: SandboxMode; confirmSandboxOff?: boolean }) =>

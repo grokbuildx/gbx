@@ -355,6 +355,34 @@ export function App() {
     });
   }, []);
 
+  // Keep a lightweight presence stream open while this tab is alive so
+  // `gbx serve run` detects browser exit and stops automatically.
+  useEffect(() => {
+    if (phase !== "ready" || typeof EventSource === "undefined") return;
+    let source: EventSource | null = null;
+    const disconnect = () => {
+      source?.close();
+      source = null;
+    };
+    const connect = () => {
+      if (source) return;
+      const es = new EventSource(api.presenceURL());
+      es.addEventListener("shutdown", disconnect);
+      source = es;
+    };
+    const onPageShow = () => connect();
+    connect();
+    window.addEventListener("pagehide", disconnect);
+    window.addEventListener("beforeunload", disconnect);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      window.removeEventListener("pagehide", disconnect);
+      window.removeEventListener("beforeunload", disconnect);
+      window.removeEventListener("pageshow", onPageShow);
+      disconnect();
+    };
+  }, [phase, api]);
+
   const conversation = useConversation(api, phase === "ready" ? currentId : null, scheduleRefresh, mergeSession);
   const threadRef = useRef<{
     reducer: ThreadReducer;

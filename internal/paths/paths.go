@@ -80,11 +80,20 @@ func RunDir() (string, error) {
 	return filepath.Join(dir, "run"), nil
 }
 
-// ServeSessionsDir returns ~/.gbx/serve/sessions.
-func ServeSessionsDir() (string, error) {
+// ServeDir returns ~/.gbx/serve.
+func ServeDir() (string, error) {
 	dir, err := GBXDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "serve", "sessions"), nil
+	return filepath.Join(dir, "serve"), nil
+}
+
+// ServeSessionsDir returns ~/.gbx/serve/sessions.
+func ServeSessionsDir() (string, error) {
+	dir, err := ServeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "sessions"), nil
 }

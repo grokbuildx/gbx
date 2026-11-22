@@ -86,6 +86,14 @@ type Config struct {
 	// BasePath mounts the page and the API under a URL prefix such as /chat
 	// (--base-path); empty serves them at the root.
 	BasePath string
+	// AutoExitGrace enables browser-coupled auto-exit when > 0: once at least
+	// one authenticated /api/presence stream connects, disconnecting the last
+	// tab triggers OnAutoExit after this grace window unless a tab reconnects.
+	AutoExitGrace time.Duration
+	// OnAutoExit runs once when AutoExitGrace expires with zero connected tabs.
+	OnAutoExit func()
+	// PresenceHeartbeat overrides the SSE keepalive cadence on /api/presence.
+	PresenceHeartbeat time.Duration
 }
 
 // Server is the HTTP surface of gbx serve.
@@ -125,6 +133,8 @@ type Server struct {
 	// subscribers wakes open SSE streams when an event is appended.
 	mu          sync.Mutex
 	subscribers map[string][]chan struct{}
+
+	presence *presenceTracker
 
 	selfBinary    string
 	latestVersion func() (string, error)
@@ -261,6 +271,7 @@ func New(cfg Config) (*Server, error) {
 		fileCache:        make(map[string]cachedFileList),
 		fileCacheGen:     make(map[string]uint64),
 		subscribers:      make(map[string][]chan struct{}),
+		presence:         newPresenceTracker(cfg.AutoExitGrace, cfg.PresenceHeartbeat, cfg.OnAutoExit),
 		selfBinary:       cfg.SelfBinary,
 		latestVersion:    cfg.LatestVersion,
 		logins:           loginRegistry{logins: map[string]*oauthLogin{}},
@@ -347,6 +358,9 @@ var ErrClosing = errors.New("gbx serve is shutting down")
 // its result, so Close waits for that until ctx ends.
 func (s *Server) Close(ctx context.Context) error {
 	s.closing.Store(true)
+	if s.presence != nil {
+		s.presence.close()
+	}
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -429,6 +443,8 @@ func (s *Server) Handler() http.Handler {
 	// endpoints also accept ?token=, which EventSource can use and a header
 	// cannot.
 	handleFunc("/api/sessions/", s.handleSession)
+	// Browser tab presence stream (accepts header or ?token= for EventSource).
+	handleFunc("/api/presence", s.handlePresence)
 	handle("/", s.staticHandler())
 	if s.basePath != "" {
 		// A container probe keeps asking /health; nothing else answers
