@@ -83,11 +83,41 @@ func (m *Manager) startMenuBar(id string) func() {
 }
 
 func ShowMenuError(message string) {
-	if os.Getenv("GBX_PROXY_NO_MENUBAR") == "1" {
+	if DesktopAppDisabled() {
 		return
 	}
 	script := `function run(argv) { const app = Application.currentApplication(); app.includeStandardAdditions = true; app.displayAlert('GBX Codex', {message: argv[0], as: 'critical'}); }`
 	command := exec.Command("/usr/bin/osascript", "-l", "JavaScript", "-", message)
 	command.Stdin = strings.NewReader(script)
 	_ = command.Run()
+}
+
+// PromptMenuAction presents a native macOS two-button confirmation alert and
+// reports whether the user chose primaryButton.
+func PromptMenuAction(title, message, primaryButton, secondaryButton string) (bool, error) {
+	if DesktopAppDisabled() {
+		return false, nil
+	}
+	script := `function run(argv) {
+  const app = Application.currentApplication();
+  app.includeStandardAdditions = true;
+  try {
+    const res = app.displayAlert(argv[0], {
+      message: argv[1],
+      buttons: [argv[2], argv[3]],
+      defaultButton: argv[2],
+      cancelButton: argv[3]
+    });
+    return res.buttonReturned === argv[2] ? '1' : '0';
+  } catch (_) {
+    return '0';
+  }
+}`
+	command := exec.Command("/usr/bin/osascript", "-l", "JavaScript", "-", title, message, primaryButton, secondaryButton)
+	command.Stdin = strings.NewReader(script)
+	out, err := command.Output()
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) == "1", nil
 }

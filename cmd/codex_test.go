@@ -53,7 +53,7 @@ func TestProxyStartOnDefaultStartsNothing(t *testing.T) {
 	// from the developer's own Claude configuration.
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(os.Getenv("HOME"), ".claude"))
 	t.Setenv("CODEX_HOME", filepath.Join(os.Getenv("HOME"), ".codex"))
-	for _, args := range [][]string{{}, {"start"}, {"start", " "}, {"start", "default"}} {
+	for _, args := range [][]string{{}, {"run"}, {"run", "default"}, {"start"}, {"start", " "}, {"start", "default"}} {
 		cmd := newCodexCommand()
 		cmd.SetArgs(args)
 		var out bytes.Buffer

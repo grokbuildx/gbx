@@ -40,10 +40,35 @@ function run(argv) {
           launch(['codex', 'stop']);
         }
       },
+      'restartApp:': {
+        types: ['void', ['id']],
+        implementation: function () {
+          launch(['codex', 'menu-restart']);
+        }
+      },
       'switchProvider:': {
         types: ['void', ['id']],
         implementation: function (sender) {
           launch(['codex', 'menu-switch', '--provider', ObjC.unwrap(sender.representedObject)]);
+        }
+      },
+      'appTerminated:': {
+        types: ['void', ['id']],
+        implementation: function (notification) {
+          try {
+            const info = notification && notification.userInfo;
+            if (!info) return;
+            const terminated = info.objectForKey($.NSWorkspaceApplicationKey);
+            if (!terminated) return;
+            const bid = ObjC.unwrap(terminated.bundleIdentifier) || '';
+            const burl = (terminated.bundleURL ? ObjC.unwrap(terminated.bundleURL.path) : '') || '';
+            const config = readConfigurations();
+            const watched = config && config.watched_app;
+            if (!watched) return;
+            if ((watched.bundle_id && bid === watched.bundle_id) || (watched.path && burl === watched.path)) {
+              launch(['codex', 'menu-app-exited']);
+            }
+          } catch (_) {}
         }
       },
       'menuNeedsUpdate:': {
@@ -87,6 +112,12 @@ function run(argv) {
       menu.addItem(choice);
     }
     menu.addItem($.NSMenuItem.separatorItem);
+    const target = config.watched_app || config.desktop_app;
+    if (target && target.name) {
+      const restart = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent('Restart ' + target.name, 'restartApp:', '');
+      restart.target = action;
+      menu.addItem(restart);
+    }
     const stop = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent('Disconnect Codex', 'stopProxy:', '');
     stop.target = action;
     menu.addItem(stop);
@@ -94,5 +125,8 @@ function run(argv) {
 
   refreshMenu();
   item.menu = menu;
+  $.NSWorkspace.sharedWorkspace.notificationCenter.addObserverSelectorNameObject(
+    action, 'appTerminated:', $.NSWorkspaceDidTerminateApplicationNotification, null
+  );
   app.run;
 }

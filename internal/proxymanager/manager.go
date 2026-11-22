@@ -50,6 +50,7 @@ type State struct {
 	Changes       []Change        `json:"changes,omitempty"`
 	CodexHome     string          `json:"codex_home,omitempty"`
 	Codex         *codex.Overlay  `json:"codex,omitempty"`
+	WatchedApp    *WatchedApp     `json:"watched_app,omitempty"`
 }
 
 type Manager struct {
@@ -61,11 +62,25 @@ type Manager struct {
 	CodexListenAddress string
 	// Empty inherits the running daemon's mode, or uses shared on first start.
 	CodexMode string
+	// Desktop overrides OS desktop app detection/status for isolated tests.
+	Desktop DesktopController
+	// WatchPollInterval overrides the 3s fallback app-exit polling cadence in tests.
+	WatchPollInterval time.Duration
 }
 
 // Bump when an existing daemon must be replaced to pick up a protocol fix.
-// Version 16 adds live runtime generations and account-bound Gemini catalogs.
-const proxyVersion = 17
+// Version 18 adds desktop app lifecycle watch/pause control endpoints.
+const proxyVersion = 18
+
+// CurrentProxyVersion exposes the running binary's daemon protocol version.
+const CurrentProxyVersion = proxyVersion
+
+func (m *Manager) desktopController() DesktopController {
+	if m != nil && m.Desktop != nil {
+		return m.Desktop
+	}
+	return DefaultDesktopController()
+}
 
 func Default() (*Manager, error) {
 	dir, err := paths.ProxyDir()
@@ -267,7 +282,8 @@ func (m *Manager) Start(ctx context.Context, executable string, p provider.Provi
 	if err != nil {
 		return nil, err
 	}
-	if m.Running(ctx, existing) && existing.ProxyVersion == proxyVersion && existing.CodexHome == codexHome && existing.Codex != nil &&
+	wasRunning := m.Running(ctx, existing)
+	if wasRunning && existing.ProxyVersion == proxyVersion && existing.CodexHome == codexHome && existing.Codex != nil &&
 		(existing.CodexMode == mode || existing.CodexMode == "" && mode == "shared") && (existing.CatalogMode == catalogMode || existing.CatalogMode == "" && catalogMode == codex.CatalogLocal) {
 		if !m.Refresh && existing.ConfigHash == providersHash(providers) && existing.MetadataStamp == modelsdev.CacheStamp() {
 			return existing, nil
@@ -276,6 +292,10 @@ func (m *Manager) Start(ctx context.Context, executable string, p provider.Provi
 			return nil, err
 		}
 		return m.Read()
+	}
+	var prevWatched *WatchedApp
+	if wasRunning && existing != nil && existing.CodexHome == codexHome && existing.WatchedApp.Valid() {
+		prevWatched = existing.WatchedApp.Clone()
 	}
 	// Codex retains its endpoint in memory. Replacing a daemon must bind the
 	// same port so retries from already-open native and GBX chats can recover.
@@ -335,6 +355,17 @@ func (m *Manager) Start(ctx context.Context, executable string, p provider.Provi
 				continue
 			}
 			if s != nil && s.ID == id && m.Running(ctx, s) {
+				if prevWatched != nil {
+					if err := postControlJSON(ctx, s, "/watch-app", watchAppRequest{
+						App:          prevWatched,
+						SeenRunning:  false,
+						GraceSeconds: 15,
+					}); err == nil {
+						if refreshed, readErr := m.Read(); readErr == nil && refreshed != nil {
+							s = refreshed
+						}
+					}
+				}
 				return s, nil
 			}
 		}
@@ -452,6 +483,7 @@ func (m *Manager) Run(ctx context.Context, p provider.Provider, id string) (runE
 	stop := make(chan struct{})
 	var stopOnce sync.Once
 	reloads := make(chan reloadRequest)
+	watchOps := make(chan watchOp)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
@@ -488,6 +520,107 @@ func (m *Manager) Run(ctx context.Context, p provider.Provider, id string) (runE
 			}
 			return
 		}
+		if r.Method == http.MethodPost && r.URL.Path == "/watch-app" {
+			var request watchAppRequest
+			if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&request) != nil {
+				http.Error(w, "invalid watch request", http.StatusBadRequest)
+				return
+			}
+			if request.App != nil && !request.App.Valid() {
+				http.Error(w, "invalid desktop app target", http.StatusBadRequest)
+				return
+			}
+			grace := time.Duration(request.GraceSeconds) * time.Second
+			if grace <= 0 || grace > 2*time.Minute {
+				grace = 15 * time.Second
+			}
+			op := watchOp{
+				kind:        watchOpSet,
+				app:         request.App.Clone(),
+				seenRunning: request.SeenRunning,
+				grace:       grace,
+				result:      make(chan error, 1),
+			}
+			select {
+			case watchOps <- op:
+			case <-r.Context().Done():
+				return
+			case <-stop:
+				return
+			}
+			select {
+			case err := <-op.result:
+				if err != nil {
+					http.Error(w, "update desktop app watch failed", http.StatusInternalServerError)
+					return
+				}
+				_, _ = io.WriteString(w, id)
+			case <-r.Context().Done():
+			case <-stop:
+			}
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/pause-watch" {
+			var request pauseWatchRequest
+			if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&request) != nil {
+				http.Error(w, "invalid pause request", http.StatusBadRequest)
+				return
+			}
+			seconds := request.Seconds
+			if seconds <= 0 {
+				seconds = 25
+			}
+			if seconds > 120 {
+				seconds = 120
+			}
+			op := watchOp{
+				kind:     watchOpPause,
+				pauseFor: time.Duration(seconds) * time.Second,
+				result:   make(chan error, 1),
+			}
+			select {
+			case watchOps <- op:
+			case <-r.Context().Done():
+				return
+			case <-stop:
+				return
+			}
+			select {
+			case <-op.result:
+				_, _ = io.WriteString(w, id)
+			case <-r.Context().Done():
+			case <-stop:
+			}
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/app-exited" {
+			op := watchOp{
+				kind:       watchOpExited,
+				shouldStop: make(chan bool, 1),
+			}
+			select {
+			case watchOps <- op:
+			case <-r.Context().Done():
+				return
+			case <-stop:
+				return
+			}
+			select {
+			case shouldStop := <-op.shouldStop:
+				w.Header().Set("Content-Length", strconv.Itoa(len(id)))
+				_, _ = io.WriteString(w, id)
+				_ = http.NewResponseController(w).Flush()
+				if shouldStop {
+					stopOnce.Do(func() {
+						cancelRun()
+						close(stop)
+					})
+				}
+			case <-r.Context().Done():
+			case <-stop:
+			}
+			return
+		}
 		if r.Method == http.MethodPost && r.URL.Path == "/stop" {
 			w.Header().Set("Content-Length", strconv.Itoa(len(id)))
 			_, _ = io.WriteString(w, id)
@@ -508,6 +641,15 @@ func (m *Manager) Run(ctx context.Context, p provider.Provider, id string) (runE
 	defer stopMenuBar()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	watchInterval := m.WatchPollInterval
+	if watchInterval <= 0 {
+		watchInterval = 3 * time.Second
+	}
+	watchTicker := time.NewTicker(watchInterval)
+	defer watchTicker.Stop()
+	var watchPausedUntil time.Time
+	var watchGraceUntil time.Time
+	watchSeenRunning := false
 	refresh := catalogRefresh{providers: providers, runtimeHash: runtimeProvidersHash(providers), fallbackCatalog: hasFallbackBinding(bindings), lastDiscovery: time.Now(), done: runtimeDone}
 	for {
 		select {
@@ -517,6 +659,61 @@ func (m *Manager) Run(ctx context.Context, p provider.Provider, id string) (runE
 			}
 		case request := <-reloads:
 			request.result <- refresh.update(runCtx, m, codexGateway, s, true, request.Provider, request.Additional)
+		case op := <-watchOps:
+			switch op.kind {
+			case watchOpSet:
+				prev := s.WatchedApp
+				if op.app == nil {
+					s.WatchedApp = nil
+					watchSeenRunning = false
+					watchPausedUntil = time.Time{}
+					watchGraceUntil = time.Time{}
+				} else {
+					s.WatchedApp = op.app.Clone()
+					watchSeenRunning = op.seenRunning
+					watchPausedUntil = time.Time{}
+					watchGraceUntil = time.Now().Add(op.grace)
+				}
+				if err := writeJSON(m.statePath(), s); err != nil {
+					s.WatchedApp = prev
+					op.result <- err
+				} else {
+					op.result <- nil
+				}
+			case watchOpPause:
+				watchPausedUntil = time.Now().Add(op.pauseFor)
+				op.result <- nil
+			case watchOpExited:
+				shouldStop := false
+				if s.WatchedApp != nil && !time.Now().Before(watchPausedUntil) {
+					checkCtx, cancelCheck := context.WithTimeout(runCtx, 2*time.Second)
+					running, err := m.desktopController().IsRunning(checkCtx, s.WatchedApp)
+					cancelCheck()
+					if err == nil {
+						if running {
+							watchSeenRunning = true
+						} else {
+							oauthproxy.LogInfoEvent("codex_desktop_app_exited", "component", "codex", "app", s.WatchedApp.Name)
+							shouldStop = true
+						}
+					}
+				}
+				op.shouldStop <- shouldStop
+			}
+		case <-watchTicker.C:
+			if s.WatchedApp != nil && !time.Now().Before(watchPausedUntil) {
+				checkCtx, cancelCheck := context.WithTimeout(runCtx, 2*time.Second)
+				running, err := m.desktopController().IsRunning(checkCtx, s.WatchedApp)
+				cancelCheck()
+				if err == nil {
+					if running {
+						watchSeenRunning = true
+					} else if watchSeenRunning || time.Now().After(watchGraceUntil) {
+						oauthproxy.LogInfoEvent("codex_desktop_app_exited", "component", "codex", "app", s.WatchedApp.Name)
+						return nil
+					}
+				}
+			}
 		case <-ctx.Done():
 			return nil
 		case <-stop:

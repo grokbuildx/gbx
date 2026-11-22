@@ -27,7 +27,7 @@ Common commands:
   gbx ls                      List providers
   gbx preview [name]          Preview the Grok Build settings JSON
   gbx oauth <backend>         Log in with a subscription account
-  gbx codex -p <name>         Connect provider models to Codex
+  gbx codex run [-p <name>]   Connect models and open ChatGPT / Codex (auto-stop on quit)
   gbx serve -p <name>         Use Grok Build in a local browser
   gbx doctor                  Check environment and provider connectivity
   gbx cloud login|push|pull   Manage encrypted configuration sync
