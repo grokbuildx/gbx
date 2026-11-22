@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 )
 
@@ -15,14 +16,32 @@ func (a *responseAssembler) process(frame *kiroEventFrame) error {
 		return a.processEvent(frame.headers[":event-type"], frame.payload)
 	case "error":
 		code := frame.headers[":error-code"]
-		return fmt.Errorf("Kiro event stream error %s: %s", code, strings.TrimSpace(string(frame.payload)))
+		msg := strings.TrimSpace(string(frame.payload))
+		errBody, _ := json.Marshal(map[string]any{"code": code, "message": msg})
+		return buildStreamUpstreamError("kiro", string(errBody), fmt.Sprintf("Kiro event stream error %s: %s", code, msg))
 	case "exception":
 		kind := frame.headers[":exception-type"]
 		if kind == "ContentLengthExceededException" {
-			a.stopReason = "max_tokens"
-			return nil
+			// If generation already produced output or an in-flight tool call,
+			// treat the limit as output truncation (response.incomplete). If zero
+			// output was produced, the prompt itself overflowed the context window.
+			if len(a.blocks) > 0 || len(a.tools) > 0 {
+				a.stopReason = stopMaxTokens
+				return nil
+			}
+			msg := firstNonEmptyString(kiroEventMessage(frame.payload), "input exceeds Kiro context length")
+			return &streamUpstreamError{
+				dialect: "kiro",
+				status:  http.StatusBadRequest,
+				errType: "invalid_request_error",
+				code:    "context_length_exceeded",
+				message: fmt.Sprintf("Kiro event stream exception %s: %s", kind, msg),
+				body:    strings.TrimSpace(string(frame.payload)),
+			}
 		}
-		return fmt.Errorf("Kiro event stream exception %s: %s", kind, kiroEventMessage(frame.payload))
+		msg := kiroEventMessage(frame.payload)
+		errBody, _ := json.Marshal(map[string]any{"code": kind, "message": msg})
+		return buildStreamUpstreamError("kiro", string(errBody), fmt.Sprintf("Kiro event stream exception %s: %s", kind, msg))
 	default:
 		return fmt.Errorf("unsupported Kiro EventStream message type %q", messageType)
 	}
@@ -59,15 +78,11 @@ func (a *responseAssembler) processEvent(eventType string, payload []byte) error
 			}
 		}
 		if event.Text != "" {
-			if a.request.thinkingEnabled {
-				if err := a.addThinking(event.Text); err != nil {
-					return err
-				}
-			} else if err := a.addText(event.Text); err != nil {
+			if err := a.addThinking(event.Text); err != nil {
 				return err
 			}
 		}
-		if event.Signature != "" && a.activeType == "thinking" && a.activeIndex >= 0 {
+		if event.Signature != "" && a.activeType == blockThinking && a.activeIndex >= 0 {
 			a.blocks[a.activeIndex].Signature = event.Signature
 		}
 	case "toolUseEvent":
@@ -100,6 +115,9 @@ func (a *responseAssembler) processEvent(eventType string, payload []byte) error
 		accumulator.input.WriteString(event.Input)
 		if event.Stop {
 			delete(a.tools, event.ToolUseID)
+			if n := accumulator.input.Len(); n > 0 && a.retainedBytes >= n {
+				a.retainedBytes -= n
+			}
 			if err := a.flushInlineContent(); err != nil {
 				return err
 			}
@@ -113,7 +131,15 @@ func (a *responseAssembler) processEvent(eventType string, payload []byte) error
 			return err
 		}
 		if event.ContextUsagePercentage > 0 {
-			a.contextTokens = int(event.ContextUsagePercentage / 100 * float64(kiroContextWindow(a.request.upstreamModel)))
+			window := 0
+			if a.request != nil {
+				window = a.request.contextWindow
+			}
+			if window <= 0 {
+				window = kiroContextWindow(a.request.upstreamModel)
+			}
+			a.inputUsageKnown = true
+			a.contextTokens = int(event.ContextUsagePercentage / 100 * float64(window))
 			if event.ContextUsagePercentage >= 100 {
 				a.stopReason = stopMaxTokens
 			}
@@ -138,14 +164,19 @@ func processKiroEventStream(reader io.Reader, assembler *responseAssembler) erro
 	// Frames are read in two small chunks (prelude, then remainder), so reading
 	// straight from the network body would cost two syscalls per frame.
 	buffered := bufio.NewReaderSize(reader, kiroEventReadBufferSize)
+	sawFrame := false
 	for {
 		frame, err := readKiroEventFrame(buffered)
 		if err == io.EOF {
+			if !sawFrame {
+				return fmt.Errorf("Kiro event stream returned an empty response: %w", io.ErrUnexpectedEOF)
+			}
 			return assembler.finish()
 		}
 		if err != nil {
 			return err
 		}
+		sawFrame = true
 		if err := assembler.process(frame); err != nil {
 			return err
 		}

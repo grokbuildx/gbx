@@ -39,23 +39,18 @@ func processAnthropicMessagesStream(reader io.Reader, assembler *responseAssembl
 	state := &anthropicStreamState{assembler: assembler, blocks: make(map[int]*anthropicStreamBlock)}
 	// Messages SSE frames carry "event:" lines too, but every data payload
 	// repeats its type, so only the data lines are needed.
-	if err := readChatCompletionsSSE(reader, state.process); err != nil {
+	if err := readSSEPayload(reader, "anthropic", state.process); err != nil {
 		return err
 	}
 	if !state.terminalSeen {
 		return fmt.Errorf("Anthropic Messages stream ended before message_stop: %w", io.ErrUnexpectedEOF)
 	}
-	if !assembler.started {
-		if err := assembler.start(); err != nil {
-			return err
-		}
-	}
-	if err := state.flushPendingTools(assembler.stopReason == stopMaxTokens); err != nil {
+	if err := state.flushPendingTools(assembler.isTruncatedStop()); err != nil {
 		return err
 	}
 	// Apply authoritative upstream usage after deferred tool emission so local
 	// tool-argument token estimates do not inflate reported output_tokens.
-	anthropicApplyUsage(assembler, state.finalUsage)
+	anthropicApplyUsage(assembler, state.finalUsage, true)
 	return assembler.finish()
 }
 
@@ -104,24 +99,24 @@ func (s *anthropicStreamState) process(payload []byte) error {
 	a := s.assembler
 	switch event.Type {
 	case "message_start":
-		if !a.started {
-			if err := a.start(); err != nil {
-				return err
-			}
-		}
+		// Defer assembler.start() until the first content block or finish() so
+		// pre-content overloaded_error/rate_limit_error events still map to HTTP
+		// error statuses instead of HTTP 200 SSE response.failed.
 		var message struct {
 			Usage map[string]any `json:"usage"`
 		}
 		if err := json.Unmarshal(event.Message, &message); err == nil {
-			anthropicApplyUsage(a, message.Usage)
+			anthropicApplyUsage(a, message.Usage, false)
 		}
 	case "content_block_start":
 		var block struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
-			Name string `json:"name"`
-			Text string `json:"text"`
-			Data string `json:"data"`
+			Type      string `json:"type"`
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			Text      string `json:"text"`
+			Thinking  string `json:"thinking"`
+			Signature string `json:"signature"`
+			Data      string `json:"data"`
 		}
 		if err := json.Unmarshal(event.ContentBlock, &block); err != nil {
 			return fmt.Errorf("decode Anthropic content block: %w", err)
@@ -142,8 +137,21 @@ func (s *anthropicStreamState) process(payload []byte) error {
 			if err := a.closeActive(); err != nil {
 				return err
 			}
+			if block.Signature != "" {
+				if err := a.retain(len(block.Signature)); err != nil {
+					return err
+				}
+				state.signature.WriteString(block.Signature)
+			}
+			if block.Thinking != "" {
+				state.thinking = true
+				return a.addThinking(block.Thinking)
+			}
 		case "redacted_thinking":
 			delete(s.blocks, event.Index)
+			if strings.TrimSpace(block.Data) == "" {
+				return nil
+			}
 			return a.addOpaqueReasoning(anthropicRedactedPrefix + block.Data)
 		case "text":
 			return a.addText(block.Text)
@@ -231,36 +239,62 @@ func (s *anthropicStreamState) process(payload []byte) error {
 		var usage map[string]any
 		if err := json.Unmarshal(event.Usage, &usage); err == nil && usage != nil {
 			s.finalUsage = usage
-			anthropicApplyUsage(a, usage)
+			anthropicApplyUsage(a, usage, true)
 		}
 	case "message_stop":
 		s.terminalSeen = true
 	case "error":
+		fallback := strings.TrimSpace(string(payload))
 		if event.Error != nil {
-			return fmt.Errorf("Anthropic Messages upstream error %s: %s", event.Error.Type, event.Error.Message)
+			fallback = fmt.Sprintf("Anthropic Messages upstream error %s: %s", event.Error.Type, event.Error.Message)
 		}
-		return fmt.Errorf("Anthropic Messages upstream error: %s", strings.TrimSpace(string(payload)))
+		return buildStreamUpstreamError("anthropic", string(payload), fallback)
 	}
 	return nil
 }
 
 // anthropicApplyUsage records Messages usage. input_tokens excludes cached
-// tokens, which arrive separately as cache reads and writes.
-func anthropicApplyUsage(a *responseAssembler, usage map[string]any) {
+// tokens, which arrive separately as cache reads and writes. When fromDelta is
+// true, all-zero input/cache fields from compatibility proxies do not clobber
+// positive values already received in message_start.
+func anthropicApplyUsage(a *responseAssembler, usage map[string]any, fromDelta bool) {
 	if usage == nil {
 		return
 	}
-	if value, ok := usage["input_tokens"]; ok && value != nil {
-		a.inputUsageKnown = true
-		a.contextTokens = intValue(value)
+	inVal, hasIn := usage["input_tokens"]
+	hasIn = hasIn && inVal != nil
+	readVal, hasRead := usage["cache_read_input_tokens"]
+	hasRead = hasRead && readVal != nil
+	writeVal, hasWrite := usage["cache_creation_input_tokens"]
+	hasWrite = hasWrite && writeVal != nil
+
+	cacheWrite := intValue(writeVal)
+	if cacheCreation := mapValue(usage["cache_creation"]); cacheCreation != nil {
+		ephemeralSum := intValue(cacheCreation["ephemeral_5m_input_tokens"]) + intValue(cacheCreation["ephemeral_1h_input_tokens"])
+		if ephemeralSum > 0 && cacheWrite == 0 {
+			cacheWrite = ephemeralSum
+			hasWrite = true
+		}
 	}
-	if value, ok := usage["cache_read_input_tokens"]; ok && value != nil {
-		a.cacheReadTokens = intValue(value)
-	}
-	if value, ok := usage["cache_creation_input_tokens"]; ok && value != nil {
-		a.cacheWriteTokens = intValue(value)
+
+	deltaInputTotal := intValue(inVal) + intValue(readVal) + cacheWrite
+	preserveStartInput := fromDelta && deltaInputTotal == 0 && a.inputUsageKnown &&
+		(a.contextTokens > 0 || a.cacheReadTokens > 0 || a.cacheWriteTokens > 0)
+
+	if !preserveStartInput {
+		if hasIn {
+			a.inputUsageKnown = true
+			a.contextTokens = intValue(inVal)
+		}
+		if hasRead {
+			a.cacheReadTokens = intValue(readVal)
+		}
+		if hasWrite {
+			a.cacheWriteTokens = cacheWrite
+		}
 	}
 	if value, ok := usage["output_tokens"]; ok && value != nil {
+		a.outputUsageKnown = true
 		a.outputTokens = intValue(value)
 	}
 }
@@ -273,7 +307,7 @@ func anthropicStopReason(reason string) string {
 	case "tool_use":
 		return stopToolUse
 	case "refusal":
-		return stopRefusal
+		return stopContentFilter
 	default:
 		return stopEndTurn
 	}

@@ -375,16 +375,22 @@ func cursorParseEndStream(data []byte) error {
 
 func cursorConnectStatus(code string) int {
 	switch code {
-	case "resource_exhausted":
-		return 429
+	case "invalid_argument", "failed_precondition", "out_of_range":
+		return 400
 	case "unauthenticated":
 		return 401
 	case "permission_denied":
 		return 403
-	case "unavailable":
-		return 503
+	case "not_found":
+		return 404
+	case "resource_exhausted":
+		return 429
 	case "internal":
 		return 500
+	case "unavailable":
+		return 503
+	case "deadline_exceeded":
+		return 504
 	default:
 		return 502
 	}

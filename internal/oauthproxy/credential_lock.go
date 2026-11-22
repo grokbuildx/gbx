@@ -41,6 +41,17 @@ func oauthTokenStillRejected(ctx context.Context, current string) bool {
 	return !ok || rejected == "" || current == rejected
 }
 
+// oauthTokenExplicitlyRejected reports whether ctx carries an upstream-rejected
+// token that matches current, distinguishing an explicit 401 of a freshly
+// refreshed token from a concurrent forced refresh with no rejected token set.
+func oauthTokenExplicitlyRejected(ctx context.Context, current string) bool {
+	if ctx == nil || current == "" {
+		return false
+	}
+	rejected, ok := ctx.Value(rejectedOAuthTokenKey{}).(string)
+	return ok && rejected != "" && current == rejected
+}
+
 func rejectedResponseContext(ctx context.Context, response *http.Response) context.Context {
 	if response == nil || response.Request == nil {
 		return ctx

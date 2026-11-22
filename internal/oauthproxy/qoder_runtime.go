@@ -30,6 +30,7 @@ type qoderUpstreamError struct {
 	status     int
 	body       string
 	retryAfter string
+	headers    http.Header
 }
 
 func (e *qoderUpstreamError) Error() string {
@@ -38,8 +39,10 @@ func (e *qoderUpstreamError) Error() string {
 
 // upstreamStatus implements the retry.go fast-retry probe against the raw
 // upstream status, before any client-facing mapping.
-func (e *qoderUpstreamError) upstreamStatus() int        { return e.status }
-func (e *qoderUpstreamError) upstreamRetryAfter() string { return e.retryAfter }
+func (e *qoderUpstreamError) upstreamStatus() int          { return e.status }
+func (e *qoderUpstreamError) upstreamRetryAfter() string   { return e.retryAfter }
+func (e *qoderUpstreamError) upstreamErrorBody() string    { return e.body }
+func (e *qoderUpstreamError) upstreamHeaders() http.Header { return e.headers }
 
 type qoderStreamUsage struct {
 	input      int64
@@ -206,7 +209,7 @@ func (service *qoderService) handleResponses(writer http.ResponseWriter, request
 	if !service.authorized(request) {
 		LogWarnEvent("request_rejected", "component", "qoder", "request_id", requestID,
 			"path", request.URL.Path, "status", http.StatusUnauthorized, "reason", "invalid_local_api_key")
-		writeProxyError(writer, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		writeProxyErrorWithCode(writer, http.StatusUnauthorized, "authentication_error", "invalid_api_key", "Invalid API key")
 		return
 	}
 	if request.Method != http.MethodPost {
@@ -220,7 +223,7 @@ func (service *qoderService) handleResponses(writer http.ResponseWriter, request
 	if err != nil {
 		LogWarnEvent("request_rejected", "component", "qoder", "request_id", requestID,
 			"path", request.URL.Path, "status", http.StatusBadRequest, "reason", "read_body", "error", err)
-		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
+		writeInboundBodyError(writer, err)
 		return
 	}
 	converted, err := convertResponsesToQoder(raw, service.models)
@@ -237,54 +240,77 @@ func (service *qoderService) handleResponses(writer http.ResponseWriter, request
 	upstream, err := service.callUpstream(requestCtx, converted)
 	if err != nil {
 		var upstreamErr *qoderUpstreamError
-		if errors.As(err, &upstreamErr) && upstreamErr.retryAfter != "" {
-			writer.Header().Set("Retry-After", upstreamErr.retryAfter)
-		}
-		if errors.As(err, &upstreamErr) && upstreamErr.status >= 400 && upstreamErr.status < 500 {
+		if errors.As(err, &upstreamErr) {
+			copyProxyResponseHeaders(writer.Header(), upstreamErr.headers)
+			if upstreamErr.retryAfter != "" {
+				writer.Header().Set("Retry-After", upstreamErr.retryAfter)
+			}
+			norm := normalizeUpstreamError("qoder", upstreamErr.status, upstreamErr.body, err.Error())
 			LogUpstreamEvent(upstreamErr.status, "request_failed", "component", "qoder", "request_id", requestID,
-				"model", converted.model.ID, "status", upstreamErr.status, "returned_status", upstreamErr.status,
-				"error_type", proxyErrorType(upstreamErr.status), "stream", converted.stream,
+				"model", converted.model.ID, "status", upstreamErr.status, "returned_status", norm.Status,
+				"error_type", norm.Type, "stream", converted.stream,
 				"duration", logDuration(started))
-			writeProxyError(writer, upstreamErr.status, proxyErrorType(upstreamErr.status), err.Error())
+			writeProxyErrorDetail(writer, norm.Status, norm.Type, norm.Code, norm.Param, norm.Message)
+			return
+		}
+		var authErr *oauthAuthError
+		if errors.As(err, &authErr) {
+			status := authErr.status
+			if status == 0 {
+				status = http.StatusUnauthorized
+			}
+			LogUpstreamEvent(status, "request_failed", "component", "qoder", "request_id", requestID,
+				"model", converted.model.ID, "status", status, "returned_status", status,
+				"stream", converted.stream, "duration", logDuration(started))
+			writeProxyErrorWithCode(writer, status, proxyErrorType(status), "invalid_api_key", authErr.Error())
 			return
 		}
 		LogErrorEvent("request_failed", "component", "qoder", "request_id", requestID,
 			"model", converted.model.ID, "returned_status", http.StatusBadGateway,
 			"stream", converted.stream, "duration", logDuration(started), "error", err)
-		writeProxyError(writer, http.StatusBadGateway, "api_error", err.Error())
+		writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "server_error", "", err.Error())
 		return
 	}
 	defer upstream.Body.Close()
+	copyProxyResponseHeaders(writer.Header(), upstream.Header)
 
 	if converted.stream {
-		writer.Header().Set("Content-Type", "text/event-stream")
-		writer.Header().Set("Cache-Control", "no-cache")
-		writer.Header().Set("Connection", "keep-alive")
 		assembler := newResponseAssembler(converted.adapter, writer)
 		usage, streamErr := processQoderEventStream(requestCtx, upstream.Body, assembler)
 		if streamErr == nil {
 			service.recordUsage(converted.model, usage)
-		}
-		if streamErr != nil {
-			if qoderStreamErrorType(streamErr) == "rate_limit_error" {
-				logQoderQueue(requestCtx, converted.model.ID, streamErr)
-			} else {
-				LogErrorEvent("stream_conversion_failed", "component", "qoder", "request_id", requestID,
-					"model", converted.model.ID, "stream", true, "duration", logDuration(started), "error", streamErr)
-			}
-			// Qoder returns capacity failures inside HTTP 200 SSE envelopes.
-			// Until actual output starts, preserve HTTP 429 and Retry-After
-			// instead of committing a successful stream followed by an error.
-			if !assembler.started {
-				writeQoderStreamError(writer, streamErr)
-				return
-			}
-			assembler.fail(qoderStreamErrorType(streamErr), streamErr.Error())
-		}
-		if streamErr == nil {
 			LogDebugEvent("request_complete", "component", "qoder", "request_id", requestID,
 				"model", converted.model.ID, "status", http.StatusOK, "stream", true, "duration", logDuration(started))
+			return
 		}
+		if errors.Is(streamErr, context.Canceled) || requestCtx.Err() != nil {
+			LogDebugEvent("stream_cancelled", "component", "qoder", "request_id", requestID,
+				"model", converted.model.ID, "duration", logDuration(started))
+			if assembler.started {
+				service.recordUsage(converted.model, usage)
+			}
+			return
+		}
+		if qoderStreamErrorType(streamErr) == "rate_limit_error" {
+			logQoderQueue(requestCtx, converted.model.ID, streamErr)
+		} else {
+			LogErrorEvent("stream_conversion_failed", "component", "qoder", "request_id", requestID,
+				"model", converted.model.ID, "stream", true, "duration", logDuration(started), "error", streamErr)
+		}
+		// Qoder returns capacity failures inside HTTP 200 SSE envelopes.
+		// Until actual output starts, preserve HTTP 429 and Retry-After
+		// instead of committing a successful stream followed by an error.
+		if !assembler.started {
+			writeQoderStreamError(writer, streamErr)
+			return
+		}
+		service.recordUsage(converted.model, usage)
+		errCode := qoderStreamErrorType(streamErr)
+		var streamErrObj *streamUpstreamError
+		if errors.As(streamErr, &streamErrObj) {
+			errCode = firstNonEmptyString(streamErrObj.code, streamErrObj.errType, errCode)
+		}
+		assembler.fail(errCode, streamErr.Error())
 		return
 	}
 
@@ -343,7 +369,7 @@ func (service *qoderService) callUpstream(ctx context.Context, converted *qoderC
 				LogWarnEvent("credential_unavailable", "component", "qoder", "request_id", requestLogID(ctx),
 					"attempt", attempt, "credential_count", len(credentials), "credential", candidate.fileName,
 					"error", usableErr)
-				lastErr = usableErr
+				lastErr = wrapOAuthAuthorizeError("Qoder credential unavailable", usableErr)
 				continue
 			}
 			LogDebugEvent("upstream_attempt", "component", "qoder", "request_id", requestLogID(ctx),
@@ -359,6 +385,7 @@ func (service *qoderService) callUpstream(ctx context.Context, converted *qoderC
 			}
 			if response.StatusCode == http.StatusUnauthorized {
 				retryAfter := response.Header.Get("Retry-After")
+				headers := extractProxyResponseHeaders(response.Header)
 				originalBody := drainQoderResponse(ctx, response)
 				LogWarnEvent("credential_refresh", "component", "qoder", "request_id", requestLogID(ctx),
 					"attempt", attempt, "credential", credential.fileName, "status", http.StatusUnauthorized,
@@ -369,7 +396,7 @@ func (service *qoderService) callUpstream(ctx context.Context, converted *qoderC
 						"attempt", attempt, "credential", candidate.fileName, "error", usableErr)
 					// Preserve an authentication rejection. Turning a failed
 					// refresh into 502 invites the client to retry indefinitely.
-					return nil, &qoderUpstreamError{status: http.StatusUnauthorized, body: originalBody, retryAfter: retryAfter}
+					return nil, &qoderUpstreamError{status: http.StatusUnauthorized, body: originalBody, retryAfter: retryAfter, headers: headers}
 				}
 				response, requestErr = service.doUpstreamRequest(ctx, converted, credential)
 				if requestErr != nil {
@@ -405,8 +432,9 @@ func (service *qoderService) callUpstream(ctx context.Context, converted *qoderC
 		if lastResponse != nil {
 			status := lastResponse.StatusCode
 			retryAfter := lastResponse.Header.Get("Retry-After")
+			headers := extractProxyResponseHeaders(lastResponse.Header)
 			body := drainQoderResponse(ctx, lastResponse)
-			return nil, &qoderUpstreamError{status: status, body: body, retryAfter: retryAfter}
+			return nil, &qoderUpstreamError{status: status, body: body, retryAfter: retryAfter, headers: headers}
 		}
 		if lastErr == nil {
 			lastErr = fmt.Errorf("all Qoder credentials failed")
@@ -780,18 +808,17 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 	terminalSeen := false
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64<<10), min(int(qoderMaxBodyBytes), qoderMaxSSELineBytes))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	var dataBuf strings.Builder
+	var plainBuf strings.Builder
+	sawData := false
+	processFrame := func(rawData string) error {
+		data := strings.TrimSpace(rawData)
 		if data == "" {
-			continue
+			return nil
 		}
 		if data == "[DONE]" {
 			terminalSeen = true
-			continue
+			return nil
 		}
 		inner, err := qoderEnvelopeBody([]byte(data))
 		if err != nil {
@@ -799,30 +826,34 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 			if errors.As(err, &syntaxError) {
 				LogDebugEvent("stream_frame_skipped", "component", "qoder", "request_id", requestLogID(ctx),
 					"reason", "malformed_envelope", "error", err)
-				continue
+				return nil
 			}
-			return usage, err
+			return err
 		}
 		if len(inner) == 0 {
-			continue
+			return nil
 		}
 		if string(inner) == "[DONE]" {
 			terminalSeen = true
-			continue
+			return nil
 		}
 		var event struct {
-			Usage struct {
-				PromptTokens     int64 `json:"prompt_tokens"`
-				CompletionTokens int64 `json:"completion_tokens"`
-				TotalTokens      int64 `json:"total_tokens"`
-				PromptDetails    struct {
-					CachedTokens     int64 `json:"cached_tokens"`
-					CacheWriteTokens int64 `json:"cache_write_tokens"`
+			Usage *struct {
+				PromptTokens     *int64 `json:"prompt_tokens"`
+				CompletionTokens *int64 `json:"completion_tokens"`
+				TotalTokens      *int64 `json:"total_tokens"`
+				PromptDetails    *struct {
+					CachedTokens     *int64 `json:"cached_tokens"`
+					CacheWriteTokens *int64 `json:"cache_write_tokens"`
 				} `json:"prompt_tokens_details"`
+				CompletionDetails *struct {
+					ReasoningTokens *int64 `json:"reasoning_tokens"`
+				} `json:"completion_tokens_details"`
 			} `json:"usage"`
 			Choices []struct {
 				Delta struct {
 					Content          string `json:"content"`
+					Refusal          string `json:"refusal"`
 					ReasoningContent string `json:"reasoning_content"`
 					ToolCalls        []struct {
 						Index    int    `json:"index"`
@@ -839,50 +870,68 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 		if err := json.Unmarshal(inner, &event); err != nil {
 			LogDebugEvent("stream_frame_skipped", "component", "qoder", "request_id", requestLogID(ctx),
 				"reason", "malformed_payload", "error", err)
-			continue
+			return nil
 		}
-		if event.Usage.PromptTokens > 0 || event.Usage.CompletionTokens > 0 {
-			usage.cacheRead = event.Usage.PromptDetails.CachedTokens
-			usage.cacheWrite = event.Usage.PromptDetails.CacheWriteTokens
-			usage.input = max(int64(0), event.Usage.PromptTokens-usage.cacheRead-usage.cacheWrite)
-			usage.output = event.Usage.CompletionTokens
-			assembler.contextTokens = int(usage.input)
-			assembler.inputUsageKnown = true
-			assembler.cacheReadTokens = int(usage.cacheRead)
-			assembler.cacheWriteTokens = int(usage.cacheWrite)
-			if event.Usage.CompletionTokens > 0 {
-				assembler.outputTokens = int(event.Usage.CompletionTokens)
+		if event.Usage != nil {
+			if event.Usage.PromptDetails != nil {
+				if event.Usage.PromptDetails.CachedTokens != nil {
+					usage.cacheRead = *event.Usage.PromptDetails.CachedTokens
+					assembler.cacheReadTokens = int(usage.cacheRead)
+				}
+				if event.Usage.PromptDetails.CacheWriteTokens != nil {
+					usage.cacheWrite = *event.Usage.PromptDetails.CacheWriteTokens
+					assembler.cacheWriteTokens = int(usage.cacheWrite)
+				}
+			}
+			if event.Usage.PromptTokens != nil && (*event.Usage.PromptTokens > 0 || !assembler.inputUsageKnown) {
+				usage.input = max(int64(0), *event.Usage.PromptTokens-usage.cacheRead-usage.cacheWrite)
+				assembler.contextTokens = int(usage.input)
+				assembler.inputUsageKnown = true
+			}
+			if event.Usage.CompletionTokens != nil {
+				usage.output = *event.Usage.CompletionTokens
+				assembler.outputTokens = int(usage.output)
+				assembler.outputUsageKnown = true
+			}
+			if event.Usage.CompletionDetails != nil && event.Usage.CompletionDetails.ReasoningTokens != nil && *event.Usage.CompletionDetails.ReasoningTokens > 0 {
+				assembler.reasoningTokens = int(*event.Usage.CompletionDetails.ReasoningTokens)
 			}
 		}
 		for _, choice := range event.Choices {
 			delta := choice.Delta
 			if reasoning := qoderStripThinkingTags(delta.ReasoningContent); reasoning != "" {
 				if err := assembler.start(); err != nil {
-					return usage, err
+					return err
 				}
 				assembler.nativeReasoning = true
 				if err := assembler.flushInlineContent(); err != nil {
-					return usage, err
+					return err
 				}
-				if assembler.request.thinkingEnabled {
-					err = assembler.addThinking(reasoning)
-				} else {
-					err = assembler.addText(reasoning)
+				if err := assembler.addThinking(reasoning); err != nil {
+					return err
 				}
-				if err != nil {
-					return usage, err
+			}
+			if delta.Refusal != "" {
+				if err := assembler.start(); err != nil {
+					return err
+				}
+				if assembler.stopReason == "" {
+					assembler.stopReason = stopRefusal
+				}
+				if err := assembler.addRefusal(delta.Refusal); err != nil {
+					return err
 				}
 			}
 			if delta.Content != "" {
 				if err := assembler.start(); err != nil {
-					return usage, err
+					return err
 				}
 				content := delta.Content
 				if assembler.nativeReasoning {
 					content = qoderStripThinkingTags(content)
 				}
 				if err := assembler.addAssistantContent(content); err != nil {
-					return usage, err
+					return err
 				}
 			}
 			for _, toolCall := range delta.ToolCalls {
@@ -898,7 +947,7 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 				}
 				if state == nil {
 					if len(tools) >= assemblerMaxToolCalls {
-						return usage, fmt.Errorf("Qoder tool call stream exceeds %d concurrent tool calls", assemblerMaxToolCalls)
+						return fmt.Errorf("Qoder tool call stream exceeds %d concurrent tool calls", assemblerMaxToolCalls)
 					}
 					state = &qoderToolState{index: toolCall.Index, order: nextSlot}
 					tools[key] = state
@@ -914,13 +963,13 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 					}
 					merged, err := chatToolNameDelta(state.name, toolCall.Function.Name, declared)
 					if err != nil {
-						return usage, err
+						return err
 					}
 					state.name = merged
 				}
 				if args := toolCall.Function.Arguments; args != "" {
 					if retainedArgs+len(args) > assemblerMaxRetainedBytes {
-						return usage, fmt.Errorf("Qoder tool call arguments exceed %d bytes", assemblerMaxRetainedBytes)
+						return fmt.Errorf("Qoder tool call arguments exceed %d bytes", assemblerMaxRetainedBytes)
 					}
 					retainedArgs += len(args)
 					state.args.WriteString(args)
@@ -931,14 +980,53 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 			}
 			switch choice.FinishReason {
 			case "length":
-				assembler.stopReason = "max_tokens"
+				assembler.stopReason = stopMaxTokens
 			case "content_filter":
-				assembler.stopReason = "refusal"
+				assembler.stopReason = stopContentFilter
+			}
+		}
+		return nil
+	}
+	for scanner.Scan() {
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if strings.TrimSpace(line) == "" {
+			if dataBuf.Len() > 0 {
+				payload := dataBuf.String()
+				dataBuf.Reset()
+				if err := processFrame(payload); err != nil {
+					return usage, err
+				}
+			}
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "data:"); ok {
+			sawData = true
+			if dataBuf.Len() > 0 {
+				dataBuf.WriteByte('\n')
+			}
+			dataBuf.WriteString(strings.TrimPrefix(value, " "))
+		} else if !sawData && !strings.HasPrefix(line, "event:") && !strings.HasPrefix(line, "id:") &&
+			!strings.HasPrefix(line, "retry:") && !strings.HasPrefix(line, ":") {
+			if int64(plainBuf.Len()+len(line)+1) <= qoderMaxErrorBytes {
+				plainBuf.WriteString(line)
+				plainBuf.WriteByte('\n')
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return usage, fmt.Errorf("read Qoder event stream: %w", err)
+	}
+	if dataBuf.Len() > 0 {
+		if err := processFrame(dataBuf.String()); err != nil {
+			return usage, err
+		}
+	}
+	if !sawData {
+		if trimmed := strings.TrimSpace(plainBuf.String()); trimmed != "" {
+			if envErr := detectJSONErrorEnvelope([]byte(trimmed), "qoder"); envErr != nil {
+				return usage, envErr
+			}
+		}
 	}
 	if !terminalSeen {
 		return usage, fmt.Errorf("Qoder event stream ended before terminal event: %w", io.ErrUnexpectedEOF)
@@ -966,7 +1054,7 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 		}
 		return ordered[i].key < ordered[j].key
 	})
-	truncated := assembler.stopReason == stopMaxTokens
+	truncated := assembler.isTruncatedStop()
 	if !truncated {
 		for _, entry := range ordered {
 			if err := assembler.validateToolUseName(entry.state.name); err != nil {
@@ -989,13 +1077,15 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 			return usage, err
 		}
 	}
-	if usage.input == 0 {
+	if !assembler.inputUsageKnown && usage.input == 0 {
 		usage.input = int64(assembler.request.inputTokens)
 	}
-	if usage.output > 0 {
+	if assembler.outputUsageKnown || usage.output > 0 {
 		assembler.outputTokens = int(usage.output)
+		assembler.outputUsageKnown = true
 	} else {
-		usage.output = int64(assembler.outputTokens)
+		_, estOut := assembler.tokenTotals()
+		usage.output = int64(estOut)
 	}
 	if err := assembler.finish(); err != nil {
 		return usage, err
@@ -1039,6 +1129,10 @@ func qoderStreamErrorType(err error) string {
 			return proxyErrorType(streamErr.status)
 		}
 	}
+	var genericStream *streamUpstreamError
+	if errors.As(err, &genericStream) {
+		return firstNonEmptyString(genericStream.errType, proxyErrorType(genericStream.status))
+	}
 	return "api_error"
 }
 
@@ -1048,9 +1142,13 @@ func qoderStreamHTTPStatus(err error) int {
 		if streamErr.queue != nil {
 			return http.StatusTooManyRequests
 		}
-		if streamErr.status >= 400 && streamErr.status < 500 {
+		if streamErr.status >= 400 {
 			return streamErr.status
 		}
+	}
+	var genericStream *streamUpstreamError
+	if errors.As(err, &genericStream) && genericStream.status >= 400 {
+		return genericStream.status
 	}
 	return http.StatusBadGateway
 }
@@ -1067,7 +1165,28 @@ func writeQoderStreamError(writer http.ResponseWriter, err error) {
 	if seconds := qoderRetryAfterSeconds(err); seconds > 0 {
 		writer.Header().Set("Retry-After", strconv.Itoa(seconds))
 	}
-	writeProxyError(writer, qoderStreamHTTPStatus(err), qoderStreamErrorType(err), err.Error())
+	var genericStream *streamUpstreamError
+	if errors.As(err, &genericStream) {
+		if genericStream.retryAfter != "" {
+			writer.Header().Set("Retry-After", genericStream.retryAfter)
+		}
+		writeProxyErrorDetail(writer, genericStream.status, genericStream.errType, genericStream.code, genericStream.param, genericStream.Error())
+		return
+	}
+	status := qoderStreamHTTPStatus(err)
+	body := ""
+	var qErr *qoderStreamError
+	if errors.As(err, &qErr) {
+		body = qErr.body
+	}
+	norm := normalizeUpstreamError("qoder", status, body, err.Error())
+	if qoderStreamErrorType(err) == "rate_limit_error" {
+		norm.Type = "rate_limit_error"
+		if norm.Code == "" {
+			norm.Code = "rate_limit_exceeded"
+		}
+	}
+	writeProxyErrorDetail(writer, norm.Status, norm.Type, norm.Code, norm.Param, norm.Message)
 }
 
 func logQoderQueue(ctx context.Context, model string, err error) {

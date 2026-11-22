@@ -303,10 +303,10 @@ func (a *autoClawOAuthAuthorizer) refresh(ctx context.Context, observed *autoCla
 	}
 	version := autoClawEffectiveVersion(credential.version)
 	a.setVersion(version)
-	if observed != nil && credential.accessToken != observed.accessToken && !autoClawTokenNeedsRefresh(credential) {
+	if observed != nil && credential.accessToken != observed.accessToken && !autoClawTokenNeedsRefresh(credential) && !oauthTokenExplicitlyRejected(ctx, credential.accessToken) {
 		return credential, nil
 	}
-	if forced && !autoClawTokenNeedsRefresh(credential) && autoClawRecentlyRefreshed(credential, autoclawRefreshCoalesce) {
+	if forced && !autoClawTokenNeedsRefresh(credential) && autoClawRecentlyRefreshed(credential, autoclawRefreshCoalesce) && !oauthTokenExplicitlyRejected(ctx, credential.accessToken) {
 		return credential, nil
 	}
 	if !forced && !autoClawTokenNeedsRefresh(credential) {

@@ -82,6 +82,7 @@ type chatCompletionsUpstreamError struct {
 	body       string
 	retryAfter string
 	requestID  string
+	headers    http.Header
 }
 
 func (e *chatCompletionsUpstreamError) Error() string {
@@ -94,8 +95,10 @@ func (e *chatCompletionsUpstreamError) Error() string {
 
 // upstreamStatus implements the retry.go fast-retry probe against the raw
 // upstream status, before any client-facing mapping.
-func (e *chatCompletionsUpstreamError) upstreamStatus() int        { return e.status }
-func (e *chatCompletionsUpstreamError) upstreamRetryAfter() string { return e.retryAfter }
+func (e *chatCompletionsUpstreamError) upstreamStatus() int          { return e.status }
+func (e *chatCompletionsUpstreamError) upstreamRetryAfter() string   { return e.retryAfter }
+func (e *chatCompletionsUpstreamError) upstreamErrorBody() string    { return e.body }
+func (e *chatCompletionsUpstreamError) upstreamHeaders() http.Header { return e.headers }
 
 // startOpenAIChatRuntime starts a GBX-owned Responses entrypoint that
 // translates requests to OpenAI Chat Completions upstream. It mirrors
@@ -255,7 +258,7 @@ func (s *chatCompletionsService) handleResponses(writer http.ResponseWriter, req
 	if !s.authorized(request) {
 		LogWarnEvent("request_rejected", "component", "openai_chat", "request_id", requestID,
 			"path", request.URL.Path, "status", http.StatusUnauthorized, "reason", "invalid_local_api_key")
-		writeProxyError(writer, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		writeProxyErrorWithCode(writer, http.StatusUnauthorized, "authentication_error", "invalid_api_key", "Invalid API key")
 		return
 	}
 	if request.Method != http.MethodPost {
@@ -264,7 +267,7 @@ func (s *chatCompletionsService) handleResponses(writer http.ResponseWriter, req
 	}
 	raw, err := readInboundBody(writer, request, chatMaxBodyBytes)
 	if err != nil {
-		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
+		writeInboundBodyError(writer, err)
 		return
 	}
 	converted, err := s.convertRequest(raw)
@@ -294,6 +297,7 @@ func (s *chatCompletionsService) handleResponses(writer http.ResponseWriter, req
 	if err != nil {
 		var upstreamErr *chatCompletionsUpstreamError
 		if errors.As(err, &upstreamErr) {
+			copyProxyResponseHeaders(writer.Header(), upstreamErr.headers)
 			if upstreamErr.retryAfter != "" {
 				writer.Header().Set("Retry-After", upstreamErr.retryAfter)
 			}
@@ -303,39 +307,68 @@ func (s *chatCompletionsService) handleResponses(writer http.ResponseWriter, req
 			LogUpstreamEvent(upstreamErr.status, "request_failed", "component", "openai_chat", "request_id", requestID,
 				"model", converted.model, "status", upstreamErr.status, "returned_status", upstreamErr.status,
 				"retry_after", upstreamErr.retryAfter, "duration", logDuration(started))
-			writeProxyError(writer, upstreamErr.status, proxyErrorType(upstreamErr.status), upstreamErr.Error())
+			norm := normalizeUpstreamError("openai_chat", upstreamErr.status, upstreamErr.body, upstreamErr.Error())
+			writeProxyErrorDetail(writer, norm.Status, norm.Type, norm.Code, norm.Param, norm.Message)
+			return
+		}
+		var authErr *oauthAuthError
+		if errors.As(err, &authErr) {
+			status := authErr.status
+			if status == 0 {
+				status = http.StatusUnauthorized
+			}
+			LogUpstreamEvent(status, "request_failed", "component", "openai_chat", "request_id", requestID,
+				"model", converted.model, "status", status, "returned_status", status, "duration", logDuration(started))
+			writeProxyErrorWithCode(writer, status, proxyErrorType(status), "invalid_api_key", authErr.Error())
 			return
 		}
 		LogErrorEvent("request_failed", "component", "openai_chat", "request_id", requestID,
 			"model", converted.model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", err)
-		writeProxyError(writer, http.StatusBadGateway, "api_error", err.Error())
+		writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "server_error", "", err.Error())
 		return
 	}
 	defer response.Body.Close()
+	copyProxyResponseHeaders(writer.Header(), response.Header)
 	if converted.stream {
-		writer.Header().Set("Content-Type", "text/event-stream")
-		writer.Header().Set("Cache-Control", "no-cache")
-		writer.Header().Set("Connection", "keep-alive")
 		assembler := newResponseAssembler(&converted.adapterRequest, writer)
 		if err := processChatCompletionsStream(response.Body, assembler); err != nil {
+			if errors.Is(err, context.Canceled) || requestCtx.Err() != nil {
+				LogDebugEvent("stream_cancelled", "component", "openai_chat", "request_id", requestID,
+					"model", converted.model, "duration", logDuration(started))
+				if assembler.started {
+					s.recordUsage(converted, assembler)
+				}
+				return
+			}
 			LogErrorEvent("stream_conversion_failed", "component", "openai_chat", "request_id", requestID,
 				"model", converted.model, "duration", logDuration(started), "error", err)
-			assembler.fail("upstream_stream_error", err.Error())
+			writeStreamFailure(writer, assembler, true, "openai_chat", err)
+			if assembler.started {
+				s.recordUsage(converted, assembler)
+			}
+			return
 		}
 		s.recordUsage(converted, assembler)
 	} else {
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, chatMaxResponseBytes))
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, chatMaxResponseBytes+1))
 		if readErr != nil {
 			LogErrorEvent("response_read_failed", "component", "openai_chat", "request_id", requestID,
 				"model", converted.model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", readErr)
-			writeProxyError(writer, http.StatusBadGateway, "api_error", readErr.Error())
+			writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "server_error", "", readErr.Error())
+			return
+		}
+		if int64(len(body)) > chatMaxResponseBytes {
+			limitErr := fmt.Errorf("OpenAI Chat Completions response exceeds %s limit", requestLimitLabel(chatMaxResponseBytes))
+			LogErrorEvent("response_read_failed", "component", "openai_chat", "request_id", requestID,
+				"model", converted.model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", limitErr)
+			writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "server_error", "", limitErr.Error())
 			return
 		}
 		assembler := newResponseAssembler(&converted.adapterRequest, nil)
 		if err := processChatCompletionsNonStream(body, assembler); err != nil {
 			LogErrorEvent("stream_conversion_failed", "component", "openai_chat", "request_id", requestID,
 				"model", converted.model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", err)
-			writeProxyError(writer, http.StatusBadGateway, "api_error", err.Error())
+			writeStreamFailure(writer, assembler, false, "openai_chat", err)
 			return
 		}
 		s.recordUsage(converted, assembler)
@@ -375,9 +408,14 @@ func (s *chatCompletionsService) call(ctx context.Context, converted *chatComple
 			if response.StatusCode == http.StatusUnauthorized && s.authorizer != nil && s.authorizer.isOAuth() {
 				// OAuth subscription: a stale token 401s once, then we force-refresh and
 				// retry the request exactly once before surfacing the failure.
-				_ = response.Body.Close()
-				if _, authErr := s.authorizer.authorize(rejectedResponseContext(ctx, response), true); authErr != nil {
-					return nil, fmt.Errorf("refresh OpenAI Chat OAuth token: %w", authErr)
+				rejectedCtx := rejectedResponseContext(ctx, response)
+				rejectedErr := chatDrainError(ctx, response)
+				if _, authErr := s.authorizer.authorize(rejectedCtx, true); authErr != nil {
+					return nil, &oauthAuthError{
+						status:  http.StatusUnauthorized,
+						message: fmt.Sprintf("%v (refresh OpenAI Chat OAuth token failed: %v)", rejectedErr, authErr),
+						err:     authErr,
+					}
 				}
 				response, err = s.callOnce(ctx, converted)
 				if err != nil {
@@ -404,7 +442,7 @@ func (s *chatCompletionsService) callOnce(ctx context.Context, converted *chatCo
 	}
 	token, err := s.authorizer.authorize(ctx, false)
 	if err != nil {
-		return nil, fmt.Errorf("authorize OpenAI Chat Completions upstream: %w", err)
+		return nil, wrapOAuthAuthorizeError("authorize OpenAI Chat Completions upstream", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", "application/json")
@@ -435,8 +473,11 @@ func chatDrainError(ctx context.Context, response *http.Response) error {
 	_ = response.Body.Close()
 	DebugHTTPBody(fmt.Sprintf("openai chat response request_id=%s status=%d", requestLogID(ctx), response.StatusCode), body)
 	return &chatCompletionsUpstreamError{
-		status: response.StatusCode, body: strings.TrimSpace(string(body)),
-		retryAfter: response.Header.Get("Retry-After"), requestID: firstHeader(response.Header, "X-Request-Id", "Request-Id"),
+		status:     response.StatusCode,
+		body:       strings.TrimSpace(string(body)),
+		retryAfter: response.Header.Get("Retry-After"),
+		requestID:  firstHeader(response.Header, "X-Request-Id", "Request-Id"),
+		headers:    extractProxyResponseHeaders(response.Header),
 	}
 }
 

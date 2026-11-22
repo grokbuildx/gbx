@@ -234,6 +234,7 @@ type cursorUpstreamError struct {
 	status     int
 	body       string
 	retryAfter string
+	headers    http.Header
 }
 
 func (e *cursorUpstreamError) Error() string {
@@ -244,8 +245,10 @@ func (e *cursorUpstreamError) Error() string {
 	return fmt.Sprintf("Cursor upstream returned HTTP %d: %s", e.status, message)
 }
 
-func (e *cursorUpstreamError) upstreamStatus() int        { return e.status }
-func (e *cursorUpstreamError) upstreamRetryAfter() string { return e.retryAfter }
+func (e *cursorUpstreamError) upstreamStatus() int          { return e.status }
+func (e *cursorUpstreamError) upstreamRetryAfter() string   { return e.retryAfter }
+func (e *cursorUpstreamError) upstreamErrorBody() string    { return e.body }
+func (e *cursorUpstreamError) upstreamHeaders() http.Header { return e.headers }
 
 type cursorPendingCall struct {
 	msgID  uint32
@@ -274,6 +277,7 @@ type cursorSession struct {
 	writer     cursorStreamWriter
 	cancel     context.CancelFunc
 	sessionKey string
+	token      string
 	initDone   chan struct{}
 
 	writeMu sync.Mutex
@@ -471,7 +475,7 @@ func (s *cursorService) handleResponses(writer http.ResponseWriter, request *htt
 	if !s.authorized(request) {
 		LogWarnEvent("request_rejected", "component", "cursor", "request_id", requestID,
 			"path", request.URL.Path, "status", http.StatusUnauthorized, "reason", "invalid_local_api_key")
-		writeProxyError(writer, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		writeProxyErrorDetail(writer, http.StatusUnauthorized, "authentication_error", "invalid_api_key", "", "Invalid API key")
 		return
 	}
 	if request.Method != http.MethodPost {
@@ -480,7 +484,7 @@ func (s *cursorService) handleResponses(writer http.ResponseWriter, request *htt
 	}
 	raw, err := readInboundBody(writer, request, cursorMaxInboundRequestBytes)
 	if err != nil {
-		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
+		writeInboundBodyError(writer, err)
 		return
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
@@ -506,25 +510,37 @@ func (s *cursorService) handleResponses(writer http.ResponseWriter, request *htt
 	var gate *cursorGateWriter
 	var assemblerWriter http.ResponseWriter
 	if converted.stream {
-		writer.Header().Set("Content-Type", "text/event-stream")
-		writer.Header().Set("Cache-Control", "no-cache")
-		writer.Header().Set("Connection", "keep-alive")
 		gate = &cursorGateWriter{response: writer}
 		assemblerWriter = gate
 	}
-	assembler := newResponseAssembler(&converted.adapterRequest, assemblerWriter)
-	if err := s.serve(requestCtx, converted, assembler, gate); err != nil {
-		status, errorType := cursorClientError(err)
+	assembler, err := s.serve(requestCtx, converted, assemblerWriter, gate)
+	if err != nil {
+		if errors.Is(err, context.Canceled) && request.Context().Err() != nil {
+			if assembler != nil && ((converted.stream && gate != nil && gate.opened()) || !converted.stream) {
+				s.recordUsage(converted, assembler)
+			}
+			LogDebugEvent("request_canceled", "component", "cursor", "request_id", requestID,
+				"model", converted.clientModel, "stream", converted.stream, "duration", logDuration(started))
+			return
+		}
+		norm, headers, retryAfter := cursorNormalizedError(err)
 		LogErrorEvent("request_failed", "component", "cursor", "request_id", requestID,
-			"model", converted.clientModel, "returned_status", status, "stream", converted.stream,
+			"model", converted.clientModel, "returned_status", norm.Status, "stream", converted.stream,
 			"duration", logDuration(started), "error", err)
 		if converted.stream && gate != nil && gate.opened() {
 			// The message already started; a status line can no longer carry the
 			// failure, so report it as a stream error exactly like an upstream drop.
-			assembler.fail(errorType, err.Error())
+			if assembler != nil {
+				s.recordUsage(converted, assembler)
+				assembler.fail(firstNonEmptyString(norm.Code, norm.Type, "upstream_stream_error"), norm.Message)
+			}
 			return
 		}
-		writeProxyError(writer, status, errorType, err.Error())
+		copyProxyResponseHeaders(writer.Header(), headers)
+		if retryAfter != "" {
+			writer.Header().Set("Retry-After", retryAfter)
+		}
+		writeProxyErrorDetail(writer, norm.Status, norm.Type, norm.Code, norm.Param, norm.Message)
 		return
 	}
 	s.recordUsage(converted, assembler)
@@ -538,17 +554,65 @@ func (s *cursorService) handleResponses(writer http.ResponseWriter, request *htt
 }
 
 func (s *cursorService) recordUsage(converted *cursorConvertedRequest, assembler *responseAssembler) {
-	if s.usage == nil {
+	if s.usage == nil || assembler == nil {
 		return
 	}
 	input, output := assembler.tokenTotals()
 	s.usage.Add(converted.clientModel, int64(input), int64(output), int64(assembler.cacheReadTokens), int64(assembler.cacheWriteTokens))
 }
 
+func cursorNormalizedError(err error) (normalizedProxyError, http.Header, string) {
+	var authErr *oauthAuthError
+	if errors.As(err, &authErr) {
+		status := authErr.status
+		if status == 0 {
+			status = http.StatusUnauthorized
+		}
+		return normalizedProxyError{
+			Status:  status,
+			Type:    proxyErrorType(status),
+			Code:    "invalid_api_key",
+			Message: truncateErrorMessage(authErr.Error(), maxClientErrorMessageBytes),
+		}, nil, ""
+	}
+	var upstream *cursorUpstreamError
+	if errors.As(err, &upstream) {
+		status := upstream.status
+		if status < 400 {
+			status = http.StatusBadGateway
+		}
+		return normalizeUpstreamError("cursor", status, upstream.body, upstream.Error()), upstream.headers, upstream.retryAfter
+	}
+	var connectErr *cursorConnectError
+	if errors.As(err, &connectErr) {
+		status := connectErr.upstreamStatus()
+		if status < 400 {
+			status = http.StatusBadGateway
+		}
+		rawBody := connectErr.Message
+		if connectErr.Code != "" {
+			if encoded, marshalErr := json.Marshal(map[string]string{"code": connectErr.Code, "message": connectErr.Message}); marshalErr == nil {
+				rawBody = string(encoded)
+			}
+		}
+		return normalizeUpstreamError("cursor", status, rawBody, connectErr.Error()), nil, ""
+	}
+	status, _ := cursorClientError(err)
+	return normalizeUpstreamError("cursor", status, "", err.Error()), nil, ""
+}
+
 // cursorClientError maps a turn failure onto the status and proxy error
 // type the client understands: 429 stays 429 so it backs off, 401 so it
 // re-authenticates, 413 so it shrinks the request.
 func cursorClientError(err error) (int, string) {
+	var authErr *oauthAuthError
+	if errors.As(err, &authErr) {
+		status := authErr.status
+		if status == 0 {
+			status = http.StatusUnauthorized
+		}
+		return status, proxyErrorType(status)
+	}
 	status := 0
 	var upstream *cursorUpstreamError
 	if errors.As(err, &upstream) {
@@ -570,7 +634,7 @@ func cursorClientError(err error) (int, string) {
 
 // serve runs one Responses turn: resume the parked Cursor stream when the
 // client is answering a tool call it owns, otherwise start a fresh Run.
-func (s *cursorService) serve(ctx context.Context, converted *cursorConvertedRequest, assembler *responseAssembler, gate *cursorGateWriter) error {
+func (s *cursorService) serve(ctx context.Context, converted *cursorConvertedRequest, assemblerWriter http.ResponseWriter, gate *cursorGateWriter) (*responseAssembler, error) {
 	// Cursor's ExecMcpResult protobuf frame carries text only. When a tool
 	// result (or follow-up user turn) attaches screenshots, close any parked
 	// stream for this conversation and start a fresh Run so SelectedImages reach
@@ -582,16 +646,57 @@ func (s *cursorService) serve(ctx context.Context, converted *cursorConvertedReq
 		// Release only if it is not parked again when continueTurn returns.
 		defer s.releaseOwned(session)
 		LogDebugEvent("cursor_resume", "call_count", len(converted.resume))
-		return s.continueTurn(ctx, session, converted, assembler, gate, true)
+		assembler := newResponseAssembler(&converted.adapterRequest, assemblerWriter)
+		return assembler, s.continueTurn(ctx, session, converted, assembler, gate, true)
 	}
-	session, err := s.startRun(ctx, converted)
-	if err != nil {
-		return err
+	refreshed401 := false
+	fastRetryIdx := 0
+	for {
+		gate.reset()
+		assembler := newResponseAssembler(&converted.adapterRequest, assemblerWriter)
+		session, err := s.startRun(ctx, converted)
+		if err != nil {
+			return assembler, err
+		}
+		err = s.continueTurn(ctx, session, converted, assembler, gate, false)
+		s.releaseOwned(session)
+		if err == nil {
+			return assembler, nil
+		}
+		// Never retry once any output has been emitted to the client or assembled.
+		if (gate != nil && gate.opened()) || (!converted.stream && (len(assembler.blocks) > 0 || len(assembler.tools) > 0)) {
+			return assembler, err
+		}
+		var connectErr *cursorConnectError
+		if !errors.As(err, &connectErr) {
+			return assembler, err
+		}
+		status := connectErr.upstreamStatus()
+		if status == http.StatusUnauthorized && !refreshed401 && s.authorizer != nil && s.authorizer.isOAuth() {
+			refreshed401 = true
+			rejected := withRejectedOAuthToken(ctx, session.token)
+			if _, authErr := s.authorizer.authorize(rejected, true); authErr != nil {
+				return assembler, &oauthAuthError{
+					status:  http.StatusUnauthorized,
+					message: fmt.Sprintf("%v (refresh Cursor OAuth token failed: %v)", connectErr, authErr),
+					err:     authErr,
+				}
+			}
+			continue
+		}
+		if isFastRetryStatus(status) && fastRetryIdx < len(upstreamFastRetryBackoff) && !isNonRetryableQuotaBody(connectErr.Error()) {
+			delay := jitterBackoffDelay(upstreamFastRetryBackoff[fastRetryIdx])
+			fastRetryIdx++
+			LogWarnEvent("upstream_retry", "component", "cursor", "request_id", requestLogID(ctx),
+				"status", status, "retry", fastRetryIdx, "retry_limit", len(upstreamFastRetryBackoff),
+				"wait", delay, "action", "fast_retry_trailer")
+			if waitErr := sleepContext(ctx, delay); waitErr != nil {
+				return assembler, err
+			}
+			continue
+		}
+		return assembler, err
 	}
-	// A fresh stream belongs to this request until it parks itself, at which
-	// point the runtime owns it for the tool result that resumes it.
-	defer s.releaseOwned(session)
-	return s.continueTurn(ctx, session, converted, assembler, gate, false)
 }
 
 // takeParked hands a parked stream back to the request that answers its tool
@@ -755,9 +860,18 @@ func (s *cursorService) startRun(ctx context.Context, converted *cursorConverted
 			// A stale token 401s once; force-refresh and retry the request once
 			// before surfacing the failure.
 			rejected := rejectedResponseContext(runCtx, response)
+			rejectedBody, _ := io.ReadAll(io.LimitReader(response.Body, cursorMaxUpstreamErrorBytes))
 			session.close()
 			if _, authErr := s.authorizer.authorize(rejected, true); authErr != nil {
-				return nil, fmt.Errorf("refresh Cursor OAuth token: %w", authErr)
+				detail := strings.TrimSpace(string(rejectedBody))
+				if detail == "" {
+					detail = http.StatusText(http.StatusUnauthorized)
+				}
+				return nil, &oauthAuthError{
+					status:  http.StatusUnauthorized,
+					message: fmt.Sprintf("Cursor upstream returned HTTP 401: %s (refresh Cursor OAuth token failed: %v)", detail, authErr),
+					err:     authErr,
+				}
 			}
 			session, err = s.openStream(s.serviceContext(), runCtx, encoded)
 			if err != nil {
@@ -767,9 +881,15 @@ func (s *cursorService) startRun(ctx context.Context, converted *cursorConverted
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			retryAfter := response.Header.Get("Retry-After")
+			headers := extractProxyResponseHeaders(response.Header)
 			body, _ := io.ReadAll(io.LimitReader(response.Body, cursorMaxUpstreamErrorBytes))
 			session.close()
-			return nil, &cursorUpstreamError{status: response.StatusCode, body: strings.TrimSpace(string(body)), retryAfter: retryAfter}
+			return nil, &cursorUpstreamError{
+				status:     response.StatusCode,
+				body:       strings.TrimSpace(string(body)),
+				retryAfter: retryAfter,
+				headers:    headers,
+			}
 		}
 		session.sessionKey = converted.sessionKey
 		opened = session
@@ -813,7 +933,7 @@ func (s *cursorService) serviceContext() context.Context {
 func (s *cursorService) openStream(streamCtx, dialCtx context.Context, frame []byte) (*cursorSession, error) {
 	token, err := s.authorizer.authorize(dialCtx, false)
 	if err != nil {
-		return nil, fmt.Errorf("authorize Cursor agent request: %w", err)
+		return nil, wrapOAuthAuthorizeError("authorize Cursor agent request", err)
 	}
 	attemptCtx, cancel := context.WithCancel(streamCtx)
 	stopDialCancel := context.AfterFunc(dialCtx, cancel)
@@ -860,6 +980,7 @@ func (s *cursorService) openStream(streamCtx, dialCtx context.Context, frame []b
 		"duration", logDuration(started))
 	session := newCursorSession(response, pipeWriter, cancel)
 	session.initDone = initDone
+	session.token = token
 	return session, nil
 }
 
@@ -924,11 +1045,17 @@ func (s *cursorService) continueTurn(ctx context.Context, session *cursorSession
 		for _, event := range events {
 			switch event.Kind {
 			case "text":
+				if event.Text == "" {
+					continue
+				}
 				if err := assembler.addText(event.Text); err != nil {
 					return err
 				}
 				gate.open()
 			case "thinking":
+				if event.Text == "" {
+					continue
+				}
 				if err := assembler.addThinking(event.Text); err != nil {
 					return err
 				}
@@ -936,6 +1063,11 @@ func (s *cursorService) continueTurn(ctx context.Context, session *cursorSession
 			case "thinking_done":
 				if err := assembler.closeActive(); err != nil {
 					return err
+				}
+			case "token":
+				if event.TokenDelta > 0 {
+					assembler.outputTokens += int(event.TokenDelta)
+					assembler.outputUsageKnown = true
 				}
 			case "kv_get":
 				if err := session.send(cursorFrameConnect(encodeCursorKvGetResult(event.KvID, s.blob(event.BlobID)), 0)); err != nil {
@@ -1086,20 +1218,37 @@ type cursorGateWriter struct {
 	openedOK bool
 	pending  bytes.Buffer
 	header   bool
+	hdr      http.Header
 }
 
 func (g *cursorGateWriter) Header() http.Header {
 	if g == nil {
 		return http.Header{}
 	}
-	return g.response.Header()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.openedOK {
+		return g.response.Header()
+	}
+	if g.hdr == nil {
+		g.hdr = make(http.Header)
+	}
+	return g.hdr
 }
 
 func (g *cursorGateWriter) WriteHeader(status int) {
 	if g == nil {
 		return
 	}
-	g.response.WriteHeader(status)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.openedOK {
+		return
+	}
+	if !g.header {
+		g.header = true
+		g.response.WriteHeader(status)
+	}
 }
 
 func (g *cursorGateWriter) Write(p []byte) (int, error) {
@@ -1120,6 +1269,11 @@ func (g *cursorGateWriter) Write(p []byte) (int, error) {
 func (g *cursorGateWriter) flushLocked(p []byte) (int, error) {
 	if !g.header {
 		g.header = true
+		for key, values := range g.hdr {
+			dst := g.response.Header()
+			dst[key] = append([]string(nil), values...)
+		}
+		g.hdr = nil
 		g.response.WriteHeader(http.StatusOK)
 	}
 	written, err := g.response.Write(p)
@@ -1129,6 +1283,20 @@ func (g *cursorGateWriter) flushLocked(p []byte) (int, error) {
 		}
 	}
 	return written, err
+}
+
+// reset discards buffered pre-gate events and headers before a pre-gate retry.
+func (g *cursorGateWriter) reset() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.openedOK {
+		return
+	}
+	g.pending.Reset()
+	g.hdr = nil
 }
 
 // open releases the buffered events. It is safe to call more than once and on a
@@ -1164,22 +1332,37 @@ func (g *cursorGateWriter) opened() bool {
 // the runtime keeps a compatibility catalog and marks it as a fallback so
 // callers do not overwrite a catalog they already have with a guess.
 func discoverCursorModels(ctx context.Context, authorizer *cursorOAuthAuthorizer, client *http.Client) ([]string, error) {
+	send := func(token string) (*http.Response, error) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, cursorConnectBaseURL+cursorConnectModelsPath, bytes.NewReader(nil))
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Content-Type", "application/proto")
+		request.Header.Set("Connect-Protocol-Version", "1")
+		request.Header.Set("Accept-Encoding", "identity")
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("X-Cursor-Client-Version", cursorCLIVersion)
+		return doCredentialRequest(client, request)
+	}
 	token, err := authorizer.authorize(ctx, false)
 	if err != nil {
 		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, cursorConnectBaseURL+cursorConnectModelsPath, bytes.NewReader(nil))
+	response, err := send(token)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Content-Type", "application/proto")
-	request.Header.Set("Connect-Protocol-Version", "1")
-	request.Header.Set("Accept-Encoding", "identity")
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("X-Cursor-Client-Version", cursorCLIVersion)
-	response, err := doCredentialRequest(client, request)
-	if err != nil {
-		return nil, err
+	if response.StatusCode == http.StatusUnauthorized && authorizer != nil && authorizer.isOAuth() {
+		rejected := rejectedResponseContext(ctx, response)
+		drainAndClose(response)
+		token, err = authorizer.authorize(rejected, true)
+		if err != nil {
+			return nil, wrapOAuthAuthorizeError("refresh Cursor OAuth token", err)
+		}
+		response, err = send(token)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, cursorMaxErrorBytes))
@@ -1187,7 +1370,12 @@ func discoverCursorModels(ctx context.Context, authorizer *cursorOAuthAuthorizer
 		return nil, err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, &cursorUpstreamError{status: response.StatusCode, body: strings.TrimSpace(string(body))}
+		return nil, &cursorUpstreamError{
+			status:     response.StatusCode,
+			body:       strings.TrimSpace(string(body)),
+			retryAfter: response.Header.Get("Retry-After"),
+			headers:    extractProxyResponseHeaders(response.Header),
+		}
 	}
 	models := decodeCursorUsableModels(body)
 	if len(models) == 0 {

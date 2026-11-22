@@ -329,8 +329,7 @@ func withResponsesHistory(apiKey string, next http.HandlerFunc) http.HandlerFunc
 			return
 		}
 		if int64(len(raw)) > responsesHistoryMaxPeekBytes {
-			request.Body = io.NopCloser(io.MultiReader(bytes.NewReader(raw), request.Body))
-			next(writer, request)
+			writeInboundBodyError(writer, &requestBodyTooLargeError{limitLabel: requestLimitLabel(responsesHistoryMaxPeekBytes)})
 			return
 		}
 
@@ -344,8 +343,8 @@ func withResponsesHistory(apiKey string, next http.HandlerFunc) http.HandlerFunc
 			if prevID != "" {
 				priorItems, ok := cache.get(prevID, time.Now())
 				if !ok {
-					writeProxyErrorWithCode(writer, http.StatusBadRequest, "invalid_request_error", "previous_response_not_found",
-						"previous_response_id is unknown or expired")
+					writeProxyErrorDetail(writer, http.StatusBadRequest, "invalid_request_error", "previous_response_not_found",
+						"previous_response_id", "previous_response_id is unknown or expired")
 					return
 				}
 				var payload map[string]any
@@ -428,15 +427,7 @@ func extractResponsesInputForCache(raw []byte) []any {
 }
 
 func writeProxyErrorWithCode(writer http.ResponseWriter, status int, errorType, code, message string) {
-	writer.Header().Set("Content-Type", "application/json")
-	writer.WriteHeader(status)
-	var codeValue any
-	if code != "" {
-		codeValue = code
-	}
-	_ = json.NewEncoder(writer).Encode(map[string]any{
-		"error": map[string]any{"message": message, "type": errorType, "code": codeValue, "param": nil},
-	})
+	writeProxyErrorDetail(writer, status, errorType, code, "", message)
 }
 
 type responsesHistoryObserver struct {
@@ -549,6 +540,15 @@ func (o *responsesHistoryObserver) completedResponse() (string, []any, bool) {
 	var response map[string]any
 	if decodeProtocolJSON(raw, &response) != nil {
 		return "", nil, false
+	}
+	if !o.streaming {
+		if stringValue(response["object"]) != "response" {
+			return "", nil, false
+		}
+		status := stringValue(response["status"])
+		if status != "completed" && status != "incomplete" {
+			return "", nil, false
+		}
 	}
 	id := strings.TrimSpace(stringValue(response["id"]))
 	if id == "" {

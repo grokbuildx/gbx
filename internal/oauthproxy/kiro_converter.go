@@ -218,8 +218,12 @@ func convertResponsesToKiro(raw []byte) (*kiroConvertedRequest, error) {
 		return nil, err
 	}
 	inlineMedia := countKiroInlineMedia(conversationState)
+	adapter := kiroAdapter(request, model, toolNameMap)
+	if budgetStats.finalTokens > 0 {
+		adapter.inputTokens = budgetStats.finalTokens
+	}
 	return &kiroConvertedRequest{
-		adapterRequest:  kiroAdapter(request, model, toolNameMap),
+		adapterRequest:  adapter,
 		body:            body,
 		model:           model,
 		inlineMedia:     inlineMedia,

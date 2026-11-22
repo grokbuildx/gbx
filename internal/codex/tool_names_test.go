@@ -18,8 +18,8 @@ func TestCodexMalformedToolNameDoesNotExposeReasoning(t *testing.T) {
 	})
 	defer response.Body.Close()
 	raw, _ := io.ReadAll(response.Body)
-	if !strings.Contains(string(raw), "payload omitted") || !strings.Contains(string(raw), "response.failed") {
-		t.Fatalf("missing malformed-call error: %s", raw)
+	if response.StatusCode != http.StatusBadGateway || !strings.Contains(string(raw), "payload omitted") {
+		t.Fatalf("missing malformed-call error: status=%d body=%s", response.StatusCode, raw)
 	}
 	for _, unwanted := range []string{"private-reasoning", "private-arguments", "DSML", "response.completed", "response.output_item.added"} {
 		if strings.Contains(string(raw), unwanted) {

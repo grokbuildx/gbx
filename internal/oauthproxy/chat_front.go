@@ -254,7 +254,7 @@ func chatCompletionsFront(key string, responses http.HandlerFunc) http.HandlerFu
 		}
 		raw, err := readInboundBody(writer, request, chatFrontMaxBodyBytes)
 		if err != nil {
-			writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
+			writeInboundBodyError(writer, err)
 			return
 		}
 		body, chat, err := chatToResponsesRequest(raw)
@@ -277,22 +277,24 @@ func chatCompletionsFront(key string, responses http.HandlerFunc) http.HandlerFu
 // Chat Completions: stream events become chunks as they arrive, and a JSON
 // body is converted once the handler returns.
 type chatFrontWriter struct {
-	target       http.ResponseWriter
-	header       http.Header
-	status       int
-	wroteHeader  bool
-	streaming    bool
-	model        string
-	id           string
-	created      int64
-	includeUsage bool
-	pending      bytes.Buffer
-	body         bytes.Buffer
-	toolIndexes  map[int]int
-	toolArgsSeen map[int]bool
-	sawToolCall  bool
-	sentRole     bool
-	done         bool
+	target        http.ResponseWriter
+	header        http.Header
+	status        int
+	wroteHeader   bool
+	streaming     bool
+	model         string
+	id            string
+	created       int64
+	includeUsage  bool
+	pending       bytes.Buffer
+	body          bytes.Buffer
+	toolIndexes   map[int]int
+	toolArgsSeen  map[int]bool
+	textPartsSeen map[string]bool
+	reasonSeen    map[string]bool
+	sawToolCall   bool
+	sentRole      bool
+	done          bool
 }
 
 func newChatFrontWriter(target http.ResponseWriter, model string, includeUsage bool) *chatFrontWriter {
@@ -300,6 +302,7 @@ func newChatFrontWriter(target http.ResponseWriter, model string, includeUsage b
 		target: target, header: make(http.Header), status: http.StatusOK, model: model,
 		id: "chatcmpl-" + strings.ReplaceAll(uuid.NewString(), "-", ""), created: time.Now().Unix(),
 		includeUsage: includeUsage, toolIndexes: make(map[int]int), toolArgsSeen: make(map[int]bool),
+		textPartsSeen: make(map[string]bool), reasonSeen: make(map[string]bool),
 	}
 }
 
@@ -311,7 +314,8 @@ func (w *chatFrontWriter) WriteHeader(status int) {
 	}
 	w.wroteHeader = true
 	w.status = status
-	w.streaming = status == http.StatusOK && strings.HasPrefix(w.header.Get("Content-Type"), "text/event-stream")
+	ct := strings.ToLower(strings.TrimSpace(w.header.Get("Content-Type")))
+	w.streaming = status == http.StatusOK && strings.HasPrefix(ct, "text/event-stream")
 	if !w.streaming {
 		return
 	}
@@ -386,10 +390,161 @@ func (w *chatFrontWriter) ensureRole() error {
 	return w.chunk(map[string]any{"role": "assistant", "content": ""}, nil, nil)
 }
 
+func (w *chatFrontWriter) partKey(outIdx int, kind string, partIdx int) string {
+	return fmt.Sprintf("%d:%s:%d", outIdx, kind, partIdx)
+}
+
+func (w *chatFrontWriter) emitFallbackItem(outIdx int, item map[string]any) error {
+	if item == nil {
+		return nil
+	}
+	switch stringValue(item["type"]) {
+	case "message":
+		for pIdx, rawPart := range sliceValue(item["content"]) {
+			part := mapValue(rawPart)
+			if part == nil {
+				continue
+			}
+			switch stringValue(part["type"]) {
+			case "output_text":
+				key := w.partKey(outIdx, "text", pIdx)
+				if w.textPartsSeen[key] {
+					continue
+				}
+				if text := stringValue(part["text"]); text != "" {
+					w.textPartsSeen[key] = true
+					if err := w.ensureRole(); err != nil {
+						return err
+					}
+					if err := w.chunk(map[string]any{"content": text}, nil, nil); err != nil {
+						return err
+					}
+				}
+			case "refusal":
+				key := w.partKey(outIdx, "refusal", pIdx)
+				if w.textPartsSeen[key] {
+					continue
+				}
+				if refusal := stringValue(part["refusal"]); refusal != "" {
+					w.textPartsSeen[key] = true
+					if err := w.ensureRole(); err != nil {
+						return err
+					}
+					if err := w.chunk(map[string]any{"refusal": refusal}, nil, nil); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	case "reasoning":
+		for pIdx, rawPart := range sliceValue(item["summary"]) {
+			part := mapValue(rawPart)
+			key := w.partKey(outIdx, "summary", pIdx)
+			if w.reasonSeen[key] {
+				continue
+			}
+			if text := stringValue(part["text"]); text != "" {
+				w.reasonSeen[key] = true
+				if err := w.ensureRole(); err != nil {
+					return err
+				}
+				if err := w.chunk(map[string]any{"reasoning_content": text}, nil, nil); err != nil {
+					return err
+				}
+			}
+		}
+		for pIdx, rawPart := range sliceValue(item["content"]) {
+			part := mapValue(rawPart)
+			key := w.partKey(outIdx, "rcontent", pIdx)
+			if w.reasonSeen[key] {
+				continue
+			}
+			if text := stringValue(part["text"]); text != "" {
+				w.reasonSeen[key] = true
+				if err := w.ensureRole(); err != nil {
+					return err
+				}
+				if err := w.chunk(map[string]any{"reasoning_content": text}, nil, nil); err != nil {
+					return err
+				}
+			}
+		}
+	case "function_call", "custom_tool_call":
+		itemType := stringValue(item["type"])
+		index, exists := w.toolIndexes[outIdx]
+		if !exists {
+			if err := w.ensureRole(); err != nil {
+				return err
+			}
+			index = len(w.toolIndexes)
+			w.toolIndexes[outIdx] = index
+			w.sawToolCall = true
+			args := ""
+			if itemType == "function_call" {
+				args = stringValue(item["arguments"])
+			} else {
+				encoded, _ := json.Marshal(map[string]any{"input": stringValue(item["input"])})
+				args = string(encoded)
+			}
+			if args != "" {
+				w.toolArgsSeen[outIdx] = true
+			}
+			return w.chunk(map[string]any{"tool_calls": []any{map[string]any{
+				"index": index, "id": item["call_id"], "type": "function",
+				"function": map[string]any{"name": item["name"], "arguments": args},
+			}}}, nil, nil)
+		}
+		if w.toolArgsSeen[outIdx] {
+			return nil
+		}
+		args := ""
+		if itemType == "function_call" {
+			args = stringValue(item["arguments"])
+		} else if inputVal, hasInput := item["input"]; hasInput {
+			encoded, _ := json.Marshal(map[string]any{"input": stringValue(inputVal)})
+			args = string(encoded)
+		}
+		if args == "" {
+			return nil
+		}
+		w.toolArgsSeen[outIdx] = true
+		return w.chunk(map[string]any{"tool_calls": []any{map[string]any{
+			"index": index, "function": map[string]any{"arguments": args},
+		}}}, nil, nil)
+	}
+	return nil
+}
+
+func (w *chatFrontWriter) emitStreamError(errType, code, message string) error {
+	if message == "" {
+		message = "the provider reported a stream error"
+	}
+	if errType == "" {
+		errType = "api_error"
+	}
+	var codeVal any
+	if code != "" {
+		codeVal = code
+	}
+	raw, _ := json.Marshal(map[string]any{"error": map[string]any{
+		"message": truncateErrorMessage(message, maxClientErrorMessageBytes),
+		"type":    errType,
+		"code":    codeVal,
+		"param":   nil,
+	}})
+	if _, err := fmt.Fprintf(w.target, "data: %s\n\n", raw); err != nil {
+		return err
+	}
+	return w.end()
+}
+
 func (w *chatFrontWriter) streamEvent(raw []byte) error {
 	var data []byte
 	for _, line := range bytes.Split(raw, []byte("\n")) {
 		if value, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+			if len(data) > 0 {
+				data = append(data, '\n')
+			}
 			data = append(data, bytes.TrimPrefix(value, []byte(" "))...)
 		}
 	}
@@ -405,15 +560,116 @@ func (w *chatFrontWriter) streamEvent(raw []byte) error {
 	case "response.created":
 		return w.ensureRole()
 	case "response.output_text.delta":
+		delta := stringValue(event["delta"])
+		if delta == "" {
+			return nil
+		}
+		w.textPartsSeen[w.partKey(chatFrontInt(event["output_index"]), "text", chatFrontInt(event["content_index"]))] = true
 		if err := w.ensureRole(); err != nil {
 			return err
 		}
-		return w.chunk(map[string]any{"content": event["delta"]}, nil, nil)
-	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+		return w.chunk(map[string]any{"content": delta}, nil, nil)
+	case "response.output_text.done":
+		key := w.partKey(chatFrontInt(event["output_index"]), "text", chatFrontInt(event["content_index"]))
+		text := stringValue(event["text"])
+		if text == "" || w.textPartsSeen[key] {
+			return nil
+		}
+		w.textPartsSeen[key] = true
 		if err := w.ensureRole(); err != nil {
 			return err
 		}
-		return w.chunk(map[string]any{"reasoning_content": event["delta"]}, nil, nil)
+		return w.chunk(map[string]any{"content": text}, nil, nil)
+	case "response.refusal.delta":
+		delta := stringValue(event["delta"])
+		if delta == "" {
+			return nil
+		}
+		w.textPartsSeen[w.partKey(chatFrontInt(event["output_index"]), "refusal", chatFrontInt(event["content_index"]))] = true
+		if err := w.ensureRole(); err != nil {
+			return err
+		}
+		return w.chunk(map[string]any{"refusal": delta}, nil, nil)
+	case "response.refusal.done":
+		key := w.partKey(chatFrontInt(event["output_index"]), "refusal", chatFrontInt(event["content_index"]))
+		refusal := stringValue(event["refusal"])
+		if refusal == "" || w.textPartsSeen[key] {
+			return nil
+		}
+		w.textPartsSeen[key] = true
+		if err := w.ensureRole(); err != nil {
+			return err
+		}
+		return w.chunk(map[string]any{"refusal": refusal}, nil, nil)
+	case "response.content_part.done":
+		part := mapValue(event["part"])
+		if part == nil {
+			return nil
+		}
+		outIdx := chatFrontInt(event["output_index"])
+		pIdx := chatFrontInt(event["content_index"])
+		switch stringValue(part["type"]) {
+		case "output_text":
+			key := w.partKey(outIdx, "text", pIdx)
+			if text := stringValue(part["text"]); text != "" && !w.textPartsSeen[key] {
+				w.textPartsSeen[key] = true
+				if err := w.ensureRole(); err != nil {
+					return err
+				}
+				return w.chunk(map[string]any{"content": text}, nil, nil)
+			}
+		case "refusal":
+			key := w.partKey(outIdx, "refusal", pIdx)
+			if refusal := stringValue(part["refusal"]); refusal != "" && !w.textPartsSeen[key] {
+				w.textPartsSeen[key] = true
+				if err := w.ensureRole(); err != nil {
+					return err
+				}
+				return w.chunk(map[string]any{"refusal": refusal}, nil, nil)
+			}
+		}
+	case "response.reasoning_summary_text.delta":
+		delta := stringValue(event["delta"])
+		if delta == "" {
+			return nil
+		}
+		w.reasonSeen[w.partKey(chatFrontInt(event["output_index"]), "summary", chatFrontInt(event["summary_index"]))] = true
+		if err := w.ensureRole(); err != nil {
+			return err
+		}
+		return w.chunk(map[string]any{"reasoning_content": delta}, nil, nil)
+	case "response.reasoning_summary_text.done":
+		key := w.partKey(chatFrontInt(event["output_index"]), "summary", chatFrontInt(event["summary_index"]))
+		text := stringValue(event["text"])
+		if text == "" || w.reasonSeen[key] {
+			return nil
+		}
+		w.reasonSeen[key] = true
+		if err := w.ensureRole(); err != nil {
+			return err
+		}
+		return w.chunk(map[string]any{"reasoning_content": text}, nil, nil)
+	case "response.reasoning_text.delta":
+		delta := stringValue(event["delta"])
+		if delta == "" {
+			return nil
+		}
+		w.reasonSeen[w.partKey(chatFrontInt(event["output_index"]), "rcontent", chatFrontInt(event["content_index"]))] = true
+		if err := w.ensureRole(); err != nil {
+			return err
+		}
+		return w.chunk(map[string]any{"reasoning_content": delta}, nil, nil)
+	case "response.reasoning_text.done":
+		key := w.partKey(chatFrontInt(event["output_index"]), "rcontent", chatFrontInt(event["content_index"]))
+		text := stringValue(event["text"])
+		if text == "" || w.reasonSeen[key] {
+			return nil
+		}
+		w.reasonSeen[key] = true
+		if err := w.ensureRole(); err != nil {
+			return err
+		}
+		return w.chunk(map[string]any{"reasoning_content": text}, nil, nil)
 	case "response.output_item.added":
 		item, _ := event["item"].(map[string]any)
 		if item["type"] != "function_call" && item["type"] != "custom_tool_call" {
@@ -476,53 +732,14 @@ func (w *chatFrontWriter) streamEvent(raw []byte) error {
 		}}}, nil, nil)
 	case "response.output_item.done":
 		item, _ := event["item"].(map[string]any)
-		itemType := stringValue(item["type"])
-		if itemType != "function_call" && itemType != "custom_tool_call" {
-			return nil
-		}
-		outIdx := chatFrontInt(event["output_index"])
-		index, exists := w.toolIndexes[outIdx]
-		if !exists {
-			if err := w.ensureRole(); err != nil {
-				return err
-			}
-			index = len(w.toolIndexes)
-			w.toolIndexes[outIdx] = index
-			w.sawToolCall = true
-			args := ""
-			if itemType == "function_call" {
-				args = stringValue(item["arguments"])
-			} else {
-				encoded, _ := json.Marshal(map[string]any{"input": stringValue(item["input"])})
-				args = string(encoded)
-			}
-			if args != "" {
-				w.toolArgsSeen[outIdx] = true
-			}
-			return w.chunk(map[string]any{"tool_calls": []any{map[string]any{
-				"index": index, "id": item["call_id"], "type": "function",
-				"function": map[string]any{"name": item["name"], "arguments": args},
-			}}}, nil, nil)
-		}
-		if w.toolArgsSeen[outIdx] {
-			return nil
-		}
-		args := ""
-		if itemType == "function_call" {
-			args = stringValue(item["arguments"])
-		} else if inputVal, hasInput := item["input"]; hasInput {
-			encoded, _ := json.Marshal(map[string]any{"input": stringValue(inputVal)})
-			args = string(encoded)
-		}
-		if args == "" {
-			return nil
-		}
-		w.toolArgsSeen[outIdx] = true
-		return w.chunk(map[string]any{"tool_calls": []any{map[string]any{
-			"index": index, "function": map[string]any{"arguments": args},
-		}}}, nil, nil)
+		return w.emitFallbackItem(chatFrontInt(event["output_index"]), item)
 	case "response.completed", "response.incomplete":
 		response, _ := event["response"].(map[string]any)
+		for idx, rawItem := range sliceValue(response["output"]) {
+			if err := w.emitFallbackItem(idx, mapValue(rawItem)); err != nil {
+				return err
+			}
+		}
 		if err := w.ensureRole(); err != nil {
 			return err
 		}
@@ -536,23 +753,24 @@ func (w *chatFrontWriter) streamEvent(raw []byte) error {
 		}
 		return w.end()
 	case "response.failed", "error":
-		failure, _ := event["error"].(map[string]any)
+		var failure map[string]any
 		if response, ok := event["response"].(map[string]any); ok {
 			failure, _ = response["error"].(map[string]any)
 		}
-		message, _ := failure["message"].(string)
-		if message == "" {
-			message = "the provider reported a stream error"
+		if failure == nil {
+			failure, _ = event["error"].(map[string]any)
 		}
-		errorType, _ := failure["code"].(string)
-		if errorType == "" {
-			errorType = "api_error"
+		if failure == nil {
+			// Flat OpenAI Responses SSE error: {"type":"error","code":"...","message":"..."}
+			failure = event
 		}
-		raw, _ := json.Marshal(map[string]any{"error": map[string]any{"message": message, "type": errorType, "code": nil, "param": nil}})
-		if _, err := fmt.Fprintf(w.target, "data: %s\n\n", raw); err != nil {
-			return err
+		message := stringValue(failure["message"])
+		code := stringValue(failure["code"])
+		errType := stringValue(failure["type"])
+		if errType == "" || errType == "error" {
+			errType = firstNonEmptyString(code, "api_error")
 		}
-		return w.end()
+		return w.emitStreamError(errType, code, message)
 	}
 	return nil
 }
@@ -571,7 +789,13 @@ func (w *chatFrontWriter) end() error {
 // without a terminal event.
 func (w *chatFrontWriter) finish() {
 	if w.streaming {
-		_ = w.end()
+		if w.pending.Len() > 0 && !w.done {
+			_ = w.streamEvent(w.pending.Bytes())
+			w.pending.Reset()
+		}
+		if !w.done {
+			_ = w.emitStreamError("api_error", "upstream_stream_error", "upstream stream ended before a terminal response")
+		}
 		return
 	}
 	for key, values := range w.header {
@@ -584,6 +808,15 @@ func (w *chatFrontWriter) finish() {
 	if w.status == http.StatusOK {
 		var response map[string]any
 		if decodeProtocolJSON(body, &response) == nil && response["object"] == "response" {
+			if strings.EqualFold(stringValue(response["status"]), "failed") {
+				envErr := detectJSONErrorEnvelope(body, "openai_responses")
+				if envErr != nil {
+					writeProxyErrorDetail(w.target, envErr.status, envErr.errType, envErr.code, envErr.param, envErr.Error())
+					return
+				}
+				writeProxyErrorDetail(w.target, http.StatusBadGateway, "api_error", "server_error", "", "upstream Responses request failed")
+				return
+			}
 			if converted, err := json.Marshal(chatFrontCompletion(response, w.id, w.created, w.model)); err == nil {
 				body = converted
 			}
@@ -637,8 +870,17 @@ func chatFrontUsage(value any) map[string]any {
 
 // chatFrontCompletion renders a finished Responses object as a chat.completion.
 func chatFrontCompletion(response map[string]any, id string, created int64, model string) map[string]any {
-	var text, reasoning strings.Builder
+	var text, refusal, reasoning strings.Builder
 	var calls []any
+	appendReasoning := func(s string) {
+		if s == "" {
+			return
+		}
+		if reasoning.Len() > 0 {
+			reasoning.WriteString("\n\n")
+		}
+		reasoning.WriteString(s)
+	}
 	output, _ := response["output"].([]any)
 	for _, rawItem := range output {
 		item, _ := rawItem.(map[string]any)
@@ -650,15 +892,21 @@ func chatFrontCompletion(response map[string]any, id string, created int64, mode
 				if value, _ := part["text"].(string); value != "" {
 					text.WriteString(value)
 				} else if value, _ := part["refusal"].(string); value != "" {
-					text.WriteString(value)
+					refusal.WriteString(value)
 				}
 			}
 		case "reasoning":
 			summary, _ := item["summary"].([]any)
 			for _, rawPart := range summary {
 				part, _ := rawPart.(map[string]any)
-				value, _ := part["text"].(string)
-				reasoning.WriteString(value)
+				appendReasoning(stringValue(part["text"]))
+			}
+			if len(summary) == 0 {
+				content, _ := item["content"].([]any)
+				for _, rawPart := range content {
+					part, _ := rawPart.(map[string]any)
+					appendReasoning(stringValue(part["text"]))
+				}
 			}
 		case "function_call":
 			calls = append(calls, map[string]any{
@@ -674,6 +922,12 @@ func chatFrontCompletion(response map[string]any, id string, created int64, mode
 		}
 	}
 	message := map[string]any{"role": "assistant", "content": text.String()}
+	if refusal.Len() > 0 {
+		message["refusal"] = refusal.String()
+		if text.Len() == 0 {
+			message["content"] = nil
+		}
+	}
 	if reasoning.Len() > 0 {
 		message["reasoning_content"] = reasoning.String()
 	}

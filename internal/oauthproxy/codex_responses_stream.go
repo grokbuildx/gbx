@@ -55,11 +55,6 @@ func processCodexResponsesStreamObserved(reader io.Reader, assembler *responseAs
 	if err := readCodexSSE(reader, state.process); err != nil {
 		return state.metrics, err
 	}
-	if !assembler.started {
-		if err := assembler.start(); err != nil {
-			return state.metrics, err
-		}
-	}
 	if !state.terminalSeen {
 		return state.metrics, fmt.Errorf("Responses stream ended before terminal event: %w", io.ErrUnexpectedEOF)
 	}
@@ -67,7 +62,36 @@ func processCodexResponsesStreamObserved(reader io.Reader, assembler *responseAs
 }
 
 func readCodexSSE(reader io.Reader, consume func([]byte) error) error {
-	scanner := bufio.NewScanner(reader)
+	buffered := bufio.NewReaderSize(reader, 64<<10)
+	// Detect non-SSE JSON bodies up front so single-line responses up to 64 MiB
+	// bypass the 16 MiB SSE line scanner limit, and HTTP 200 JSON error/failed
+	// payloads are never wrapped as response.completed.
+	for {
+		b, err := buffered.ReadByte()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read Codex Responses event stream: %w", err)
+		}
+		if b == ' ' || b == '\t' || b == '\r' || b == '\n' {
+			continue
+		}
+		_ = buffered.UnreadByte()
+		if b == '{' {
+			raw, readErr := io.ReadAll(io.LimitReader(buffered, chatMaxResponseBytes+1))
+			if readErr != nil {
+				return fmt.Errorf("read non-streaming Codex Responses payload: %w", readErr)
+			}
+			if int64(len(raw)) > chatMaxResponseBytes {
+				return fmt.Errorf("Codex Responses non-streaming payload exceeds %d bytes", chatMaxResponseBytes)
+			}
+			return consumeNonStreamCodexJSON(raw, consume)
+		}
+		break
+	}
+
+	scanner := bufio.NewScanner(buffered)
 	scanner.Buffer(make([]byte, 64<<10), codexResponsesMaxSSEEventBytes)
 	var data strings.Builder
 	var plain strings.Builder
@@ -118,12 +142,33 @@ func readCodexSSE(reader io.Reader, consume func([]byte) error) error {
 	if sawData || strings.TrimSpace(plain.String()) == "" {
 		return nil
 	}
+	return consumeNonStreamCodexJSON([]byte(strings.TrimSpace(plain.String())), consume)
+}
+
+func consumeNonStreamCodexJSON(raw []byte, consume func([]byte) error) error {
+	if envErr := detectJSONErrorEnvelope(raw, "openai_responses"); envErr != nil {
+		return envErr
+	}
 	var response map[string]any
-	if err := json.Unmarshal([]byte(strings.TrimSpace(plain.String())), &response); err != nil {
+	if err := json.Unmarshal(raw, &response); err != nil {
 		return fmt.Errorf("decode non-streaming Codex Responses payload: %w", err)
 	}
-	if eventType := stringValue(response["type"]); eventType == "" || (!strings.HasPrefix(eventType, "response.") && eventType != "error") {
-		response = map[string]any{"type": "response.completed", "response": response}
+	eventType := stringValue(response["type"])
+	if eventType == "" || (!strings.HasPrefix(eventType, "response.") && eventType != "error") {
+		if response["error"] != nil {
+			return buildStreamUpstreamError("openai_responses", string(raw), "")
+		}
+		status := strings.ToLower(strings.TrimSpace(stringValue(response["status"])))
+		switch status {
+		case "failed":
+			response = map[string]any{"type": "response.failed", "response": response}
+		case "incomplete":
+			response = map[string]any{"type": "response.incomplete", "response": response}
+		case "cancelled":
+			return buildStreamUpstreamError("openai_responses", string(raw), "Codex Responses request was cancelled")
+		default:
+			response = map[string]any{"type": "response.completed", "response": response}
+		}
 	}
 	payload, _ := json.Marshal(response)
 	return consume(payload)
@@ -140,9 +185,6 @@ func (s *codexResponsesStreamState) process(payload []byte) error {
 				s.assembler.responseID = id
 			}
 		}
-		if err := s.assembler.start(); err != nil {
-			return err
-		}
 	}
 	eventType := stringValue(event["type"])
 	now := time.Now()
@@ -158,7 +200,7 @@ func (s *codexResponsesStreamState) process(payload []byte) error {
 		if s.metrics.firstContentAt.IsZero() && delta != "" {
 			s.metrics.firstContentAt = now
 		}
-	case "response.reasoning_summary_text.delta":
+	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 		delta := stringValue(event["delta"])
 		s.metrics.reasoningDeltaEvents++
 		s.metrics.reasoningBytes += len(delta)
@@ -174,17 +216,70 @@ func (s *codexResponsesStreamState) process(payload []byte) error {
 	case "response.reasoning_summary_part.added":
 		return nil
 	case "response.reasoning_summary_text.delta":
-		return s.addReasoningPart(event, nil, intValue(event["summary_index"]), stringValue(event["delta"]), true)
+		return s.addReasoningPart(event, nil, "summary", intValue(event["summary_index"]), stringValue(event["delta"]), true)
 	case "response.reasoning_summary_text.done":
-		return s.addReasoningPart(event, nil, intValue(event["summary_index"]), stringValue(event["text"]), false)
+		return s.addReasoningPart(event, nil, "summary", intValue(event["summary_index"]), stringValue(event["text"]), false)
 	case "response.reasoning_summary_part.done":
-		return s.addReasoningPart(event, nil, intValue(event["summary_index"]), stringValue(mapValue(event["part"])["text"]), false)
-	case "response.output_text.delta", "response.refusal.delta":
-		s.markTextPart(event, nil, intValue(event["content_index"]))
-		if eventType == "response.refusal.delta" {
-			s.assembler.stopReason = "refusal"
+		return s.addReasoningPart(event, nil, "summary", intValue(event["summary_index"]), stringValue(mapValue(event["part"])["text"]), false)
+	case "response.reasoning_text.delta":
+		return s.addReasoningPart(event, nil, "content", intValue(event["content_index"]), stringValue(event["delta"]), true)
+	case "response.reasoning_text.done":
+		return s.addReasoningPart(event, nil, "content", intValue(event["content_index"]), stringValue(event["text"]), false)
+	case "response.output_text.delta":
+		delta := stringValue(event["delta"])
+		if delta == "" {
+			return nil
 		}
-		return s.assembler.addText(stringValue(event["delta"]))
+		s.markTextPart(event, nil, intValue(event["content_index"]))
+		return s.assembler.addText(delta)
+	case "response.output_text.done":
+		text := stringValue(event["text"])
+		if text == "" || s.markTextPart(event, nil, intValue(event["content_index"])) {
+			return nil
+		}
+		return s.assembler.addText(text)
+	case "response.refusal.delta":
+		delta := stringValue(event["delta"])
+		if delta == "" {
+			return nil
+		}
+		s.markTextPart(event, nil, intValue(event["content_index"]))
+		if s.assembler.stopReason == "" {
+			s.assembler.stopReason = stopRefusal
+		}
+		return s.assembler.addRefusal(delta)
+	case "response.refusal.done":
+		refusal := stringValue(event["refusal"])
+		if refusal == "" || s.markTextPart(event, nil, intValue(event["content_index"])) {
+			return nil
+		}
+		if s.assembler.stopReason == "" {
+			s.assembler.stopReason = stopRefusal
+		}
+		return s.assembler.addRefusal(refusal)
+	case "response.content_part.done":
+		part := mapValue(event["part"])
+		if part == nil {
+			return nil
+		}
+		kind := stringValue(part["type"])
+		if kind == "output_text" {
+			text := stringValue(part["text"])
+			if text == "" || s.markTextPart(event, nil, intValue(event["content_index"])) {
+				return nil
+			}
+			return s.assembler.addText(text)
+		}
+		if kind == "refusal" {
+			refusal := stringValue(part["refusal"])
+			if refusal == "" || s.markTextPart(event, nil, intValue(event["content_index"])) {
+				return nil
+			}
+			if s.assembler.stopReason == "" {
+				s.assembler.stopReason = stopRefusal
+			}
+			return s.assembler.addRefusal(refusal)
+		}
 	case "response.function_call_arguments.delta":
 		call, err := s.resolveFunction(event, nil)
 		if err != nil {
@@ -221,7 +316,8 @@ func (s *codexResponsesStreamState) process(payload []byte) error {
 	case "response.completed", "response.incomplete", "response.failed":
 		return s.processTerminal(eventType, mapValue(event["response"]))
 	case "error":
-		return fmt.Errorf("Codex Responses stream error: %s", codexEventErrorMessage(event))
+		fallback := fmt.Sprintf("Codex Responses stream error: %s", codexEventErrorMessage(event))
+		return buildStreamUpstreamError("openai_responses", string(payload), fallback)
 	}
 	return nil
 }
@@ -231,20 +327,29 @@ func (s *codexResponsesStreamState) processOutputItem(event map[string]any, term
 	switch stringValue(item["type"]) {
 	case "message":
 		for index, part := range sliceValue(item["content"]) {
+			content := mapValue(part)
+			kind := stringValue(content["type"])
+			if kind != "output_text" && kind != "refusal" {
+				continue
+			}
 			if s.markTextPart(event, item, index) {
 				continue
 			}
-			content := mapValue(part)
-			if kind := stringValue(content["type"]); kind == "output_text" || kind == "refusal" {
-				text := stringValue(content["text"])
-				if kind == "refusal" {
-					s.assembler.stopReason = "refusal"
-					text = stringValue(content["refusal"])
-				}
-				if text != "" {
-					if err := s.assembler.addText(text); err != nil {
+			if kind == "refusal" {
+				refusal := stringValue(content["refusal"])
+				if refusal != "" {
+					if s.assembler.stopReason == "" {
+						s.assembler.stopReason = stopRefusal
+					}
+					if err := s.assembler.addRefusal(refusal); err != nil {
 						return err
 					}
+				}
+				continue
+			}
+			if text := stringValue(content["text"]); text != "" {
+				if err := s.assembler.addText(text); err != nil {
+					return err
 				}
 			}
 		}
@@ -264,17 +369,50 @@ func (s *codexResponsesStreamState) processOutputItem(event map[string]any, term
 		if err := s.assembler.retain(len(signature)); err != nil {
 			return err
 		}
+		hadText := false
 		for index, raw := range sliceValue(item["summary"]) {
-			if err := s.addReasoningPart(event, item, index, stringValue(mapValue(raw)["text"]), false); err != nil {
+			text := stringValue(mapValue(raw)["text"])
+			if text != "" {
+				hadText = true
+			}
+			if err := s.addReasoningPart(event, item, "summary", index, text, false); err != nil {
 				return err
 			}
 		}
-		index, err := s.assembler.ensureBlock("thinking")
-		if err != nil {
-			return err
+		for index, raw := range sliceValue(item["content"]) {
+			part := mapValue(raw)
+			text := stringValue(part["text"])
+			if text != "" {
+				hadText = true
+			}
+			if err := s.addReasoningPart(event, item, "content", index, text, false); err != nil {
+				return err
+			}
 		}
-		s.assembler.blocks[index].Signature = signature
-		return s.assembler.closeActive()
+		if s.assembler.activeType == blockThinking && s.assembler.activeIndex >= 0 {
+			s.assembler.blocks[s.assembler.activeIndex].Signature = signature
+			return s.assembler.closeActive()
+		}
+		if hadText {
+			// Text was already streamed and closed into an earlier thinking block
+			// (for example when output_item.done was omitted and text followed).
+			// Attach the signature to the most recent unsigned thinking block.
+			for i := len(s.assembler.blocks) - 1; i >= 0; i-- {
+				if s.assembler.blocks[i].Type == blockThinking && s.assembler.blocks[i].Signature == "" {
+					s.assembler.blocks[i].Signature = signature
+					return nil
+				}
+			}
+		}
+		// No visible summary/content text: emit an opaque reasoning item with
+		// summary: [] instead of fabricating an empty summary_text part.
+		if signature != "" {
+			if n := len(signature); s.assembler.retainedBytes >= n {
+				s.assembler.retainedBytes -= n
+			}
+			return s.assembler.addOpaqueReasoning(signature)
+		}
+		return nil
 	case "function_call":
 		call, err := s.updateFunction(event, item)
 		if err != nil {
@@ -317,18 +455,18 @@ func (s *codexResponsesStreamState) textItemKey(event, item map[string]any) stri
 }
 
 func (s *codexResponsesStreamState) markTextPart(event, item map[string]any, index int) bool {
-	return s.markSeenPart(&s.textPartsSeen, event, item, index)
+	return s.markSeenPart(&s.textPartsSeen, event, item, "text", index)
 }
 
-func (s *codexResponsesStreamState) addReasoningPart(event, item map[string]any, index int, text string, delta bool) error {
+func (s *codexResponsesStreamState) addReasoningPart(event, item map[string]any, namespace string, index int, text string, delta bool) error {
 	if text == "" {
 		return nil
 	}
-	seen := s.markSeenPart(&s.reasoningPartsSeen, event, item, index)
+	seen := s.markSeenPart(&s.reasoningPartsSeen, event, item, namespace, index)
 	if seen && !delta {
 		return nil
 	}
-	if !seen && s.assembler.activeType == "thinking" && s.assembler.buffers[s.assembler.activeIndex].thinking.Len() > 0 {
+	if !seen && s.assembler.activeType == blockThinking && s.assembler.buffers[s.assembler.activeIndex].thinking.Len() > 0 {
 		if err := s.assembler.addThinking("\n\n"); err != nil {
 			return err
 		}
@@ -336,18 +474,18 @@ func (s *codexResponsesStreamState) addReasoningPart(event, item map[string]any,
 	return s.assembler.addThinking(text)
 }
 
-func (s *codexResponsesStreamState) markSeenPart(parts *map[string]bool, event, item map[string]any, index int) bool {
+func (s *codexResponsesStreamState) markSeenPart(parts *map[string]bool, event, item map[string]any, namespace string, index int) bool {
 	if *parts == nil {
 		*parts = make(map[string]bool)
 	}
-	key := fmt.Sprintf("%s/part:%d", s.textItemKey(event, item), index)
+	key := fmt.Sprintf("%s/%s:%d", s.textItemKey(event, item), namespace, index)
 	seen := (*parts)[key]
 	id := stringValue(item["id"])
 	if id == "" {
 		id = stringValue(event["item_id"])
 	}
 	if id != "" {
-		idKey := fmt.Sprintf("id:%s/part:%d", id, index)
+		idKey := fmt.Sprintf("id:%s/%s:%d", id, namespace, index)
 		seen = seen || (*parts)[idKey]
 		(*parts)[idKey] = true
 	}
@@ -356,23 +494,23 @@ func (s *codexResponsesStreamState) markSeenPart(parts *map[string]bool, event, 
 }
 
 func (s *codexResponsesStreamState) processTerminal(eventType string, response map[string]any) error {
-	if eventType == "response.failed" {
+	if eventType == "response.failed" || strings.EqualFold(stringValue(response["status"]), "failed") || response["error"] != nil {
+		rawErr, _ := json.Marshal(response)
+		fallback := "Codex Responses failed"
 		if message := codexEventErrorMessage(response); message != "" {
-			return fmt.Errorf("Codex Responses failed: %s", message)
+			fallback = fmt.Sprintf("Codex Responses failed: %s", message)
 		}
-		return fmt.Errorf("Codex Responses failed")
+		return buildStreamUpstreamError("openai_responses", string(rawErr), fallback)
 	}
 	// Resolve incomplete stop_reason BEFORE emitting terminal output items so
-	// truncated function calls on max_output_tokens are skipped cleanly.
-	if eventType == "response.incomplete" {
+	// truncated function calls on max_output_tokens/content_filter are skipped cleanly.
+	if eventType == "response.incomplete" || strings.EqualFold(stringValue(response["status"]), "incomplete") {
 		details := mapValue(response["incomplete_details"])
 		switch stringValue(details["reason"]) {
-		case "max_output_tokens", "max_tokens":
-			s.assembler.stopReason = "max_tokens"
 		case "content_filter":
-			s.assembler.stopReason = "refusal"
+			s.assembler.stopReason = stopContentFilter
 		default:
-			s.assembler.stopReason = "end_turn"
+			s.assembler.stopReason = stopMaxTokens
 		}
 	}
 	// Some compatible gateways omit output_item.done. Recover any terminal text,
@@ -387,7 +525,13 @@ func (s *codexResponsesStreamState) processTerminal(eventType string, response m
 	usage := mapValue(response["usage"])
 	in := intValue(usage["input_tokens"])
 	if value, ok := usage["output_tokens"]; ok && value != nil {
+		s.assembler.outputUsageKnown = true
 		s.assembler.outputTokens = intValue(value)
+	}
+	if details := mapValue(usage["output_tokens_details"]); details != nil {
+		if reasoning := intValue(details["reasoning_tokens"]); reasoning > 0 {
+			s.assembler.reasoningTokens = reasoning
+		}
 	}
 	if details := mapValue(usage["input_tokens_details"]); details != nil {
 		s.assembler.cacheReadTokens = intValue(details["cached_tokens"])
@@ -470,7 +614,7 @@ func (s *codexResponsesStreamState) emitFunction(call *codexFunctionCall) error 
 	if strings.TrimSpace(arguments) == "" {
 		arguments = "{}"
 	}
-	if s.assembler.stopReason == stopMaxTokens {
+	if s.assembler.isTruncatedStop() {
 		if _, _, _, err := s.assembler.validateToolUse(call.name, arguments); err != nil {
 			return nil
 		}

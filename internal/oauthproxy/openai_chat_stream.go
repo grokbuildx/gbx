@@ -38,16 +38,11 @@ func processChatCompletionsStream(reader io.Reader, assembler *responseAssembler
 		assembler: assembler,
 		tools:     make(map[string]*chatToolCall),
 	}
-	if err := readChatCompletionsSSE(reader, state.process); err != nil {
+	if err := readSSEPayload(reader, "openai_chat", state.process); err != nil {
 		return err
 	}
 	if !state.terminalSeen {
 		return fmt.Errorf("OpenAI Chat stream ended before finish_reason: %w", io.ErrUnexpectedEOF)
-	}
-	if !assembler.started {
-		if err := assembler.start(); err != nil {
-			return err
-		}
 	}
 	if err := state.emitTools(); err != nil {
 		return err
@@ -59,13 +54,20 @@ func processChatCompletionsStream(reader io.Reader, assembler *responseAssembler
 }
 
 // readChatCompletionsSSE reads OpenAI `data:` lines and hands each payload to
-// consume. `[DONE]` and blank payloads are skipped. Unlike the Codex reader it
-// does not attempt a non-streaming JSON fallback: a non-streaming response is
-// handled by processChatCompletionsNonStream on the caller's side.
+// consume. `[DONE]` and blank payloads are skipped.
 func readChatCompletionsSSE(reader io.Reader, consume func([]byte) error) error {
+	return readSSEPayload(reader, "openai_chat", consume)
+}
+
+// readSSEPayload reads standard SSE `data:` frames and also captures non-SSE
+// HTTP 200 JSON error envelopes (common on OpenRouter/OneAPI/WorkBuddy) so
+// pre-stream gates can surface the real status and error.code instead of EOF.
+func readSSEPayload(reader io.Reader, dialect string, consume func([]byte) error) error {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64<<10), codexResponsesMaxSSEEventBytes)
 	var data strings.Builder
+	var plain strings.Builder
+	sawData := false
 	flush := func() error {
 		if data.Len() == 0 {
 			return nil
@@ -86,6 +88,7 @@ func readChatCompletionsSSE(reader io.Reader, consume func([]byte) error) error 
 			continue
 		}
 		if value, ok := strings.CutPrefix(line, "data:"); ok {
+			sawData = true
 			if data.Len() > 0 {
 				data.WriteByte('\n')
 			}
@@ -93,12 +96,28 @@ func readChatCompletionsSSE(reader io.Reader, consume func([]byte) error) error 
 				return fmt.Errorf("OpenAI Chat Completions SSE event exceeds %d bytes", codexResponsesMaxSSEEventBytes)
 			}
 			data.WriteString(strings.TrimPrefix(value, " "))
+		} else if !sawData && !strings.HasPrefix(line, "event:") && !strings.HasPrefix(line, "id:") &&
+			!strings.HasPrefix(line, "retry:") && !strings.HasPrefix(line, ":") {
+			if int64(plain.Len()+len(line)+1) <= chatMaxErrorBytes {
+				plain.WriteString(line)
+				plain.WriteByte('\n')
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read OpenAI Chat Completions event stream: %w", err)
 	}
-	return flush()
+	if err := flush(); err != nil {
+		return err
+	}
+	if !sawData {
+		if trimmed := strings.TrimSpace(plain.String()); trimmed != "" {
+			if envErr := detectJSONErrorEnvelope([]byte(trimmed), dialect); envErr != nil {
+				return envErr
+			}
+		}
+	}
+	return nil
 }
 
 func (s *chatCompletionsStreamState) process(payload []byte) error {
@@ -107,15 +126,10 @@ func (s *chatCompletionsStreamState) process(payload []byte) error {
 		return fmt.Errorf("decode OpenAI Chat Completions chunk: %w", err)
 	}
 	if upstreamError := event["error"]; upstreamError != nil {
-		return fmt.Errorf("OpenAI Chat Completions upstream error: %v", upstreamError)
+		return buildStreamUpstreamError("openai_chat", string(payload), "")
 	}
-	if !s.assembler.started {
-		if err := s.assembler.start(); err != nil {
-			return err
-		}
-	}
-	if usage := mapValue(event["usage"]); usage != nil {
-		s.usage = usage
+	if usage := mapValue(event["usage"]); len(usage) > 0 {
+		s.usage = chatMergeUsage(s.usage, usage)
 	}
 	choices := sliceValue(event["choices"])
 	if len(choices) == 0 {
@@ -125,19 +139,23 @@ func (s *chatCompletionsStreamState) process(payload []byte) error {
 	}
 	choice := mapValue(choices[0])
 	if delta := mapValue(choice["delta"]); delta != nil {
+		// Reasoning precedes assistant content, matching Responses item order.
+		if reasoning := chatExtractReasoningText(delta); reasoning != "" {
+			s.assembler.nativeReasoning = true
+			if err := s.assembler.addThinking(reasoning); err != nil {
+				return err
+			}
+		}
 		if refusal := stringValue(delta["refusal"]); refusal != "" {
-			s.assembler.stopReason = "refusal"
-			if err := s.assembler.addText(refusal); err != nil {
+			if s.assembler.stopReason == "" {
+				s.assembler.stopReason = stopRefusal
+			}
+			if err := s.assembler.addRefusal(refusal); err != nil {
 				return err
 			}
 		}
 		if text := stringValue(delta["content"]); text != "" {
 			if err := s.assembler.addText(text); err != nil {
-				return err
-			}
-		}
-		if reasoning := stringValue(delta["reasoning_content"]); reasoning != "" {
-			if err := s.assembler.addThinking(reasoning); err != nil {
 				return err
 			}
 		}
@@ -149,11 +167,87 @@ func (s *chatCompletionsStreamState) process(payload []byte) error {
 	}
 	if finish := stringValue(choice["finish_reason"]); finish != "" {
 		s.terminalSeen = true
-		if finish != "stop" || s.assembler.stopReason != "refusal" {
+		if finish != "stop" || s.assembler.stopReason != stopRefusal {
 			s.assembler.stopReason = chatStopReason(finish)
 		}
 	}
 	return nil
+}
+
+// chatExtractReasoningText reads reasoning text from OpenAI-compatible Chat
+// delta/message objects across provider dialects without double-counting when
+// gateways like OpenRouter emit both `reasoning` and `reasoning_details`.
+func chatExtractReasoningText(obj map[string]any) string {
+	if obj == nil {
+		return ""
+	}
+	if text := stringValue(obj["reasoning_content"]); text != "" {
+		return text
+	}
+	if text := stringValue(obj["reasoning"]); text != "" {
+		return text
+	}
+	if details := sliceValue(obj["reasoning_details"]); len(details) > 0 {
+		var out strings.Builder
+		for _, raw := range details {
+			part := mapValue(raw)
+			if part == nil {
+				continue
+			}
+			switch stringValue(part["type"]) {
+			case "reasoning.text":
+				out.WriteString(stringValue(part["text"]))
+			case "reasoning.summary":
+				out.WriteString(stringValue(part["summary"]))
+			default:
+				if text := stringValue(part["text"]); text != "" {
+					out.WriteString(text)
+				} else if summary := stringValue(part["summary"]); summary != "" {
+					out.WriteString(summary)
+				}
+			}
+		}
+		return out.String()
+	}
+	return ""
+}
+
+// chatMergeUsage merges multi-frame Chat usage chunks so a completion-only or
+// partial final chunk does not erase earlier prompt_tokens or cache details.
+func chatMergeUsage(dst, src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return dst
+	}
+	if dst == nil {
+		dst = make(map[string]any, len(src))
+	}
+	for key, val := range src {
+		if val == nil {
+			continue
+		}
+		if nestedSrc, ok := val.(map[string]any); ok {
+			if len(nestedSrc) == 0 {
+				continue
+			}
+			existing, _ := dst[key].(map[string]any)
+			merged := make(map[string]any, len(existing)+len(nestedSrc))
+			for nk, nv := range existing {
+				merged[nk] = nv
+			}
+			for nk, nv := range nestedSrc {
+				if nv != nil {
+					merged[nk] = nv
+				}
+			}
+			dst[key] = merged
+			continue
+		}
+		if key == "prompt_tokens" && intValue(val) == 0 && intValue(dst[key]) > 0 {
+			continue
+		}
+		dst[key] = val
+	}
+	return dst
 }
 
 func (s *chatCompletionsStreamState) accumulateToolCall(raw map[string]any) error {
@@ -288,7 +382,7 @@ func (s *chatCompletionsStreamState) emitTools() error {
 		}
 		return ordered[i].key < ordered[j].key
 	})
-	truncated := s.assembler.stopReason == stopMaxTokens
+	truncated := s.assembler.isTruncatedStop()
 	if !truncated {
 		// Validate the whole batch before exposing even its first function call.
 		for _, entry := range ordered {
@@ -336,6 +430,9 @@ func (s *chatCompletionsStreamState) emitTools() error {
 // processChatCompletionsNonStream converts a complete OpenAI Chat Completions
 // JSON body into an OpenAI Responses response via the shared assembler.
 func processChatCompletionsNonStream(body []byte, assembler *responseAssembler) error {
+	if envErr := detectJSONErrorEnvelope(body, "openai_chat"); envErr != nil {
+		return envErr
+	}
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return fmt.Errorf("decode OpenAI Chat Completions response: %w", err)
@@ -344,13 +441,11 @@ func processChatCompletionsNonStream(body []byte, assembler *responseAssembler) 
 	if len(choices) == 0 {
 		return fmt.Errorf("OpenAI Chat Completions response has no choices")
 	}
-	if err := assembler.start(); err != nil {
-		return err
-	}
 	choice := mapValue(choices[0])
 	message := mapValue(choice["message"])
 	// reasoning_content precedes content, matching Responses item order.
-	if reasoning := stringValue(message["reasoning_content"]); reasoning != "" {
+	if reasoning := chatExtractReasoningText(message); reasoning != "" {
+		assembler.nativeReasoning = true
 		if err := assembler.addThinking(reasoning); err != nil {
 			return err
 		}
@@ -359,17 +454,19 @@ func processChatCompletionsNonStream(body []byte, assembler *responseAssembler) 
 		return err
 	}
 	if refusal := stringValue(message["refusal"]); refusal != "" {
-		assembler.stopReason = "refusal"
-		if err := assembler.addText(refusal); err != nil {
+		if assembler.stopReason == "" {
+			assembler.stopReason = stopRefusal
+		}
+		if err := assembler.addRefusal(refusal); err != nil {
 			return err
 		}
 	}
 	if finish := stringValue(choice["finish_reason"]); finish != "" {
-		if finish != "stop" || assembler.stopReason != "refusal" {
+		if finish != "stop" || assembler.stopReason != stopRefusal {
 			assembler.stopReason = chatStopReason(finish)
 		}
 	}
-	truncated := assembler.stopReason == stopMaxTokens
+	truncated := assembler.isTruncatedStop()
 	rawCalls := sliceValue(message["tool_calls"])
 	if !truncated {
 		// Validate the whole batch before exposing even its first function call.
@@ -416,8 +513,8 @@ func processChatCompletionsNonStream(body []byte, assembler *responseAssembler) 
 }
 
 // chatAddContent feeds an OpenAI assistant content field, which is a plain
-// string for text-only responses or an array of text/image parts for
-// multimodal ones.
+// string for text-only responses or an array of text/refusal parts for
+// structured ones.
 func chatAddContent(assembler *responseAssembler, content any) error {
 	switch typed := content.(type) {
 	case string:
@@ -427,6 +524,18 @@ func chatAddContent(assembler *responseAssembler, content any) error {
 	case []any:
 		for _, part := range typed {
 			block := mapValue(part)
+			if block == nil {
+				continue
+			}
+			if refusal := stringValue(block["refusal"]); refusal != "" {
+				if assembler.stopReason == "" {
+					assembler.stopReason = stopRefusal
+				}
+				if err := assembler.addRefusal(refusal); err != nil {
+					return err
+				}
+				continue
+			}
 			if text := stringValue(block["text"]); text != "" {
 				if err := assembler.addText(text); err != nil {
 					return err
@@ -438,24 +547,54 @@ func chatAddContent(assembler *responseAssembler, content any) error {
 }
 
 // chatApplyUsage records the OpenAI usage object onto the assembler, mapping
-// prompt_tokens/completion_tokens and cached prompt tokens to the assembler's
-// usage fields.
+// prompt_tokens/completion_tokens, cached/written prompt tokens, and reasoning
+// tokens to the assembler's usage fields.
 func chatApplyUsage(assembler *responseAssembler, usage map[string]any) {
 	if usage == nil {
 		return
 	}
 	in := intValue(usage["prompt_tokens"])
 	if value, ok := usage["completion_tokens"]; ok && value != nil {
+		assembler.outputUsageKnown = true
 		assembler.outputTokens = intValue(value)
 	}
+	cacheRead := 0
+	cacheWrite := 0
 	if details := mapValue(usage["prompt_tokens_details"]); details != nil {
-		assembler.cacheReadTokens = intValue(details["cached_tokens"])
+		cacheRead = intValue(details["cached_tokens"])
+		cacheWrite = intValue(details["cache_write_tokens"])
+		if cacheWrite == 0 {
+			cacheWrite = intValue(details["cache_creation_input_tokens"])
+		}
 	}
-	// OpenAI prompt_tokens already includes cached tokens; report only fresh
-	// input in contextTokens (see codex_responses_stream).
+	if cacheRead == 0 {
+		for _, key := range []string{"cached_tokens", "prompt_cache_hit_tokens", "cache_read_input_tokens"} {
+			if v := intValue(usage[key]); v > 0 {
+				cacheRead = v
+				break
+			}
+		}
+	}
+	if cacheWrite == 0 {
+		for _, key := range []string{"cache_write_tokens", "cache_creation_input_tokens"} {
+			if v := intValue(usage[key]); v > 0 {
+				cacheWrite = v
+				break
+			}
+		}
+	}
+	assembler.cacheReadTokens = cacheRead
+	assembler.cacheWriteTokens = cacheWrite
+	if details := mapValue(usage["completion_tokens_details"]); details != nil {
+		if reasoning := intValue(details["reasoning_tokens"]); reasoning > 0 {
+			assembler.reasoningTokens = reasoning
+		}
+	}
+	// OpenAI prompt_tokens already includes cached/written tokens; report only
+	// fresh input in contextTokens (see codex_responses_stream).
 	if value, ok := usage["prompt_tokens"]; ok && value != nil {
 		assembler.inputUsageKnown = true
-		assembler.contextTokens = max(0, in-assembler.cacheReadTokens)
+		assembler.contextTokens = max(0, in-assembler.cacheReadTokens-assembler.cacheWriteTokens)
 	}
 }
 
@@ -463,12 +602,12 @@ func chatApplyUsage(assembler *responseAssembler, usage map[string]any) {
 func chatStopReason(reason string) string {
 	switch strings.ToLower(strings.TrimSpace(reason)) {
 	case "length":
-		return "max_tokens"
+		return stopMaxTokens
 	case "tool_calls", "function_call":
-		return "tool_use"
+		return stopToolUse
 	case "content_filter":
-		return "refusal"
+		return stopContentFilter
 	default:
-		return "end_turn"
+		return stopEndTurn
 	}
 }

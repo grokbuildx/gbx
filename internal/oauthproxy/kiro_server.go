@@ -44,13 +44,20 @@ type kiroService struct {
 }
 
 type kiroUpstreamError struct {
-	status int
-	body   string
+	status     int
+	body       string
+	retryAfter string
+	headers    http.Header
 }
 
 func (e *kiroUpstreamError) Error() string {
 	return fmt.Sprintf("Kiro upstream returned HTTP %d: %s", e.status, e.body)
 }
+
+func (e *kiroUpstreamError) upstreamStatus() int          { return e.status }
+func (e *kiroUpstreamError) upstreamRetryAfter() string   { return e.retryAfter }
+func (e *kiroUpstreamError) upstreamErrorBody() string    { return e.body }
+func (e *kiroUpstreamError) upstreamHeaders() http.Header { return e.headers }
 
 func startKiroOAuth(parent context.Context, modelSpec, credentialFile string) (*Runtime, error) {
 	if parent == nil {
@@ -260,13 +267,29 @@ func (s *kiroService) handleModels(writer http.ResponseWriter, request *http.Req
 	writeModelList(writer, data)
 }
 
+func (s *kiroService) cachedContextWindow(model string) int {
+	if s.modelCatalog == nil {
+		return 0
+	}
+	s.modelCatalog.mu.Lock()
+	defer s.modelCatalog.mu.Unlock()
+	for _, entry := range s.modelCatalog.cache {
+		for _, item := range entry.models {
+			if strings.EqualFold(strings.TrimSpace(item.ModelID), strings.TrimSpace(model)) && item.TokenLimits != nil && item.TokenLimits.MaxInputTokens > 0 {
+				return int(item.TokenLimits.MaxInputTokens)
+			}
+		}
+	}
+	return 0
+}
+
 func (s *kiroService) handleResponses(writer http.ResponseWriter, request *http.Request) {
 	requestCtx, requestID := withRequestLogID(request.Context())
 	started := time.Now()
 	if !s.authorized(request) {
 		LogWarnEvent("request_rejected", "component", "kiro", "request_id", requestID,
 			"path", request.URL.Path, "status", http.StatusUnauthorized, "reason", "invalid_local_api_key")
-		writeProxyError(writer, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		writeProxyErrorWithCode(writer, http.StatusUnauthorized, "authentication_error", "invalid_api_key", "Invalid API key")
 		return
 	}
 	if request.Method != http.MethodPost {
@@ -284,7 +307,7 @@ func (s *kiroService) handleResponses(writer http.ResponseWriter, request *http.
 	if err != nil {
 		LogWarnEvent("request_rejected", "component", "kiro", "request_id", requestID,
 			"path", request.URL.Path, "status", http.StatusBadRequest, "reason", "read_body", "error", err)
-		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
+		writeInboundBodyError(writer, err)
 		return
 	}
 	LogDebugEvent("request_body_read", "component", "kiro", "request_id", requestID, "body_bytes", len(raw))
@@ -300,6 +323,9 @@ func (s *kiroService) handleResponses(writer http.ResponseWriter, request *http.
 			"path", request.URL.Path, "status", http.StatusBadRequest, "reason", "request_conversion", "error", err)
 		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
+	}
+	if window := s.cachedContextWindow(converted.model); window > 0 {
+		converted.contextWindow = window
 	}
 	if converted.droppedMedia > 0 || converted.dedupedMedia > 0 ||
 		converted.resizedMedia > 0 || converted.correctedMedia > 0 {
@@ -328,44 +354,67 @@ func (s *kiroService) handleResponses(writer http.ResponseWriter, request *http.
 	upstream, err := s.callUpstream(requestCtx, converted)
 	if err != nil {
 		var upstreamErr *kiroUpstreamError
-		if errors.As(err, &upstreamErr) && upstreamErr.status >= 400 && upstreamErr.status < 500 {
-			errorType := proxyErrorType(upstreamErr.status)
-			LogUpstreamEvent(upstreamErr.status, "request_failed", "component", "kiro", "request_id", requestID,
-				"model", converted.model, "status", upstreamErr.status, "returned_status", upstreamErr.status,
-				"error_type", errorType, "stream", converted.stream, "duration", logDuration(started))
-			// err, not upstreamErr: the wrapper carries extra context such as a
-			// failed token refresh.
-			writeProxyError(writer, upstreamErr.status, errorType, err.Error())
+		if errors.As(err, &upstreamErr) {
+			copyProxyResponseHeaders(writer.Header(), upstreamErr.headers)
+			if upstreamErr.retryAfter != "" {
+				writer.Header().Set("Retry-After", upstreamErr.retryAfter)
+			}
+			if upstreamErr.status >= 400 && upstreamErr.status < 500 {
+				norm := normalizeUpstreamError("kiro", upstreamErr.status, upstreamErr.body, err.Error())
+				LogUpstreamEvent(upstreamErr.status, "request_failed", "component", "kiro", "request_id", requestID,
+					"model", converted.model, "status", upstreamErr.status, "returned_status", norm.Status,
+					"error_type", norm.Type, "stream", converted.stream, "duration", logDuration(started))
+				// err, not upstreamErr: the wrapper carries extra context such as a
+				// failed token refresh.
+				writeProxyErrorDetail(writer, norm.Status, norm.Type, norm.Code, norm.Param, norm.Message)
+				return
+			}
+		}
+		var authErr *oauthAuthError
+		if errors.As(err, &authErr) {
+			status := authErr.status
+			if status == 0 {
+				status = http.StatusUnauthorized
+			}
+			LogUpstreamEvent(status, "request_failed", "component", "kiro", "request_id", requestID,
+				"model", converted.model, "status", status, "returned_status", status, "stream", converted.stream,
+				"duration", logDuration(started))
+			writeProxyErrorWithCode(writer, status, proxyErrorType(status), "invalid_api_key", authErr.Error())
 			return
 		}
 		// Everything else is a proxy-side or upstream server failure.
 		LogErrorEvent("request_failed", "component", "kiro", "request_id", requestID,
 			"model", converted.model, "returned_status", http.StatusBadGateway, "stream", converted.stream,
 			"duration", logDuration(started), "error", err)
-		writeProxyError(writer, http.StatusBadGateway, "api_error", err.Error())
+		writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "server_error", "", err.Error())
 		return
 	}
 	defer upstream.Body.Close()
+	copyProxyResponseHeaders(writer.Header(), upstream.Header)
 
 	if converted.stream {
-		writer.Header().Set("Content-Type", "text/event-stream")
-		writer.Header().Set("Cache-Control", "no-cache")
-		writer.Header().Set("Connection", "keep-alive")
 		assembler := newResponseAssembler(&converted.adapterRequest, writer)
-		if err := assembler.start(); err != nil {
-			return
-		}
 		streamErr := processKiroEventStream(upstream.Body, assembler)
-		s.recordKiroUsage(converted, assembler)
 		if streamErr != nil {
+			if errors.Is(streamErr, context.Canceled) || requestCtx.Err() != nil {
+				LogDebugEvent("stream_cancelled", "component", "kiro", "request_id", requestID,
+					"model", converted.model, "duration", logDuration(started))
+				if assembler.started {
+					s.recordKiroUsage(converted, assembler)
+				}
+				return
+			}
 			LogErrorEvent("stream_conversion_failed", "component", "kiro", "request_id", requestID,
 				"model", converted.model, "duration", logDuration(started), "error", streamErr)
-			assembler.fail("api_error", streamErr.Error())
+			writeStreamFailure(writer, assembler, true, "kiro", streamErr)
+			if assembler.started {
+				s.recordKiroUsage(converted, assembler)
+			}
+			return
 		}
-		if streamErr == nil {
-			LogDebugEvent("request_complete", "component", "kiro", "request_id", requestID,
-				"model", converted.model, "status", http.StatusOK, "stream", true, "duration", logDuration(started))
-		}
+		s.recordKiroUsage(converted, assembler)
+		LogDebugEvent("request_complete", "component", "kiro", "request_id", requestID,
+			"model", converted.model, "status", http.StatusOK, "stream", true, "duration", logDuration(started))
 		return
 	}
 
@@ -374,7 +423,7 @@ func (s *kiroService) handleResponses(writer http.ResponseWriter, request *http.
 		LogErrorEvent("stream_conversion_failed", "component", "kiro", "request_id", requestID,
 			"model", converted.model, "returned_status", http.StatusBadGateway,
 			"duration", logDuration(started), "error", err)
-		writeProxyError(writer, http.StatusBadGateway, "api_error", err.Error())
+		writeStreamFailure(writer, assembler, false, "kiro", err)
 		return
 	}
 	s.recordKiroUsage(converted, assembler)
@@ -401,14 +450,14 @@ func readInboundBody(writer http.ResponseWriter, request *http.Request, maxBytes
 		return nil, fmt.Errorf("invalid request body limit")
 	}
 	if request.ContentLength > maxBytes {
-		return nil, fmt.Errorf("request body exceeds %s limit", requestLimitLabel(maxBytes))
+		return nil, &requestBodyTooLargeError{limitLabel: requestLimitLabel(maxBytes)}
 	}
 	request.Body = http.MaxBytesReader(writer, request.Body, maxBytes)
 	raw, err := io.ReadAll(request.Body)
 	if err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
-			return nil, fmt.Errorf("request body exceeds %s limit", requestLimitLabel(maxBytes))
+			return nil, &requestBodyTooLargeError{limitLabel: requestLimitLabel(maxBytes)}
 		}
 		return nil, fmt.Errorf("read request body: %w", err)
 	}
@@ -435,14 +484,10 @@ func requestLimitLabel(maxBytes int64) string {
 }
 
 // callUpstream sends the converted request upstream, retrying while the account
-// is rate limited. Every credential is tried before a retry sleeps, so rotating
-// to a second account is always preferred over waiting. Once the backoff budget
-// is spent the 429 is returned to the caller.
-//
-// This is Kiro's own retry layer and is deliberately NOT wrapped in
-// retryUpstream: it already spends a longer 1/2/4s budget with per-round
-// credential rotation, which satisfies the fast-retry goal, and stacking the
-// two loops would double the backoff budget per request.
+// is rate limited or hits transient 5xx failures. Every credential is tried
+// before a retry sleeps, so rotating to a second account is always preferred
+// over waiting. If Retry-After exceeds the next backoff step, return immediately
+// so the client can honor the cooldown.
 func (s *kiroService) callUpstream(ctx context.Context, converted *kiroConvertedRequest) (*http.Response, error) {
 	backoff := s.rateLimitBackoff
 	if backoff == nil {
@@ -453,24 +498,40 @@ func (s *kiroService) callUpstream(ctx context.Context, converted *kiroConverted
 		if err == nil {
 			return response, nil
 		}
-		if !isKiroRateLimitError(err) || attempt >= len(backoff) {
+		if !isKiroRetryableError(err) || attempt >= len(backoff) {
 			return nil, err
 		}
-		delay := backoff[attempt]
+		baseDelay := backoff[attempt]
+		if hint, ok := outcomeRetryAfterDelay(nil, err); ok && hint > baseDelay {
+			LogWarnEvent("upstream_retry", "component", "kiro", "request_id", requestLogID(ctx),
+				"model", converted.model, "status", outcomeStatus(nil, err), "action", "relay_retry_after")
+			return nil, err
+		}
+		delay := jitterBackoffDelay(baseDelay)
 		LogWarnEvent("upstream_retry", "component", "kiro", "request_id", requestLogID(ctx),
-			"model", converted.model, "status", http.StatusTooManyRequests,
+			"model", converted.model, "status", outcomeStatus(nil, err),
 			"retry", attempt+1, "retry_limit", len(backoff), "wait", delay, "action", "retry_all_credentials")
 		if waitErr := sleepContext(ctx, delay); waitErr != nil {
-			// The client gave up: report the rate limit, not the cancellation.
+			// The client gave up: report the upstream error, not the cancellation.
 			return nil, err
 		}
 	}
 }
 
-// isKiroRateLimitError reports whether err is an upstream HTTP 429.
-func isKiroRateLimitError(err error) bool {
+// isKiroRetryableError reports whether err is a transient Kiro 429 or 5xx error.
+// Permanent quota exhaustion (such as MONTHLY_REQUEST_COUNT) is excluded.
+func isKiroRetryableError(err error) bool {
 	var upstreamErr *kiroUpstreamError
-	return errors.As(err, &upstreamErr) && upstreamErr.status == http.StatusTooManyRequests
+	if !errors.As(err, &upstreamErr) {
+		return false
+	}
+	if !isFastRetryStatus(upstreamErr.status) {
+		return false
+	}
+	if upstreamErr.status == http.StatusTooManyRequests && isNonRetryableQuotaBody(upstreamErr.body) {
+		return false
+	}
+	return true
 }
 
 // callUpstreamOnce tries every selected credential once and returns the first
@@ -484,7 +545,7 @@ func (s *kiroService) callUpstreamOnce(ctx context.Context, converted *kiroConve
 		return nil, fmt.Errorf("no usable Kiro credentials")
 	}
 	var lastErr error
-	var rateLimitErr error
+	var retryableErr error
 	otherFailure := false
 	for index, candidate := range credentials {
 		attempt := index + 1
@@ -493,7 +554,7 @@ func (s *kiroService) callUpstreamOnce(ctx context.Context, converted *kiroConve
 			LogWarnEvent("credential_unavailable", "component", "kiro", "request_id", requestLogID(ctx),
 				"round", round, "attempt", attempt, "credential_count", len(credentials),
 				"credential", candidate.fileName, "error", err)
-			lastErr = err
+			lastErr = wrapOAuthAuthorizeError("Kiro credential unavailable", err)
 			otherFailure = true
 			continue
 		}
@@ -512,6 +573,7 @@ func (s *kiroService) callUpstreamOnce(ctx context.Context, converted *kiroConve
 		if response.StatusCode == http.StatusUnauthorized {
 			// Drain the rejected response before closing it: if the refresh then
 			// fails we still have the upstream diagnostics to report.
+			unauthorizedHeaders := extractProxyResponseHeaders(response.Header)
 			unauthorized := drainKiroErrorBody(ctx, response)
 			LogWarnEvent("credential_refresh", "component", "kiro", "request_id", requestLogID(ctx),
 				"round", round, "attempt", attempt, "credential", credential.fileName,
@@ -519,7 +581,7 @@ func (s *kiroService) callUpstreamOnce(ctx context.Context, converted *kiroConve
 			refreshed, refreshErr := s.pool.usableCredential(ctx, credential, true)
 			if refreshErr != nil {
 				lastErr = fmt.Errorf("%w (credential refresh failed: %v)",
-					&kiroUpstreamError{status: http.StatusUnauthorized, body: unauthorized}, refreshErr)
+					&kiroUpstreamError{status: http.StatusUnauthorized, body: unauthorized, headers: unauthorizedHeaders}, refreshErr)
 				otherFailure = true
 				continue
 			}
@@ -533,23 +595,28 @@ func (s *kiroService) callUpstreamOnce(ctx context.Context, converted *kiroConve
 		if response.StatusCode >= 200 && response.StatusCode < 300 {
 			return response, nil
 		}
-		upstreamErr := &kiroUpstreamError{status: response.StatusCode, body: drainKiroErrorBody(ctx, response)}
+		upstreamErr := &kiroUpstreamError{
+			status:     response.StatusCode,
+			retryAfter: response.Header.Get("Retry-After"),
+			headers:    extractProxyResponseHeaders(response.Header),
+			body:       drainKiroErrorBody(ctx, response),
+		}
 		if response.StatusCode == http.StatusBadRequest {
 			return nil, upstreamErr
 		}
-		if response.StatusCode == http.StatusTooManyRequests {
-			rateLimitErr = upstreamErr
+		if isKiroRetryableError(upstreamErr) {
+			retryableErr = upstreamErr
 		} else {
 			otherFailure = true
 		}
 		lastErr = upstreamErr
 	}
-	// A rate limit is the retryable outcome, so report it when it is the only
-	// thing that went wrong. If another credential failed for a reason waiting
-	// cannot fix, that error is the useful one and it also stops the backoff from
-	// burning its full budget.
-	if rateLimitErr != nil && !otherFailure {
-		return nil, rateLimitErr
+	// A transient rate limit/5xx is the retryable outcome, so report it when it
+	// is the only thing that went wrong. If another credential failed for a
+	// reason waiting cannot fix, that error stops the backoff from burning its
+	// full budget.
+	if retryableErr != nil && !otherFailure {
+		return nil, retryableErr
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("all Kiro credentials failed")

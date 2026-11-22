@@ -42,9 +42,10 @@ func TestCodexRetiredHistoryDoesNotAuthorizeProviderTool(t *testing.T) {
 			map[string]any{"role": "user", "content": "continue"},
 		},
 	})
+	defer response.Body.Close()
 	raw, _ := io.ReadAll(response.Body)
-	if !strings.Contains(string(raw), "response.failed") || !strings.Contains(string(raw), "undeclared tool name") {
-		t.Fatalf("missing bounded rejection diagnostics: %s", raw)
+	if response.StatusCode != http.StatusBadGateway || !strings.Contains(string(raw), "undeclared tool name") {
+		t.Fatalf("missing bounded rejection diagnostics: status=%d body=%s", response.StatusCode, raw)
 	}
 	if strings.Contains(string(raw), "response.completed") || strings.Contains(string(raw), "response.output_item.added") || strings.Contains(string(raw), "private-argument-fixture") {
 		t.Fatalf("retired tool was emitted or its arguments leaked: %s", raw)

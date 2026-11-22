@@ -106,12 +106,15 @@ type codexResponsesUpstreamError struct {
 	body       string
 	retryAfter string
 	requestID  string
+	headers    http.Header
 }
 
 // upstreamStatus implements the retry.go fast-retry probe against the raw
 // upstream status, before any client-facing mapping.
-func (e *codexResponsesUpstreamError) upstreamStatus() int        { return e.status }
-func (e *codexResponsesUpstreamError) upstreamRetryAfter() string { return e.retryAfter }
+func (e *codexResponsesUpstreamError) upstreamStatus() int          { return e.status }
+func (e *codexResponsesUpstreamError) upstreamRetryAfter() string   { return e.retryAfter }
+func (e *codexResponsesUpstreamError) upstreamErrorBody() string    { return e.body }
+func (e *codexResponsesUpstreamError) upstreamHeaders() http.Header { return e.headers }
 
 func (e *codexResponsesUpstreamError) Error() string {
 	message := strings.TrimSpace(e.body)
@@ -325,7 +328,7 @@ func (s *codexResponsesService) handleResponses(writer http.ResponseWriter, requ
 	}
 	body, err := readInboundBody(writer, request, codexResponsesMaxBodyBytes)
 	if err != nil {
-		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
+		writeInboundBodyError(writer, err)
 		return
 	}
 	var payload map[string]any
@@ -380,23 +383,34 @@ func (s *codexResponsesService) serveConverted(writer http.ResponseWriter, reque
 		return
 	}
 	defer response.Body.Close()
+	copyProxyResponseHeaders(writer.Header(), response.Header)
 	if converted.stream {
-		prepareEventStream(writer)
 		assembler := newResponseAssembler(&converted.adapterRequest, writer)
 		err = processCodexResponsesStream(response.Body, assembler)
-		s.recordUsage(converted.clientModel, assembler)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || requestCtx.Err() != nil {
+				LogDebugEvent("stream_cancelled", "component", "codex_responses", "request_id", requestID,
+					"model", converted.model, "duration", logDuration(started))
+				if assembler.started {
+					s.recordUsage(converted.clientModel, assembler)
+				}
+				return
+			}
 			LogErrorEvent("stream_conversion_failed", "component", "codex_responses", "request_id", requestID,
 				"model", converted.model, "duration", logDuration(started), "error", err)
-			assembler.fail("api_error", err.Error())
+			writeStreamFailure(writer, assembler, true, "openai_responses", err)
+			if assembler.started {
+				s.recordUsage(converted.clientModel, assembler)
+			}
 			return
 		}
+		s.recordUsage(converted.clientModel, assembler)
 	} else {
 		assembler := newResponseAssembler(&converted.adapterRequest, nil)
 		if err = processCodexResponsesStream(response.Body, assembler); err != nil {
 			LogErrorEvent("stream_conversion_failed", "component", "codex_responses", "request_id", requestID,
 				"model", converted.model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", err)
-			writeProxyError(writer, http.StatusBadGateway, "api_error", err.Error())
+			writeStreamFailure(writer, assembler, false, "openai_responses", err)
 			return
 		}
 		s.recordUsage(converted.clientModel, assembler)
@@ -414,6 +428,7 @@ func (s *codexResponsesService) isXaiBackend() bool {
 func (s *codexResponsesService) writeUpstreamError(writer http.ResponseWriter, requestID, model string, started time.Time, err error) {
 	var upstreamErr *codexResponsesUpstreamError
 	if errors.As(err, &upstreamErr) {
+		copyProxyResponseHeaders(writer.Header(), upstreamErr.headers)
 		if upstreamErr.retryAfter != "" {
 			writer.Header().Set("Retry-After", upstreamErr.retryAfter)
 		}
@@ -423,12 +438,24 @@ func (s *codexResponsesService) writeUpstreamError(writer http.ResponseWriter, r
 		LogUpstreamEvent(upstreamErr.status, "request_failed", "component", "codex_responses", "request_id", requestID,
 			"model", model, "status", upstreamErr.status, "returned_status", upstreamErr.status,
 			"retry_after", upstreamErr.retryAfter, "duration", logDuration(started))
-		writeProxyError(writer, upstreamErr.status, proxyErrorType(upstreamErr.status), upstreamErr.Error())
+		norm := normalizeUpstreamError("openai_responses", upstreamErr.status, upstreamErr.body, upstreamErr.Error())
+		writeProxyErrorDetail(writer, norm.Status, norm.Type, norm.Code, norm.Param, norm.Message)
+		return
+	}
+	var authErr *oauthAuthError
+	if errors.As(err, &authErr) {
+		status := authErr.status
+		if status == 0 {
+			status = http.StatusUnauthorized
+		}
+		LogUpstreamEvent(status, "request_failed", "component", "codex_responses", "request_id", requestID,
+			"model", model, "status", status, "returned_status", status, "duration", logDuration(started))
+		writeProxyErrorWithCode(writer, status, proxyErrorType(status), "invalid_api_key", authErr.Error())
 		return
 	}
 	LogErrorEvent("request_failed", "component", "codex_responses", "request_id", requestID,
 		"model", model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", err)
-	writeProxyError(writer, http.StatusBadGateway, "api_error", err.Error())
+	writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "server_error", "", err.Error())
 }
 
 // requestSessionID is the client's conversation id, or a fresh one. Codex sends
@@ -474,14 +501,14 @@ func (s *codexResponsesService) call(ctx context.Context, body []byte, sessionID
 	return retryUpstream(ctx, "codex_responses", func() (*http.Response, error) {
 		auth, err := s.authorizer.authorize(ctx, false)
 		if err != nil {
-			return nil, err
+			return nil, wrapOAuthAuthorizeError("authorize Codex Responses upstream", err)
 		}
 		response, err := s.callOnce(ctx, body, sessionID, auth, dumpPayload)
 		if err != nil {
 			return nil, err
 		}
 		if response.StatusCode == http.StatusUnauthorized && s.authorizer.isOAuth() {
-			drainAndClose(response)
+			rejectedErr := codexDrainError(ctx, response)
 			LogWarnEvent("credential_refresh", "component", "codex_responses", "request_id", requestLogID(ctx),
 				"credential", auth.credential, "status", http.StatusUnauthorized, "action", "refresh_and_retry_once")
 			// Another concurrent request may already have refreshed this credential.
@@ -495,7 +522,7 @@ func (s *codexResponsesService) call(ctx context.Context, body []byte, sessionID
 			if err != nil {
 				return nil, &codexResponsesUpstreamError{
 					status: http.StatusUnauthorized,
-					body:   fmt.Sprintf("upstream rejected the access token and credential refresh failed: %v", err),
+					body:   fmt.Sprintf("%v (credential refresh failed: %v)", rejectedErr, err),
 				}
 			}
 			response, err = s.callOnce(ctx, body, sessionID, auth, dumpPayload)
@@ -672,8 +699,11 @@ func codexDrainError(ctx context.Context, response *http.Response) error {
 	_ = response.Body.Close()
 	DebugHTTPBody(fmt.Sprintf("codex responses response request_id=%s status=%d", requestLogID(ctx), response.StatusCode), body)
 	return &codexResponsesUpstreamError{
-		status: response.StatusCode, body: strings.TrimSpace(string(body)),
-		retryAfter: response.Header.Get("Retry-After"), requestID: firstHeader(response.Header, "X-Request-Id", "Request-Id"),
+		status:     response.StatusCode,
+		body:       strings.TrimSpace(string(body)),
+		retryAfter: response.Header.Get("Retry-After"),
+		requestID:  firstHeader(response.Header, "X-Request-Id", "Request-Id"),
+		headers:    extractProxyResponseHeaders(response.Header),
 	}
 }
 
@@ -700,6 +730,7 @@ type codexCompactRequest struct{}
 // shares authorization, refresh and retry with converted requests, and reads
 // token usage off the relayed stream.
 func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, request *http.Request, payload map[string]any, compact bool) {
+	started := time.Now()
 	model, _ := payload["model"].(string)
 	resolved, ok := s.modelRoute[strings.ToLower(strings.TrimSpace(model))]
 	if !ok {
@@ -727,33 +758,25 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 		payload["prompt_cache_key"] = sessionID
 	}
 	body, _ := json.Marshal(payload)
-	ctx, _ := withRequestLogID(request.Context())
+	ctx, requestID := withRequestLogID(request.Context())
 	ctx = withClientSession(ctx, request)
 	if compact {
 		ctx = context.WithValue(ctx, codexCompactRequest{}, true)
 	}
 	response, err := s.call(ctx, body, sessionID, true)
 	if err != nil {
-		var upstreamErr *codexResponsesUpstreamError
-		if errors.As(err, &upstreamErr) {
-			if upstreamErr.retryAfter != "" {
-				writer.Header().Set("Retry-After", upstreamErr.retryAfter)
-			}
-			writeProxyError(writer, upstreamErr.status, proxyErrorType(upstreamErr.status), upstreamErr.Error())
-			return
-		}
-		writeProxyError(writer, http.StatusBadGateway, "api_error", err.Error())
+		s.writeUpstreamError(writer, requestID, resolved, started, err)
 		return
 	}
 	defer response.Body.Close()
-	for _, name := range []string{"Content-Type", "Retry-After", "X-Request-Id"} {
-		if value := response.Header.Get(name); value != "" {
-			writer.Header().Set(name, value)
-		}
+	if ct := response.Header.Get("Content-Type"); ct != "" {
+		writer.Header().Set("Content-Type", ct)
 	}
-	if !compact && !wantsStream && strings.Contains(response.Header.Get("Content-Type"), "text/event-stream") {
+	copyProxyResponseHeaders(writer.Header(), response.Header)
+	isEventStream := strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream")
+	if !compact && !wantsStream && isEventStream {
 		var completed json.RawMessage
-		err := readChatCompletionsSSE(response.Body, func(raw []byte) error {
+		err := readSSEPayload(response.Body, "openai_responses", func(raw []byte) error {
 			var event struct {
 				Type     string          `json:"type"`
 				Response json.RawMessage `json:"response"`
@@ -764,13 +787,29 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 			if event.Type == "response.completed" || event.Type == "response.incomplete" {
 				completed = append(json.RawMessage(nil), event.Response...)
 			}
-			if event.Type == "response.failed" || event.Type == "error" {
-				return fmt.Errorf("upstream Responses stream failed")
+			if event.Type == "response.failed" {
+				errBody := string(raw)
+				if len(event.Response) > 0 {
+					errBody = string(event.Response)
+				}
+				return buildStreamUpstreamError("openai_responses", errBody, "")
+			}
+			if event.Type == "error" {
+				return buildStreamUpstreamError("openai_responses", string(raw), "")
 			}
 			return nil
 		})
-		if err != nil || len(completed) == 0 {
-			writeProxyError(writer, 502, "api_error", "upstream Responses stream did not complete")
+		if err != nil {
+			var streamErr *streamUpstreamError
+			if errors.As(err, &streamErr) {
+				writeProxyErrorDetail(writer, streamErr.status, streamErr.errType, streamErr.code, streamErr.param, streamErr.Error())
+				return
+			}
+			writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "server_error", "", err.Error())
+			return
+		}
+		if len(completed) == 0 {
+			writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "upstream_stream_error", "", "upstream Responses stream did not complete")
 			return
 		}
 		observer := &responsesUsageObserver{}
@@ -790,7 +829,7 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 	}()
 	buffer := make([]byte, 32<<10)
 	for {
-		n, err := response.Body.Read(buffer)
+		n, readErr := response.Body.Read(buffer)
 		if n > 0 {
 			observer.observe(buffer[:n])
 			if _, writeErr := writer.Write(buffer[:n]); writeErr != nil {
@@ -798,7 +837,31 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 			}
 			_ = http.NewResponseController(writer).Flush()
 		}
-		if err != nil {
+		if readErr != nil {
+			observer.finish()
+			if readErr != io.EOF && request.Context().Err() == nil {
+				if isEventStream && !observer.terminalSeen {
+					errPayload, _ := json.Marshal(map[string]any{
+						"type":    "error",
+						"code":    "upstream_stream_error",
+						"message": truncateErrorMessage(readErr.Error(), maxClientErrorMessageBytes),
+						"param":   nil,
+					})
+					_, _ = fmt.Fprintf(writer, "event: error\ndata: %s\n\n", errPayload)
+					_ = http.NewResponseController(writer).Flush()
+				}
+				return
+			}
+			if readErr == io.EOF && isEventStream && !compact && !observer.terminalSeen && request.Context().Err() == nil {
+				errPayload, _ := json.Marshal(map[string]any{
+					"type":    "error",
+					"code":    "upstream_stream_error",
+					"message": "upstream Responses stream ended before a terminal event",
+					"param":   nil,
+				})
+				_, _ = fmt.Fprintf(writer, "event: error\ndata: %s\n\n", errPayload)
+				_ = http.NewResponseController(writer).Flush()
+			}
 			return
 		}
 	}
@@ -808,7 +871,8 @@ func (s *codexResponsesService) recordObservedUsage(clientModel string, observer
 	if s.usage == nil || !observer.seen {
 		return
 	}
-	s.usage.Add(clientModel, int64(max(0, observer.input-observer.cached)), int64(observer.output), int64(observer.cached), 0)
+	fresh := max(0, observer.input-observer.cached-observer.cacheWrite)
+	s.usage.Add(clientModel, int64(fresh), int64(observer.output), int64(observer.cached), int64(observer.cacheWrite))
 }
 
 // sanitizePassthroughResponsesInput filters input reasoning items before
@@ -853,13 +917,15 @@ func sanitizePassthroughResponsesInput(payload map[string]any) {
 	payload["input"] = filtered
 }
 
-// responsesUsageObserver reads token usage off a relayed Responses stream (or
-// JSON body) without altering it. It keeps only the bytes of the event in
-// progress, and gives up on an event too large to be a usage report.
+// responsesUsageObserver reads token usage and terminal event presence off a
+// relayed Responses stream (or JSON body) without altering it. It keeps only
+// the bytes of the event in progress, and gives up on an event too large to be
+// a usage report.
 type responsesUsageObserver struct {
-	pending               []byte
-	input, output, cached int
-	seen                  bool
+	pending                           []byte
+	input, output, cached, cacheWrite int
+	seen                              bool
+	terminalSeen                      bool
 }
 
 const responsesUsageObserverMaxEvent = 8 << 20
@@ -887,9 +953,6 @@ func (o *responsesUsageObserver) finish() {
 }
 
 func (o *responsesUsageObserver) event(raw []byte) {
-	if !bytes.Contains(raw, []byte(`"usage"`)) {
-		return
-	}
 	var data []byte
 	for _, line := range bytes.Split(raw, []byte("\n")) {
 		if value, ok := bytes.CutPrefix(line, []byte("data:")); ok {
@@ -898,6 +961,13 @@ func (o *responsesUsageObserver) event(raw []byte) {
 	}
 	if len(data) == 0 {
 		data = bytes.TrimSpace(raw)
+	}
+	switch gjson.GetBytes(data, "type").String() {
+	case "response.completed", "response.incomplete", "response.failed", "error":
+		o.terminalSeen = true
+	}
+	if !bytes.Contains(data, []byte(`"usage"`)) {
+		return
 	}
 	usage := gjson.GetBytes(data, "response.usage")
 	if !usage.Exists() {
@@ -910,6 +980,10 @@ func (o *responsesUsageObserver) event(raw []byte) {
 	o.input = int(usage.Get("input_tokens").Int())
 	o.output = int(usage.Get("output_tokens").Int())
 	o.cached = int(usage.Get("input_tokens_details.cached_tokens").Int())
+	o.cacheWrite = int(usage.Get("input_tokens_details.cache_write_tokens").Int())
+	if o.cacheWrite == 0 {
+		o.cacheWrite = int(usage.Get("cache_write_tokens").Int())
+	}
 }
 
 func (a *codexOAuthAuthorizer) isOAuth() bool { return true }

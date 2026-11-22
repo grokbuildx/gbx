@@ -61,7 +61,7 @@ func keyMatches(got, want string) bool {
 // writing the error. It reports whether the handler may proceed.
 func modelsRequestAllowed(writer http.ResponseWriter, request *http.Request, key string) bool {
 	if !loopbackAuthorized(request, key) {
-		writeProxyError(writer, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		writeProxyErrorWithCode(writer, http.StatusUnauthorized, "authentication_error", "invalid_api_key", "Invalid API key")
 		return false
 	}
 	if request.Method != http.MethodGet {
@@ -74,7 +74,7 @@ func modelsRequestAllowed(writer http.ResponseWriter, request *http.Request, key
 // inferenceRequestAllowed applies the same checks to a POST inference request.
 func inferenceRequestAllowed(writer http.ResponseWriter, request *http.Request, key string) bool {
 	if !loopbackAuthorized(request, key) {
-		writeProxyError(writer, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		writeProxyErrorWithCode(writer, http.StatusUnauthorized, "authentication_error", "invalid_api_key", "Invalid API key")
 		return false
 	}
 	if request.Method != http.MethodPost {
@@ -356,11 +356,7 @@ func writeModelList(writer http.ResponseWriter, data []map[string]any) {
 
 // writeProxyError writes an OpenAI-shaped error body.
 func writeProxyError(writer http.ResponseWriter, status int, errorType, message string) {
-	writer.Header().Set("Content-Type", "application/json")
-	writer.WriteHeader(status)
-	_ = json.NewEncoder(writer).Encode(map[string]any{
-		"error": map[string]any{"message": message, "type": errorType, "code": nil, "param": nil},
-	})
+	writeProxyErrorDetail(writer, status, errorType, "", "", message)
 }
 
 // prepareEventStream sets the headers of a server-sent event response.

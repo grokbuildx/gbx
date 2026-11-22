@@ -46,18 +46,23 @@ func relayBridgeStream(w http.ResponseWriter, body io.Reader, model, notice stri
 	if notice != "" {
 		noticeItem = migrationNoticeItem(notice)
 	}
-	for scanner.Scan() {
-		line, ok := strings.CutPrefix(scanner.Text(), "data:")
-		if !ok || strings.TrimSpace(line) == "[DONE]" {
-			continue
+	var dataBuf strings.Builder
+	done := false
+	broken := false
+	processPayload := func(payload string) {
+		payload = strings.TrimSpace(payload)
+		if payload == "" || payload == "[DONE]" {
+			return
 		}
 		var event map[string]any
-		if decodeBridgeJSON([]byte(line), &event) != nil {
-			break
+		if decodeBridgeJSON([]byte(payload), &event) != nil {
+			broken = true
+			return
 		}
 		kind, _ := event["type"].(string)
 		if kind == "" {
-			break
+			broken = true
+			return
 		}
 		response, _ := event["response"].(map[string]any)
 		if response != nil {
@@ -68,6 +73,7 @@ func relayBridgeStream(w http.ResponseWriter, body io.Reader, model, notice stri
 			index, indexed := event["output_index"].(json.Number)
 			if (indexed || terminal) && notice != "" {
 				if events.writeNotice(noticeItem) != nil {
+					done = true
 					return
 				}
 				notice = ""
@@ -82,15 +88,44 @@ func relayBridgeStream(w http.ResponseWriter, body io.Reader, model, notice stri
 		}
 		if terminal {
 			if response == nil {
-				break
+				broken = true
+				return
 			}
 			record(response)
 			_ = events.emit(kind, event)
+			done = true
 			return
 		}
 		if events.emit(kind, event) != nil || kind == "response.failed" || kind == "error" {
+			done = true
 			return
 		}
+	}
+	for scanner.Scan() {
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if line == "" {
+			if dataBuf.Len() > 0 {
+				payload := dataBuf.String()
+				dataBuf.Reset()
+				processPayload(payload)
+				if done || broken {
+					break
+				}
+			}
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "data:"); ok {
+			if dataBuf.Len() > 0 {
+				dataBuf.WriteByte('\n')
+			}
+			dataBuf.WriteString(strings.TrimPrefix(value, " "))
+		}
+	}
+	if !done && !broken && dataBuf.Len() > 0 {
+		processPayload(dataBuf.String())
+	}
+	if done {
+		return
 	}
 	const message = "GBX runtime stream ended before a terminal response"
 	if events.sequence == 0 {

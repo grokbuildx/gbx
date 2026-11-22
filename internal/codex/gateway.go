@@ -264,11 +264,20 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := readBody(w, r)
 	if err != nil {
+		var bodyErr *bodyReadError
+		if errors.As(err, &bodyErr) {
+			writeError(w, bodyErr.status, bodyErr.kind, bodyErr.msg, bodyErr.code)
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error(), "")
 		return
 	}
 	var request responseRequest
-	if err := json.Unmarshal(body, &request); err != nil || request.Model == "" {
+	if err := json.Unmarshal(body, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid Responses request JSON", "")
+		return
+	}
+	if strings.TrimSpace(request.Model) == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "a Responses model is required", "")
 		return
 	}
@@ -320,24 +329,70 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	g.serveBridge(w, r, body, request, route, path == "/responses/compact")
 }
 
+type bodyReadError struct {
+	status int
+	kind   string
+	code   string
+	msg    string
+}
+
+func (e *bodyReadError) Error() string { return e.msg }
+
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	defer r.Body.Close()
+	if r.ContentLength > maxBodyBytes {
+		return nil, &bodyReadError{
+			status: http.StatusRequestEntityTooLarge,
+			kind:   "request_too_large",
+			code:   "request_too_large",
+			msg:    "Responses request body exceeds limit",
+		}
+	}
 	var reader io.Reader = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	switch strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))) {
 	case "", "identity":
 	case "zstd":
 		decoder, err := zstd.NewReader(reader, zstd.WithDecoderMaxMemory(maxBodyBytes*2))
 		if err != nil {
-			return nil, fmt.Errorf("invalid zstd request")
+			return nil, &bodyReadError{
+				status: http.StatusBadRequest,
+				kind:   "invalid_request_error",
+				msg:    "invalid zstd request",
+			}
 		}
 		defer decoder.Close()
 		reader = decoder
 	default:
-		return nil, fmt.Errorf("unsupported request content encoding")
+		return nil, &bodyReadError{
+			status: http.StatusUnsupportedMediaType,
+			kind:   "invalid_request_error",
+			msg:    "unsupported request content encoding",
+		}
 	}
 	body, err := io.ReadAll(io.LimitReader(reader, maxBodyBytes+1))
-	if err != nil || len(body) > maxBodyBytes {
-		return nil, fmt.Errorf("Responses request exceeds limit or cannot be decoded")
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return nil, &bodyReadError{
+				status: http.StatusRequestEntityTooLarge,
+				kind:   "request_too_large",
+				code:   "request_too_large",
+				msg:    "Responses request body exceeds limit",
+			}
+		}
+		return nil, &bodyReadError{
+			status: http.StatusBadRequest,
+			kind:   "invalid_request_error",
+			msg:    "Responses request cannot be decoded",
+		}
+	}
+	if len(body) > maxBodyBytes {
+		return nil, &bodyReadError{
+			status: http.StatusRequestEntityTooLarge,
+			kind:   "request_too_large",
+			code:   "request_too_large",
+			msg:    "Responses request body exceeds limit",
+		}
 	}
 	return body, nil
 }
@@ -349,11 +404,11 @@ func (g *Gateway) forwardResponses(w http.ResponseWriter, r *http.Request, body 
 	body, _ = json.Marshal(fields)
 	response, err := g.callRuntime(r, body, path)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "api_error", "GBX provider connection failed", "")
+		writeError(w, http.StatusBadGateway, "api_error", "GBX provider connection failed", "server_error")
 		return
 	}
 	defer response.Body.Close()
-	relayResponse(w, response)
+	relayResponse(w, r, response)
 }
 
 func (g *Gateway) callRuntime(r *http.Request, body []byte, path string) (*http.Response, error) {
@@ -365,7 +420,7 @@ func (g *Gateway) callRuntime(r *http.Request, body []byte, path string) (*http.
 	request.Header.Set("Authorization", "Bearer "+runtime.APIKey())
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream, application/json")
-	for _, key := range []string{"Session_id", "X-Codex-Turn-Metadata", "X-Codex-Session-Id"} {
+	for _, key := range []string{"Session_id", "Session-Id", "Thread-Id", "X-Codex-Turn-Metadata", "X-Codex-Session-Id"} {
 		if value := r.Header.Get(key); value != "" {
 			request.Header.Set(key, value)
 		}
@@ -385,7 +440,7 @@ func isBearerToken(header, token string) bool {
 func (g *Gateway) serveNative(w http.ResponseWriter, r *http.Request, body []byte, path string) {
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	if auth == "" || isBearerToken(auth, g.token) {
-		writeError(w, http.StatusUnauthorized, "authentication_error", "native OpenAI models require Codex's own login", "")
+		writeError(w, http.StatusUnauthorized, "authentication_error", "native OpenAI models require Codex's own login", "invalid_api_key")
 		return
 	}
 	target := g.options.OpenAIURL
@@ -400,7 +455,7 @@ func (g *Gateway) serveNative(w http.ResponseWriter, r *http.Request, body []byt
 	}
 	u, err := url.Parse(target)
 	if err != nil || u.Host == "" {
-		writeError(w, http.StatusBadGateway, "api_error", "invalid native upstream", "")
+		writeError(w, http.StatusBadGateway, "api_error", "invalid native upstream", "server_error")
 		return
 	}
 	proxy := &httputil.ReverseProxy{FlushInterval: -1, Rewrite: func(pr *httputil.ProxyRequest) {
@@ -412,15 +467,32 @@ func (g *Gateway) serveNative(w http.ResponseWriter, r *http.Request, body []byt
 		pr.Out.Header.Del("Content-Encoding")
 		pr.Out.Header.Del("Content-Length")
 	}, ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
-		writeError(w, http.StatusBadGateway, "api_error", "native OpenAI connection failed", "")
+		writeError(w, http.StatusBadGateway, "api_error", "native OpenAI connection failed", "server_error")
 	}}
 	proxy.ServeHTTP(w, r)
 }
 
-func relayResponse(w http.ResponseWriter, response *http.Response) {
-	for _, key := range []string{"Content-Type", "Retry-After", "X-Request-Id"} {
-		if value := response.Header.Get(key); value != "" {
-			w.Header().Set(key, value)
+func isRelayedGatewayHeader(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	switch lower {
+	case "content-type", "retry-after", "retry-after-ms", "x-request-id", "request-id":
+		return true
+	}
+	return strings.HasPrefix(lower, "x-ratelimit-") ||
+		strings.HasPrefix(lower, "anthropic-ratelimit-") ||
+		strings.HasPrefix(lower, "x-codex-")
+}
+
+func relayResponse(w http.ResponseWriter, r *http.Request, response *http.Response) {
+	for key, values := range response.Header {
+		if !isRelayedGatewayHeader(key) {
+			continue
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				w.Header().Set(key, value)
+				break
+			}
 		}
 	}
 	w.Header().Set("Cache-Control", "no-cache")
@@ -437,6 +509,9 @@ func relayResponse(w http.ResponseWriter, response *http.Response) {
 			}
 		}
 		if err != nil {
+			if err != io.EOF && (r == nil || r.Context().Err() == nil) {
+				panic(http.ErrAbortHandler)
+			}
 			return
 		}
 	}
@@ -449,7 +524,11 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeError(w http.ResponseWriter, status int, kind, message, code string) {
-	writeJSON(w, status, map[string]any{"error": map[string]any{"type": kind, "message": message, "code": code, "param": nil}})
+	var codeValue any
+	if code != "" {
+		codeValue = code
+	}
+	writeJSON(w, status, map[string]any{"error": map[string]any{"type": kind, "message": message, "code": codeValue, "param": nil}})
 }
 
 func historyOwner(r *http.Request) string {

@@ -302,7 +302,7 @@ func (g *Gateway) serveBridge(w http.ResponseWriter, r *http.Request, body []byt
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		relayResponse(w, response)
+		relayResponse(w, r, response)
 		return
 	}
 

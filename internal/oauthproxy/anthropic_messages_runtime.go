@@ -24,6 +24,7 @@ type anthropicMessagesUpstreamError struct {
 	body       string
 	retryAfter string
 	requestID  string
+	headers    http.Header
 }
 
 func (e *anthropicMessagesUpstreamError) Error() string {
@@ -34,8 +35,10 @@ func (e *anthropicMessagesUpstreamError) Error() string {
 	return fmt.Sprintf("Anthropic Messages upstream returned HTTP %d: %s", e.status, message)
 }
 
-func (e *anthropicMessagesUpstreamError) upstreamStatus() int        { return e.status }
-func (e *anthropicMessagesUpstreamError) upstreamRetryAfter() string { return e.retryAfter }
+func (e *anthropicMessagesUpstreamError) upstreamStatus() int          { return e.status }
+func (e *anthropicMessagesUpstreamError) upstreamRetryAfter() string   { return e.retryAfter }
+func (e *anthropicMessagesUpstreamError) upstreamErrorBody() string    { return e.body }
+func (e *anthropicMessagesUpstreamError) upstreamHeaders() http.Header { return e.headers }
 
 // anthropicMessagesService serves the Responses front for models whose
 // upstream speaks Anthropic Messages. Each model may live on its own base URL
@@ -90,7 +93,7 @@ func (s *anthropicMessagesService) handleResponses(writer http.ResponseWriter, r
 	requestCtx = withClientSession(requestCtx, request)
 	started := time.Now()
 	if !loopbackAuthorized(request, s.apiKey) {
-		writeProxyError(writer, http.StatusUnauthorized, "authentication_error", "Invalid API key")
+		writeProxyErrorWithCode(writer, http.StatusUnauthorized, "authentication_error", "invalid_api_key", "Invalid API key")
 		return
 	}
 	if request.Method != http.MethodPost {
@@ -99,7 +102,7 @@ func (s *anthropicMessagesService) handleResponses(writer http.ResponseWriter, r
 	}
 	raw, err := readInboundBody(writer, request, chatMaxBodyBytes)
 	if err != nil {
-		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
+		writeInboundBodyError(writer, err)
 		return
 	}
 	converted, err := s.convertRequest(raw)
@@ -123,13 +126,16 @@ func (s *anthropicMessagesService) handleResponses(writer http.ResponseWriter, r
 					"model", converted.model, "status", upstreamErr.status)
 				converted.body = stripped
 				converted.thinkingEnabled = false
-				response, err = s.callOnce(requestCtx, converted)
+				response, err = retryUpstream(requestCtx, "anthropic_messages", func() (*http.Response, error) {
+					return s.callOnce(requestCtx, converted)
+				})
 			}
 		}
 	}
 	if err != nil {
 		var upstreamErr *anthropicMessagesUpstreamError
 		if errors.As(err, &upstreamErr) {
+			copyProxyResponseHeaders(writer.Header(), upstreamErr.headers)
 			if upstreamErr.retryAfter != "" {
 				writer.Header().Set("Retry-After", upstreamErr.retryAfter)
 			}
@@ -138,36 +144,41 @@ func (s *anthropicMessagesService) handleResponses(writer http.ResponseWriter, r
 			}
 			LogUpstreamEvent(upstreamErr.status, "request_failed", "component", "anthropic_messages", "request_id", requestID,
 				"model", converted.model, "status", upstreamErr.status, "duration", logDuration(started))
-			writeProxyError(writer, upstreamErr.status, proxyErrorType(upstreamErr.status), upstreamErr.Error())
+			norm := normalizeUpstreamError("anthropic", upstreamErr.status, upstreamErr.body, upstreamErr.Error())
+			writeProxyErrorDetail(writer, norm.Status, norm.Type, norm.Code, norm.Param, norm.Message)
 			return
 		}
 		LogErrorEvent("request_failed", "component", "anthropic_messages", "request_id", requestID,
 			"model", converted.model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", err)
-		writeProxyError(writer, http.StatusBadGateway, "api_error", err.Error())
+		writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "server_error", "", err.Error())
 		return
 	}
 	defer response.Body.Close()
+	copyProxyResponseHeaders(writer.Header(), response.Header)
 
 	// The upstream always streams; a non-streaming client gets the assembled
 	// response object.
 	var assembler *responseAssembler
 	if converted.stream {
-		writer.Header().Set("Content-Type", "text/event-stream")
-		writer.Header().Set("Cache-Control", "no-cache")
-		writer.Header().Set("Connection", "keep-alive")
 		assembler = newResponseAssembler(&converted.adapterRequest, writer)
 	} else {
 		assembler = newResponseAssembler(&converted.adapterRequest, nil)
 	}
 	if err := processAnthropicMessagesStream(response.Body, assembler); err != nil {
-		LogErrorEvent("stream_conversion_failed", "component", "anthropic_messages", "request_id", requestID,
-			"model", converted.model, "duration", logDuration(started), "error", err)
-		if converted.stream {
-			assembler.fail("upstream_stream_error", err.Error())
-			s.recordUsage(converted, assembler)
+		if errors.Is(err, context.Canceled) || requestCtx.Err() != nil {
+			LogDebugEvent("stream_cancelled", "component", "anthropic_messages", "request_id", requestID,
+				"model", converted.model, "duration", logDuration(started))
+			if assembler.started {
+				s.recordUsage(converted, assembler)
+			}
 			return
 		}
-		writeProxyError(writer, http.StatusBadGateway, "api_error", err.Error())
+		LogErrorEvent("stream_conversion_failed", "component", "anthropic_messages", "request_id", requestID,
+			"model", converted.model, "duration", logDuration(started), "error", err)
+		writeStreamFailure(writer, assembler, converted.stream, "anthropic", err)
+		if assembler.started {
+			s.recordUsage(converted, assembler)
+		}
 		return
 	}
 	s.recordUsage(converted, assembler)
@@ -217,8 +228,11 @@ func (s *anthropicMessagesService) callOnce(ctx context.Context, converted *anth
 		_ = response.Body.Close()
 		DebugHTTPBody(fmt.Sprintf("anthropic messages response request_id=%s status=%d", requestLogID(ctx), response.StatusCode), body)
 		return nil, &anthropicMessagesUpstreamError{
-			status: response.StatusCode, body: strings.TrimSpace(string(body)),
-			retryAfter: response.Header.Get("Retry-After"), requestID: firstHeader(response.Header, "Request-Id", "X-Request-Id"),
+			status:     response.StatusCode,
+			body:       strings.TrimSpace(string(body)),
+			retryAfter: response.Header.Get("Retry-After"),
+			requestID:  firstHeader(response.Header, "Request-Id", "X-Request-Id"),
+			headers:    extractProxyResponseHeaders(response.Header),
 		}
 	}
 	return response, nil

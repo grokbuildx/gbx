@@ -218,6 +218,7 @@ type adapterRequest struct {
 	thinkingEnabled   bool
 	maxTokens         int
 	inputTokens       int
+	contextWindow     int
 	parallelToolCalls *bool
 	// toolNameMap maps a name a backend had to rewrite for its upstream back to
 	// the flattened declaration name.
@@ -855,7 +856,7 @@ func parseResponsesRequest(raw []byte) (*conversationRequest, error) {
 		ServiceTier: strings.TrimSpace(wire.ServiceTier),
 		Truncation:  strings.ToLower(strings.TrimSpace(wire.Truncation)),
 		CacheKey:    strings.TrimSpace(wire.PromptCacheKey),
-		User:        strings.TrimSpace(wire.User), rawBytes: len(raw), rawTokens: estimateApproxTokensBytes(raw),
+		User:        strings.TrimSpace(wire.User), rawBytes: len(raw),
 	}
 	if len(wire.Instructions) > 0 && string(wire.Instructions) != "null" {
 		var instructions string
@@ -898,7 +899,39 @@ func parseResponsesRequest(raw []byte) (*conversationRequest, error) {
 		return nil, err
 	}
 	request.ToolChoice = choice
+	request.rawTokens = estimateConversationTokens(request)
 	return request, nil
+}
+
+// estimateConversationTokens approximates prompt token usage from parsed
+// conversation structure rather than raw JSON bytes so inline base64 images
+// contribute a fixed visual budget (~1000 tokens per image) instead of ~333K
+// ASCII tokens per MiB.
+func estimateConversationTokens(r *conversationRequest) int {
+	if r == nil {
+		return 0
+	}
+	const approxTokensPerImage = 1000
+	tokens := estimateApproxTokens(r.System)
+	for _, turn := range r.Turns {
+		for _, part := range turn.Parts {
+			switch part.Kind {
+			case partText, partReasoning:
+				tokens += estimateApproxTokens(part.Text)
+			case partImage:
+				tokens += approxTokensPerImage
+			case partToolCall:
+				tokens += estimateApproxTokens(part.Name) + estimateApproxTokensBytes(part.Arguments)
+			case partToolResult:
+				tokens += estimateApproxTokens(part.outputText())
+				tokens += len(part.outputImages()) * approxTokensPerImage
+			}
+		}
+	}
+	for _, tool := range r.Tools {
+		tokens += estimateApproxTokens(tool.Name) + estimateApproxTokens(tool.Description) + estimateApproxTokensBytes(tool.Parameters)
+	}
+	return max(1, tokens)
 }
 
 // normalizeToolCallPairing repairs historical turns where a tool call was

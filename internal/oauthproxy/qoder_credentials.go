@@ -80,6 +80,8 @@ func (pool *qoderCredentialPool) ordered() ([]*qoderCredential, error) {
 	return activeQoderCredentials(credentials), err
 }
 
+const qoderRefreshSkew = time.Minute
+
 func (pool *qoderCredentialPool) usable(ctx context.Context, credential *qoderCredential, force bool) (*qoderCredential, error) {
 	if credential == nil {
 		return nil, fmt.Errorf("Qoder credential is nil")
@@ -87,11 +89,8 @@ func (pool *qoderCredentialPool) usable(ctx context.Context, credential *qoderCr
 	if credential.disabled {
 		return nil, fmt.Errorf("Qoder credential %s is disabled", credential.fileName)
 	}
-	if !force && (credential.expiresAt.IsZero() || time.Now().Before(credential.expiresAt)) {
+	if !force && (credential.expiresAt.IsZero() || time.Now().Add(qoderRefreshSkew).Before(credential.expiresAt)) {
 		return credential, nil
-	}
-	if credential.refreshToken == "" {
-		return nil, fmt.Errorf("Qoder credential %s has expired and has no refresh token", credential.fileName)
 	}
 
 	release, err := lockOAuthCredential(ctx, credential.path)
@@ -107,8 +106,11 @@ func (pool *qoderCredentialPool) usable(ctx context.Context, credential *qoderCr
 	if latest.disabled {
 		return nil, fmt.Errorf("Qoder credential %s is disabled", latest.fileName)
 	}
-	if (!force || latest.accessToken != credential.accessToken) && (latest.expiresAt.IsZero() || time.Now().Before(latest.expiresAt)) {
+	if (!force || latest.accessToken != credential.accessToken) && (latest.expiresAt.IsZero() || time.Now().Add(qoderRefreshSkew).Before(latest.expiresAt)) {
 		return latest, nil
+	}
+	if strings.TrimSpace(latest.refreshToken) == "" {
+		return nil, fmt.Errorf("Qoder credential %s has expired and has no refresh token", latest.fileName)
 	}
 	return pool.refresh(ctx, latest)
 }

@@ -20,6 +20,7 @@ const (
 // Assembler block kinds. A block becomes one Responses output item.
 const (
 	blockText     = "text"
+	blockRefusal  = "refusal"
 	blockThinking = "thinking"
 	blockToolUse  = "tool_use"
 	// blockOpaque is reasoning the upstream returned only in encrypted form.
@@ -29,10 +30,11 @@ const (
 // Stop reasons a backend records on the assembler. They decide whether the
 // response completes or is reported incomplete.
 const (
-	stopEndTurn   = "end_turn"
-	stopToolUse   = "tool_use"
-	stopMaxTokens = "max_tokens"
-	stopRefusal   = "refusal"
+	stopEndTurn       = "end_turn"
+	stopToolUse       = "tool_use"
+	stopMaxTokens     = "max_tokens"
+	stopRefusal       = "refusal"
+	stopContentFilter = "content_filter"
 )
 
 // assemblerBlock is one output item under assembly.
@@ -48,11 +50,12 @@ type assemblerBlock struct {
 	// Data is reasoning the upstream returned only in encrypted form.
 	Data string
 	// ID, Name and Arguments describe a tool call.
-	ID        string
-	Name      string
-	Arguments string
-	spec      toolSpec
-	closed    bool
+	ID         string
+	Name       string
+	Arguments  string
+	spec       toolSpec
+	closed     bool
+	incomplete bool
 }
 
 type assemblerToolAccumulator struct {
@@ -72,36 +75,40 @@ type assemblerBlockBuffer struct {
 // from its upstream into one Responses response: server-sent events when it has
 // a writer, and the final response object either way.
 type responseAssembler struct {
-	request          *adapterRequest
-	writer           http.ResponseWriter
-	flusher          http.Flusher
-	responseID       string
-	createdAt        int64
-	sequence         int
-	blocks           []assemblerBlock
-	buffers          []*assemblerBlockBuffer
-	eventBuffer      bytes.Buffer
-	encoder          *json.Encoder
-	activeIndex      int
-	activeType       string
-	outputTokens     int
-	retainedBytes    int
-	contextTokens    int
-	inputUsageKnown  bool
-	cacheReadTokens  int
-	cacheWriteTokens int
-	hasToolUse       bool
-	tools            map[string]*assemblerToolAccumulator
-	creditUsage      float64
-	creditUnit       string
-	creditPlural     string
-	stopReason       string
-	started          bool
-	finished         bool
-	failed           bool
-	nativeReasoning  bool
-	inlineState      string
-	inlineBuffer     string
+	request                 *adapterRequest
+	writer                  http.ResponseWriter
+	flusher                 http.Flusher
+	responseID              string
+	createdAt               int64
+	sequence                int
+	blocks                  []assemblerBlock
+	buffers                 []*assemblerBlockBuffer
+	eventBuffer             bytes.Buffer
+	encoder                 *json.Encoder
+	activeIndex             int
+	activeType              string
+	outputTokens            int
+	outputUsageKnown        bool
+	estimatedOutputASCII    int
+	estimatedOutputNonASCII int
+	reasoningTokens         int
+	retainedBytes           int
+	contextTokens           int
+	inputUsageKnown         bool
+	cacheReadTokens         int
+	cacheWriteTokens        int
+	hasToolUse              bool
+	tools                   map[string]*assemblerToolAccumulator
+	creditUsage             float64
+	creditUnit              string
+	creditPlural            string
+	stopReason              string
+	started                 bool
+	finished                bool
+	failed                  bool
+	nativeReasoning         bool
+	inlineState             string
+	inlineBuffer            string
 }
 
 func newResponseAssembler(request *adapterRequest, writer http.ResponseWriter) *responseAssembler {
@@ -173,7 +180,11 @@ func (a *responseAssembler) item(index int, complete bool) map[string]any {
 	block := a.blocks[index]
 	status := "in_progress"
 	if complete {
-		status = "completed"
+		if block.incomplete {
+			status = "incomplete"
+		} else {
+			status = "completed"
+		}
 	}
 	switch block.Type {
 	case blockToolUse:
@@ -258,6 +269,9 @@ func (a *responseAssembler) item(index int, complete bool) map[string]any {
 	case blockOpaque:
 		return map[string]any{"id": block.ItemID, "type": "reasoning", "summary": []any{},
 			"encrypted_content": block.Data, "status": status}
+	case blockRefusal:
+		return map[string]any{"id": block.ItemID, "type": "message", "role": "assistant", "status": status,
+			"content": []any{map[string]any{"type": "refusal", "refusal": a.blockContent(index)}}}
 	default:
 		return map[string]any{"id": block.ItemID, "type": "message", "role": "assistant", "status": status,
 			"content": []any{map[string]any{"type": "output_text", "text": a.blockContent(index), "annotations": []any{}}}}
@@ -278,14 +292,18 @@ func (a *responseAssembler) envelope(status string) map[string]any {
 	if a.request != nil && a.request.parallelToolCalls != nil {
 		parallelToolCalls = *a.request.parallelToolCalls
 	}
+	var usage any
+	if status != "in_progress" {
+		usage = a.usage()
+	}
 	response := map[string]any{
 		"id": a.responseID, "object": "response", "created_at": a.createdAt, "status": status,
-		"model": a.request.clientModel, "output": a.outputItems(), "usage": a.usage(),
+		"model": a.request.clientModel, "output": a.outputItems(), "usage": usage,
 		"error": nil, "incomplete_details": nil, "parallel_tool_calls": parallelToolCalls,
 	}
 	if status == "incomplete" {
 		reason := "max_output_tokens"
-		if a.stopReason == stopRefusal {
+		if a.stopReason == stopContentFilter || a.stopReason == stopRefusal {
 			reason = "content_filter"
 		}
 		response["incomplete_details"] = map[string]any{"reason": reason}
@@ -298,6 +316,9 @@ func (a *responseAssembler) start() error {
 		return nil
 	}
 	a.started = true
+	if a.writer != nil {
+		prepareEventStream(a.writer)
+	}
 	if err := a.emit("response.created", map[string]any{"response": a.envelope("in_progress")}); err != nil {
 		return err
 	}
@@ -389,6 +410,16 @@ func (a *responseAssembler) retain(size int) error {
 	return nil
 }
 
+func (a *responseAssembler) recordEstimatedOutput(text string) {
+	for i := 0; i < len(text); i++ {
+		if text[i] < 0x80 {
+			a.estimatedOutputASCII++
+		} else {
+			a.estimatedOutputNonASCII++
+		}
+	}
+}
+
 func (a *responseAssembler) addText(text string) error {
 	if text == "" {
 		return nil
@@ -401,9 +432,27 @@ func (a *responseAssembler) addText(text string) error {
 		return err
 	}
 	a.buffers[index].text.WriteString(text)
-	a.outputTokens += estimateApproxTokens(text)
+	a.recordEstimatedOutput(text)
 	return a.emit("response.output_text.delta", map[string]any{
 		"item_id": a.blocks[index].ItemID, "output_index": index, "content_index": 0, "delta": text,
+	})
+}
+
+func (a *responseAssembler) addRefusal(refusal string) error {
+	if refusal == "" {
+		return nil
+	}
+	if err := a.retain(len(refusal)); err != nil {
+		return err
+	}
+	index, err := a.ensureBlock(blockRefusal)
+	if err != nil {
+		return err
+	}
+	a.buffers[index].text.WriteString(refusal)
+	a.recordEstimatedOutput(refusal)
+	return a.emit("response.refusal.delta", map[string]any{
+		"item_id": a.blocks[index].ItemID, "output_index": index, "content_index": 0, "delta": refusal,
 	})
 }
 
@@ -419,7 +468,7 @@ func (a *responseAssembler) addThinking(thinking string) error {
 		return err
 	}
 	a.buffers[index].thinking.WriteString(thinking)
-	a.outputTokens += estimateApproxTokens(thinking)
+	a.recordEstimatedOutput(thinking)
 	return a.emit("response.reasoning_summary_text.delta", map[string]any{
 		"item_id": a.blocks[index].ItemID, "output_index": index, "summary_index": 0, "delta": thinking,
 	})
@@ -443,7 +492,7 @@ func (a *responseAssembler) addOpaqueReasoning(data string) error {
 	if err := a.closeActive(); err != nil {
 		return err
 	}
-	index := a.appendBlock(assemblerBlock{Type: blockOpaque, ItemID: assemblerItemID(gbxReasoningIDPrefix), Data: data})
+	index := a.appendBlock(assemblerBlock{Type: blockOpaque, ItemID: assemblerItemID(gbxReasoningIDPrefix), Data: data, Signature: data})
 	if err := a.emit("response.output_item.added", map[string]any{"output_index": index, "item": a.item(index, false)}); err != nil {
 		return err
 	}
@@ -547,7 +596,7 @@ func (a *responseAssembler) addToolUse(id, name, partialJSON string) error {
 		Type: blockToolUse, ItemID: itemID, ID: id, Name: spec.Name, Arguments: partialJSON, spec: spec,
 	})
 	a.hasToolUse = true
-	a.outputTokens += estimateApproxTokens(partialJSON)
+	a.recordEstimatedOutput(partialJSON)
 	fields := map[string]any{"item_id": a.blocks[index].ItemID, "output_index": index}
 	switch spec.Kind {
 	case "tool_search", "computer", "shell", "local_shell", "apply_patch":
@@ -632,21 +681,33 @@ func (a *responseAssembler) ensureBlock(blockType string) (int, error) {
 	if err := a.emit("response.output_item.added", map[string]any{"output_index": index, "item": added}); err != nil {
 		return -1, err
 	}
-	if blockType == blockThinking {
+	switch blockType {
+	case blockThinking:
 		err := a.emit("response.reasoning_summary_part.added", map[string]any{
 			"item_id": block.ItemID, "output_index": index, "summary_index": 0,
 			"part": map[string]any{"type": "summary_text", "text": ""},
 		})
 		return index, err
+	case blockRefusal:
+		err := a.emit("response.content_part.added", map[string]any{
+			"item_id": block.ItemID, "output_index": index, "content_index": 0,
+			"part": map[string]any{"type": "refusal", "refusal": ""},
+		})
+		return index, err
+	default:
+		err := a.emit("response.content_part.added", map[string]any{
+			"item_id": block.ItemID, "output_index": index, "content_index": 0,
+			"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
+		})
+		return index, err
 	}
-	err := a.emit("response.content_part.added", map[string]any{
-		"item_id": block.ItemID, "output_index": index, "content_index": 0,
-		"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
-	})
-	return index, err
 }
 
 func (a *responseAssembler) closeActive() error {
+	return a.closeActiveWithIncomplete(false)
+}
+
+func (a *responseAssembler) closeActiveWithIncomplete(incomplete bool) error {
 	if a.activeIndex < 0 {
 		return nil
 	}
@@ -655,7 +716,8 @@ func (a *responseAssembler) closeActive() error {
 	a.activeType = ""
 	block := a.blocks[index]
 	content := a.blockContent(index)
-	if block.Type == blockThinking {
+	switch block.Type {
+	case blockThinking:
 		if err := a.emit("response.reasoning_summary_text.done", map[string]any{
 			"item_id": block.ItemID, "output_index": index, "summary_index": 0, "text": content}); err != nil {
 			return err
@@ -665,7 +727,17 @@ func (a *responseAssembler) closeActive() error {
 			"part": map[string]any{"type": "summary_text", "text": content}}); err != nil {
 			return err
 		}
-	} else {
+	case blockRefusal:
+		if err := a.emit("response.refusal.done", map[string]any{
+			"item_id": block.ItemID, "output_index": index, "content_index": 0, "refusal": content}); err != nil {
+			return err
+		}
+		if err := a.emit("response.content_part.done", map[string]any{
+			"item_id": block.ItemID, "output_index": index, "content_index": 0,
+			"part": map[string]any{"type": "refusal", "refusal": content}}); err != nil {
+			return err
+		}
+	default:
 		if err := a.emit("response.output_text.done", map[string]any{
 			"item_id": block.ItemID, "output_index": index, "content_index": 0, "text": content}); err != nil {
 			return err
@@ -677,7 +749,12 @@ func (a *responseAssembler) closeActive() error {
 		}
 	}
 	a.blocks[index].closed = true
+	a.blocks[index].incomplete = incomplete
 	return a.emit("response.output_item.done", map[string]any{"output_index": index, "item": a.item(index, true)})
+}
+
+func (a *responseAssembler) isTruncatedStop() bool {
+	return a.stopReason == stopMaxTokens || a.stopReason == stopContentFilter
 }
 
 func (a *responseAssembler) finish() error {
@@ -692,21 +769,19 @@ func (a *responseAssembler) finish() error {
 	if err := a.flushInlineContent(); err != nil {
 		return err
 	}
-	if a.stopReason == stopMaxTokens {
-		// Upstream hit token limit mid-tool-call; drop truncated accumulators so
-		// the caller receives response.incomplete (max_output_tokens) cleanly.
+	if a.isTruncatedStop() {
+		// Upstream hit token or safety limit mid-tool-call; drop truncated
+		// accumulators so the caller receives response.incomplete cleanly.
 		clear(a.tools)
 	} else {
 		for id, tool := range a.tools {
-			if strings.TrimSpace(tool.input.String()) != "" {
-				return fmt.Errorf("upstream tool %s (%s) ended before stop=true", safeToolNameForError(tool.name), id)
-			}
+			return fmt.Errorf("upstream tool %s (%s) ended before stop=true", safeToolNameForError(tool.name), id)
 		}
 	}
-	if err := a.closeActive(); err != nil {
+	status := a.status()
+	if err := a.closeActiveWithIncomplete(status == "incomplete"); err != nil {
 		return err
 	}
-	status := a.status()
 	event := "response.completed"
 	if status == "incomplete" {
 		event = "response.incomplete"
@@ -730,7 +805,7 @@ func (a *responseAssembler) fail(errorType, message string) {
 		_ = a.start()
 	}
 	response := a.envelope("failed")
-	response["error"] = map[string]any{"code": errorType, "message": message}
+	response["error"] = map[string]any{"code": errorType, "message": truncateErrorMessage(message, maxClientErrorMessageBytes)}
 	_ = a.emit("response.failed", map[string]any{"response": response})
 }
 
@@ -745,11 +820,11 @@ func (a *responseAssembler) resolvedStopReason() string {
 	return stopEndTurn
 }
 
-// status is the Responses status of the finished turn. Upstream token
+// status is the Responses status of the finished turn. Upstream token or safety
 // exhaustion is reported incomplete, never as a fabricated completion.
 func (a *responseAssembler) status() string {
 	switch a.resolvedStopReason() {
-	case stopMaxTokens:
+	case stopMaxTokens, stopContentFilter:
 		return "incomplete"
 	case stopRefusal:
 		if len(a.blocks) == 0 {
@@ -774,7 +849,11 @@ func (a *responseAssembler) tokenTotals() (input, output int) {
 	if a.inputUsageKnown || a.contextTokens > 0 {
 		input = a.contextTokens
 	}
-	return input, a.outputTokens
+	output = a.outputTokens
+	if !a.outputUsageKnown && output == 0 {
+		output = (a.estimatedOutputASCII+3)/4 + (a.estimatedOutputNonASCII+1)/2
+	}
+	return input, output
 }
 
 // usage renders Responses usage. input_tokens counts every prompt token,
@@ -786,7 +865,7 @@ func (a *responseAssembler) usage() map[string]any {
 		"input_tokens":          total,
 		"input_tokens_details":  map[string]any{"cached_tokens": a.cacheReadTokens},
 		"output_tokens":         outputTokens,
-		"output_tokens_details": map[string]any{"reasoning_tokens": 0},
+		"output_tokens_details": map[string]any{"reasoning_tokens": a.reasoningTokens},
 		"total_tokens":          total + outputTokens,
 	}
 	if a.creditUnit != "" {
