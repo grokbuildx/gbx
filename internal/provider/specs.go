@@ -237,15 +237,19 @@ func PromoteDefaultModel(models []string, preferred string, prependMissing bool)
 		}
 		return models
 	}
-	prefHas1M := HasOneMSuffix(preferred)
+	anyHas1M := HasOneMSuffix(preferred)
 	matchIdx := -1
 	for i, m := range models {
-		if strings.EqualFold(strings.TrimSpace(m), preferred) {
-			matchIdx = i
-			break
-		}
-		if matchIdx < 0 && strings.EqualFold(stripContextSuffix(m), prefBase) {
-			matchIdx = i
+		trimmed := strings.TrimSpace(m)
+		if strings.EqualFold(stripContextSuffix(trimmed), prefBase) {
+			if HasOneMSuffix(trimmed) {
+				anyHas1M = true
+			}
+			if strings.EqualFold(trimmed, preferred) {
+				matchIdx = i
+			} else if matchIdx < 0 {
+				matchIdx = i
+			}
 		}
 	}
 	if matchIdx < 0 {
@@ -258,7 +262,7 @@ func PromoteDefaultModel(models []string, preferred string, prependMissing bool)
 		return models
 	}
 	chosen := strings.TrimSpace(models[matchIdx])
-	if prefHas1M && !HasOneMSuffix(chosen) {
+	if anyHas1M && !HasOneMSuffix(chosen) {
 		chosen = stripContextSuffix(chosen) + "[1m]"
 	}
 	out := make([]string, 0, len(models))

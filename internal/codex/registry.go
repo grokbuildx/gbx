@@ -306,13 +306,12 @@ func (g *Gateway) RefreshProvidersMetadata(providers []provider.Provider, persis
 			continue
 		}
 		p.Type = provider.EffectiveType(p)
-		oauth := strings.ToLower(strings.TrimSpace(p.OAuthProvider))
-		mixed := oauth == "" && len(p.ModelProtocols) > 0
-		nativeProvider := oauth == "gpt" || oauth == "codex" ||
-			oauth == "" && !mixed && provider.IsOpenAIResponsesType(p.Type)
 		details := withGPTReasoningDefaults(runtime.Models(), runtime.ModelDetails())
 		if _, err := modelsdev.CachedIndex(); err == nil {
-			details, _ = withModelsDevMetadata(runtime.Models(), details, runtime.ModelDisplayNames(), p, !nativeProvider)
+			details, _ = withModelsDevMetadataPerModel(runtime.Models(), details, runtime.ModelDisplayNames(), p, func(model string) bool {
+				modelNative, _ := isNativeCodexModel(p, model)
+				return !modelNative
+			})
 		}
 		for _, model := range next.models {
 			alias, _ := model["slug"].(string)

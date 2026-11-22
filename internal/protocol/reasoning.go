@@ -29,9 +29,33 @@ func EffortDescription(effort string) string {
 		return "Maximum reasoning depth for the hardest problems"
 	case "ultra":
 		return "Maximum reasoning with automatic task delegation"
+	case "persistent":
+		return "Persistent reasoning for extended multi-step tasks"
 	default:
 		return strings.TrimSpace(effort)
 	}
+}
+
+// HasGeminiEffortSuffix reports whether model is a Gemini variant whose effort
+// tier is baked into its ID suffix (e.g. gemini-2.5-pro-high or
+// google/gemini-3-flash-low), so external reasoning sliders should not be added.
+func HasGeminiEffortSuffix(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	for len(lower) >= 4 && strings.HasSuffix(lower, "[1m]") {
+		lower = strings.TrimSpace(lower[:len(lower)-4])
+	}
+	if slash := strings.LastIndexByte(lower, '/'); slash >= 0 && slash < len(lower)-1 {
+		lower = lower[slash+1:]
+	}
+	if !strings.HasPrefix(lower, "gemini-") {
+		return false
+	}
+	for _, level := range []string{"-minimal", "-low", "-medium", "-high"} {
+		if strings.HasSuffix(lower, level) {
+			return true
+		}
+	}
+	return false
 }
 
 // ChatReasoningLevels are the standard Chat Completions effort controls for a
@@ -63,7 +87,7 @@ func GPTReasoningLevels() []ReasoningLevel {
 }
 
 // EffortRank orders standard reasoning effort tiers from lowest (none) to
-// highest (ultra), returning -1 for unrecognized values.
+// highest (persistent), returning -1 for unrecognized values.
 func EffortRank(effort string) int {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
 	case "none":
@@ -82,6 +106,8 @@ func EffortRank(effort string) int {
 		return 6
 	case "ultra":
 		return 7
+	case "persistent":
+		return 8
 	default:
 		return -1
 	}

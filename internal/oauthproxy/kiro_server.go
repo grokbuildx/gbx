@@ -245,6 +245,18 @@ func (s *kiroService) handleModels(writer http.ResponseWriter, request *http.Req
 			}
 		}
 		mapped := mapKiroModel(model.ModelID)
+		if index != nil {
+			if _, ok := item["input_modalities"]; !ok {
+				if mod, found := index.InputModalities("anthropic", mapped, displayName); found && len(mod) > 0 {
+					item["input_modalities"] = mod
+				}
+			}
+			if _, ok := item["max_output_tokens"]; !ok {
+				if maxOut, found := index.MaxOutputTokens("anthropic", mapped, displayName); found && maxOut > 0 {
+					item["max_output_tokens"] = maxOut
+				}
+			}
+		}
 		var levels []protocol.ReasoningLevel
 		var defaultLevel string
 		known := false

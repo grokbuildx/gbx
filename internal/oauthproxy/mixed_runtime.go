@@ -3,12 +3,14 @@ package oauthproxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/grokbuildx/gbx/internal/protocol"
+	"github.com/grokbuildx/gbx/internal/provider"
 )
 
 const mixedMaxBodyBytes = int64(128 << 20)
@@ -22,15 +24,46 @@ type mixedRouteSet struct {
 	models    []string
 }
 
+func normalizeLowerMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		lk := strings.ToLower(strings.TrimSpace(k))
+		if lk != "" && strings.TrimSpace(v) != "" {
+			out[lk] = strings.TrimSpace(v)
+		}
+	}
+	return out
+}
+
 // mixedProtocolForModel resolves a route's upstream protocol from the protocol
-// table, keyed by lowercase model ID. The alias is consulted first (it is what
-// the client sends), then the technical name; an unknown model falls back to
-// chat so a single hand-edited slot never blocks the whole runtime.
+// table, keyed by lowercase model ID (with [1m] fallback). The alias is
+// consulted first (it is what the client sends), then the technical name; an
+// unknown model falls back to chat so a single hand-edited slot never blocks
+// the whole runtime.
 func mixedProtocolForModel(protocols map[string]string, name, alias string) string {
-	if proto, ok := protocols[strings.ToLower(strings.TrimSpace(alias))]; ok && proto != "" {
+	lower := normalizeLowerMap(protocols)
+	lookup := func(id string) (string, bool) {
+		trimmed := strings.ToLower(strings.TrimSpace(id))
+		if trimmed == "" {
+			return "", false
+		}
+		if proto, ok := lower[trimmed]; ok && proto != "" {
+			return proto, true
+		}
+		if bare := strings.ToLower(stripContextModelSuffix(trimmed)); bare != "" && bare != trimmed {
+			if proto, ok := lower[bare]; ok && proto != "" {
+				return proto, true
+			}
+		}
+		return "", false
+	}
+	if proto, ok := lookup(alias); ok {
 		return proto
 	}
-	if proto, ok := protocols[strings.ToLower(strings.TrimSpace(name))]; ok && proto != "" {
+	if proto, ok := lookup(name); ok {
 		return proto
 	}
 	return "openai"
@@ -44,20 +77,21 @@ func buildMixedRoutes(modelSpec string, protocols map[string]string) (mixedRoute
 	if len(routes) == 0 {
 		return mixedRouteSet{}, fmt.Errorf("mixed-protocol runtime requires at least one model")
 	}
+	normalizedProtocols := normalizeLowerMap(protocols)
 	result := mixedRouteSet{}
 	seen := make(map[string]bool)
 	modelSeen := make(map[string]bool)
 	for _, route := range routes {
-		proto := mixedProtocolForModel(protocols, route.Name, route.Alias)
+		proto := mixedProtocolForModel(normalizedProtocols, route.Name, route.Alias)
 		key := strings.ToLower(proto + "\x00" + route.Name + "\x00" + route.Alias)
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		switch proto {
-		case "anthropic":
+		switch {
+		case provider.IsAnthropicType(proto):
 			result.messages = append(result.messages, runtimeModelRoute{Name: route.Name, Alias: route.Alias})
-		case "openai_responses":
+		case provider.IsOpenAIResponsesType(proto):
 			result.responses = append(result.responses, runtimeModelRoute{Name: route.Name, Alias: route.Alias})
 		default:
 			result.chat = append(result.chat, runtimeModelRoute{Name: route.Name, Alias: route.Alias})
@@ -129,6 +163,7 @@ func startMixedProtocolRouterWithProvider(parent context.Context, endpoint, upst
 	if err != nil {
 		return nil, err
 	}
+	normalizedEndpoints := normalizeLowerMap(endpoints)
 	responseRoutes := make([]runtimeModelRoute, 0, len(routes.responses))
 	responseModels := make(map[string]bool, len(routes.responses))
 	for _, route := range routes.responses {
@@ -137,7 +172,7 @@ func startMixedProtocolRouterWithProvider(parent context.Context, endpoint, upst
 			alias = route.Name
 		}
 		responseRoutes = append(responseRoutes, runtimeModelRoute{Name: route.Name, Alias: alias})
-		responseModels[strings.ToLower(alias)] = true
+		responseModels[strings.ToLower(strings.TrimSpace(alias))] = true
 	}
 	chatRoutes := make([]runtimeModelRoute, 0, len(routes.chat))
 	chatModels := make(map[string]bool, len(routes.chat))
@@ -147,7 +182,7 @@ func startMixedProtocolRouterWithProvider(parent context.Context, endpoint, upst
 			alias = route.Name
 		}
 		chatRoutes = append(chatRoutes, runtimeModelRoute{Name: route.Name, Alias: alias})
-		chatModels[strings.ToLower(alias)] = true
+		chatModels[strings.ToLower(strings.TrimSpace(alias))] = true
 	}
 	messageRoutes := make([]runtimeModelRoute, 0, len(routes.messages))
 	messageModels := make(map[string]bool, len(routes.messages))
@@ -157,7 +192,7 @@ func startMixedProtocolRouterWithProvider(parent context.Context, endpoint, upst
 			alias = route.Name
 		}
 		messageRoutes = append(messageRoutes, runtimeModelRoute{Name: route.Name, Alias: alias})
-		messageModels[strings.ToLower(alias)] = true
+		messageModels[strings.ToLower(strings.TrimSpace(alias))] = true
 	}
 	usage := NewUsageTracker()
 	router := &mixedProtocolRouter{
@@ -167,15 +202,18 @@ func startMixedProtocolRouterWithProvider(parent context.Context, endpoint, upst
 	if len(responseRoutes) > 0 {
 		router.codex = newCodexResponsesService(apiKey, endpoint, responseRoutes, &codexStaticAuthorizer{token: upstreamAPIKey}, usage)
 		router.codex.modelsDevProvider = router.modelsDevProvider
-		router.codex.setModelEndpoints(responseRoutes, endpoints)
+		if router.codex.isXaiBackend() {
+			router.codex.flattenTools = true
+		}
+		router.codex.setModelEndpoints(responseRoutes, normalizedEndpoints)
 	}
 	if len(chatRoutes) > 0 {
 		router.chatSvc = newChatCompletionsService(apiKey, endpoint, chatRoutes, upstreamAPIKey, usage)
 		router.chatSvc.modelsDevProvider = router.modelsDevProvider
-		router.chatSvc.setModelEndpoints(chatRoutes, endpoints)
+		router.chatSvc.setModelEndpoints(chatRoutes, normalizedEndpoints)
 	}
 	if len(messageRoutes) > 0 {
-		router.messagesSvc = newAnthropicMessagesService(apiKey, endpoint, messageRoutes, endpoints, upstreamAPIKey, usage)
+		router.messagesSvc = newAnthropicMessagesService(apiKey, endpoint, messageRoutes, normalizedEndpoints, upstreamAPIKey, usage)
 		router.messagesSvc.modelsDevProvider = router.modelsDevProvider
 	}
 	proxyRuntime, err := startLoopbackServer(parent, "mixed-protocol router", router.handlerForContext(parent), apiKey, usage)
@@ -205,6 +243,20 @@ func (r *mixedProtocolRouter) handlerForContext(ctx context.Context) http.Handle
 	return loopbackFrontMuxWithCompact(ctx, r.apiKey, r.handleModels, r.handleResponses, r.handleCompact)
 }
 
+func (r *mixedProtocolRouter) routeMatch(bucket map[string]bool, model string) bool {
+	if len(bucket) == 0 {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(model))
+	if bucket[lower] {
+		return true
+	}
+	if bare := strings.ToLower(stripContextModelSuffix(lower)); bare != "" && bare != lower {
+		return bucket[bare]
+	}
+	return false
+}
+
 func (r *mixedProtocolRouter) handleCompact(writer http.ResponseWriter, request *http.Request) {
 	if !inferenceRequestAllowed(writer, request, r.apiKey) {
 		return
@@ -214,12 +266,14 @@ func (r *mixedProtocolRouter) handleCompact(writer http.ResponseWriter, request 
 		writeInboundBodyError(writer, err)
 		return
 	}
+	if !json.Valid(body) {
+		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", "invalid Responses request JSON")
+		return
+	}
 	request.Body = io.NopCloser(bytes.NewReader(body))
 	request.ContentLength = int64(len(body))
 	model := strings.TrimSpace(requestModelID(body))
-	lower := strings.ToLower(model)
-	baseLower := strings.ToLower(stripContextModelSuffix(model))
-	if r.codex != nil && !r.codex.isXaiBackend() && (r.responses[lower] || r.responses[baseLower]) {
+	if r.codex != nil && !r.codex.isXaiBackend() && r.routeMatch(r.responses, model) {
 		r.codex.handleResponses(writer, request)
 		return
 	}
@@ -261,32 +315,35 @@ func (r *mixedProtocolRouter) handleResponses(writer http.ResponseWriter, reques
 	if !inferenceRequestAllowed(writer, request, r.apiKey) {
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(request.Body, mixedMaxBodyBytes+1))
+	body, err := readInboundBody(writer, request, mixedMaxBodyBytes)
 	if err != nil {
-		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
+		writeInboundBodyError(writer, err)
 		return
 	}
-	if int64(len(body)) > mixedMaxBodyBytes {
-		writeProxyError(writer, http.StatusRequestEntityTooLarge, "request_too_large", "request body is too large")
+	if !json.Valid(body) {
+		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", "invalid Responses request JSON")
 		return
 	}
 	request.Body = io.NopCloser(bytes.NewReader(body))
-	model := requestModelID(body)
-	lower := strings.ToLower(model)
-	if r.codex != nil && r.responses[lower] {
+	model := strings.TrimSpace(requestModelID(body))
+	if model == "" {
+		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", "a Responses model is required")
+		return
+	}
+	if r.codex != nil && r.routeMatch(r.responses, model) {
 		LogDebugEvent("protocol_route", "component", "mixed", "model", model, "protocol", "openai_responses", "owner", "gbx")
 		r.codex.handleResponses(writer, request)
 		return
 	}
-	if r.chatSvc != nil && r.chat[lower] {
+	if r.chatSvc != nil && r.routeMatch(r.chat, model) {
 		LogDebugEvent("protocol_route", "component", "mixed", "model", model, "protocol", "openai_chat", "owner", "gbx")
 		r.chatSvc.handleResponses(writer, request)
 		return
 	}
-	if r.messagesSvc != nil && r.messages[lower] {
+	if r.messagesSvc != nil && r.routeMatch(r.messages, model) {
 		LogDebugEvent("protocol_route", "component", "mixed", "model", model, "protocol", "anthropic_messages", "owner", "gbx")
 		r.messagesSvc.handleResponses(writer, request)
 		return
 	}
-	writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", "model is not routed to a supported protocol")
+	writeProxyErrorDetail(writer, http.StatusNotFound, "invalid_request_error", "model_not_found", "model", "model is not routed to a supported protocol")
 }

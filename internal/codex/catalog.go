@@ -51,8 +51,21 @@ func lookupModelDisplayName(names map[string]string, id string) string {
 	if name := names[id]; name != "" {
 		return name
 	}
-	if stripped := provider.StripContextSuffix(id); stripped != id {
-		return names[stripped]
+	stripped := provider.StripContextSuffix(id)
+	if stripped != id {
+		if name := names[stripped]; name != "" {
+			return name
+		}
+	}
+	trimmed := strings.TrimSpace(id)
+	trimmedBare := provider.StripContextSuffix(trimmed)
+	for k, v := range names {
+		if strings.TrimSpace(v) == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(k), trimmed) || strings.EqualFold(provider.StripContextSuffix(strings.TrimSpace(k)), trimmedBare) {
+			return v
+		}
 	}
 	return ""
 }
@@ -71,14 +84,22 @@ func newModel(alias, id string, details map[string]protocol.ModelInfo, names map
 		name = id
 	}
 	levels, defaultLevel := reasoningLevels(info)
+	parallelTools := false
+	if ok && info.SupportsParallelToolCalls != nil {
+		parallelTools = *info.SupportsParallelToolCalls
+	}
+	reasoningSummaries := false
+	if ok && info.SupportsReasoningSummaries != nil {
+		reasoningSummaries = *info.SupportsReasoningSummaries
+	}
 	entry := Model{
 		"slug": alias, "display_name": name, "description": "Model " + id + " through GBX",
 		"context_window": contextWindow, "max_context_window": contextWindow,
 		"shell_type": "default", "visibility": "list", "supported_in_api": true, "priority": 0,
 		"truncation_policy": map[string]any{"mode": "tokens", "limit": 10000},
 		"base_instructions": "You are a coding assistant. Use the available tools to inspect the workspace, implement the user's request, and verify the result. Follow the user's instructions and the workspace instructions. Ask for clarification when necessary.",
-		"support_verbosity": false, "default_verbosity": nil, "supports_parallel_tool_calls": false,
-		"supports_reasoning_summaries": false, "supports_reasoning_summary_parameter": false,
+		"support_verbosity": false, "default_verbosity": nil, "supports_parallel_tool_calls": parallelTools,
+		"supports_reasoning_summaries": reasoningSummaries, "supports_reasoning_summary_parameter": reasoningSummaries,
 		"supported_reasoning_levels": levels, "default_reasoning_level": defaultLevel,
 		"apply_patch_tool_type": "freeform", "experimental_supported_tools": []any{},
 		"supports_search_tool": true, "supports_experimental_context": false,
@@ -166,9 +187,9 @@ func applyProviderContext(model Model, id string, p provider.Provider) {
 		percent, _ = strconv.Atoi(env[provider.EnvAutoCompactPct])
 	} else {
 		// OAuth catalogs usually publish the bare ID, so also check the saved
-		// model pool for the marker rather than only the runtime's ID.
+		// model pool and DefaultModel for the [1m] marker rather than only the runtime's ID.
 		base := provider.StripContextSuffix(strings.ToLower(strings.TrimSpace(id)))
-		for _, configured := range strings.Split(provider.RuntimeModelSpec(p)+","+id, ",") {
+		for _, configured := range strings.Split(provider.RuntimeModelSpec(p)+","+p.DefaultModel+","+id, ",") {
 			configured = strings.ToLower(strings.TrimSpace(configured))
 			if strings.HasSuffix(configured, "[1m]") && provider.StripContextSuffix(configured) == base {
 				window = 1_000_000
@@ -178,6 +199,7 @@ func applyProviderContext(model Model, id string, p provider.Provider) {
 	}
 	model["context_window"] = window
 	model["max_context_window"] = window
+	model["effective_context_window_percent"] = percent
 	model["auto_compact_token_limit"] = window * percent / 100
 }
 

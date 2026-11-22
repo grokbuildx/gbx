@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/grokbuildx/gbx/internal/modelsdev"
 	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
@@ -153,7 +154,7 @@ func autoClawModelDetailsWithCatalog(routes []runtimeModelRoute, catalog []autoc
 			ContextWindow:   entry.context,
 			MaxOutputTokens: entry.maxOutput,
 			InputModalities: normalizeModelModalities(entry.input),
-			ReasoningKnown:  true,
+			ReasoningKnown:  !entry.reasoning,
 		}
 		if entry.reasoning {
 			info.ReasoningLevels = protocol.ChatReasoningLevels()
@@ -178,7 +179,29 @@ func autoClawModelDetailsWithCatalog(routes []runtimeModelRoute, catalog []autoc
 			}
 		}
 	}
+	enrichAutoClawModelDetails(details)
 	return details
+}
+
+func enrichAutoClawModelDetails(details map[string]protocol.ModelInfo) {
+	if len(details) == 0 {
+		return
+	}
+	index, err := modelsdev.CachedIndex()
+	if err != nil || index == nil {
+		return
+	}
+	for key, info := range details {
+		if info.ReasoningKnown {
+			continue
+		}
+		bodyID := autoClawBodyModel(info.ID)
+		if efforts, ok := index.Efforts("", bodyID, info.DisplayName); ok {
+			info.ReasoningLevels, info.DefaultReasoningLevel = reasoningLevelsFromEfforts(efforts, info.DefaultReasoningLevel)
+			info.ReasoningKnown = true
+			details[key] = info
+		}
+	}
 }
 
 // normalizeAutoClawRequest applies the compatibility metadata emitted by

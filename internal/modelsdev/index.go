@@ -138,7 +138,7 @@ func addModelAlias(index map[string]reasoningEntry, alias string, efforts, modal
 // with an empty slice means the model has no selectable reasoning tiers.
 // The returned slice is a copy so callers cannot mutate the shared index.
 func (index *Index) Efforts(providerID, modelID, displayName string) ([]string, bool) {
-	if entry, ok := index.lookup(providerID, modelID, displayName, func(e reasoningEntry) bool { return !e.ambiguous }); ok {
+	if entry, ok := index.lookupWithPolicy(providerID, modelID, displayName, func(e reasoningEntry) bool { return !e.ambiguous }, true); ok {
 		return slices.Clone(entry.efforts), true
 	}
 	return nil, false
@@ -148,7 +148,7 @@ func (index *Index) Efforts(providerID, modelID, displayName string) ([]string, 
 // as reasoning-capable (including budget-only or toggle-only thinking models
 // whose Efforts() slice is empty). Unknown or ambiguous models return (false, false).
 func (index *Index) SupportsThinking(providerID, modelID, displayName string) (bool, bool) {
-	if entry, ok := index.lookup(providerID, modelID, displayName, func(e reasoningEntry) bool { return !e.thinkingAmbiguous }); ok {
+	if entry, ok := index.lookupWithPolicy(providerID, modelID, displayName, func(e reasoningEntry) bool { return !e.thinkingAmbiguous }, true); ok {
 		return entry.thinking, true
 	}
 	return false, false
@@ -157,9 +157,9 @@ func (index *Index) SupportsThinking(providerID, modelID, displayName string) (b
 // ThinkingMode reports whether a reasoning-capable model is adaptive/effort-only
 // (has effort tiers without budget_tokens) and whether it accepts budget_tokens.
 func (index *Index) ThinkingMode(providerID, modelID, displayName string) (adaptive bool, supportsBudget bool, found bool) {
-	if entry, ok := index.lookup(providerID, modelID, displayName, func(e reasoningEntry) bool {
+	if entry, ok := index.lookupWithPolicy(providerID, modelID, displayName, func(e reasoningEntry) bool {
 		return !e.thinkingAmbiguous && !e.modeAmbiguous && e.thinking
-	}); ok {
+	}, true); ok {
 		return entry.hasEffort && !entry.hasBudget, entry.hasBudget, true
 	}
 	return false, false, false
@@ -168,9 +168,9 @@ func (index *Index) ThinkingMode(providerID, modelID, displayName string) (adapt
 // InputModalities resolves advertised input modalities (["text"] or ["text", "image"])
 // for a model when models.dev unambiguously declares them. Unknown models return (nil, false).
 func (index *Index) InputModalities(providerID, modelID, displayName string) ([]string, bool) {
-	if entry, ok := index.lookup(providerID, modelID, displayName, func(e reasoningEntry) bool {
+	if entry, ok := index.lookupWithPolicy(providerID, modelID, displayName, func(e reasoningEntry) bool {
 		return !e.modalitiesAmbiguous && len(e.modalities) > 0
-	}); ok {
+	}, false); ok {
 		return slices.Clone(entry.modalities), true
 	}
 	return nil, false
@@ -178,15 +178,19 @@ func (index *Index) InputModalities(providerID, modelID, displayName string) ([]
 
 // MaxOutputTokens resolves the advertised maximum output token budget when known.
 func (index *Index) MaxOutputTokens(providerID, modelID, displayName string) (int, bool) {
-	if entry, ok := index.lookup(providerID, modelID, displayName, func(e reasoningEntry) bool {
+	if entry, ok := index.lookupWithPolicy(providerID, modelID, displayName, func(e reasoningEntry) bool {
 		return !e.outputAmbiguous && e.maxOutput > 0
-	}); ok {
+	}, false); ok {
 		return entry.maxOutput, true
 	}
 	return 0, false
 }
 
 func (index *Index) lookup(providerID, modelID, displayName string, accept func(reasoningEntry) bool) (reasoningEntry, bool) {
+	return index.lookupWithPolicy(providerID, modelID, displayName, accept, false)
+}
+
+func (index *Index) lookupWithPolicy(providerID, modelID, displayName string, accept func(reasoningEntry) bool, rejectThinkingDowngrade bool) (reasoningEntry, bool) {
 	if index == nil {
 		return reasoningEntry{}, false
 	}
@@ -201,8 +205,40 @@ func (index *Index) lookup(providerID, modelID, displayName string, accept func(
 	if len(secondary) == 0 {
 		return reasoningEntry{}, false
 	}
-	entry, matched, _ := lookupAliases(local, index.aliases, secondary, accept)
+	secondaryAccept := accept
+	if rejectThinkingDowngrade && aliasesCarryThinkingQualifier(exact) {
+		secondaryAccept = func(e reasoningEntry) bool {
+			return e.thinking && accept(e)
+		}
+	}
+	entry, matched, _ := lookupAliases(local, index.aliases, secondary, secondaryAccept)
 	return entry, matched
+}
+
+func aliasesCarryThinkingQualifier(aliases []string) bool {
+	for _, a := range aliases {
+		if aliasHasThinkingQualifier(a) {
+			return true
+		}
+	}
+	return false
+}
+
+func aliasHasThinkingQualifier(alias string) bool {
+	if alias == "" {
+		return false
+	}
+	cur := alias
+	for {
+		if strings.HasSuffix(cur, ":thinking") || strings.HasSuffix(cur, "-thinking") {
+			return true
+		}
+		next := stripSingleGatewayColonTag(cur)
+		if next == cur {
+			return false
+		}
+		cur = next
+	}
 }
 
 func lookupAliases(local, global map[string]reasoningEntry, aliases []string, accept func(reasoningEntry) bool) (reasoningEntry, bool, bool) {
@@ -236,8 +272,8 @@ func lookupAliases(local, global map[string]reasoningEntry, aliases []string, ac
 
 // secondaryAliases generates lossless gateway-formatting variants for exact
 // misses without fuzzy version stripping: colon routing qualifiers (:free,
-// :thinking, etc.), -thinking suffixes, unknown vendor/ prefixes, and digit
-// separator equivalence (4.6 <-> 4-6).
+// :thinking, chained :free:nitro, etc.), -thinking suffixes, unknown vendor/
+// prefixes, and digit separator equivalence (4.6 <-> 4-6).
 func secondaryAliases(exact []string) []string {
 	seen := make(map[string]bool, len(exact)*4)
 	for _, a := range exact {
@@ -266,10 +302,15 @@ func secondaryAliases(exact []string) []string {
 		if base == "" {
 			continue
 		}
-		stripped := stripGatewayColonTag(base)
 		candidates := []string{base}
-		if stripped != base {
-			candidates = append(candidates, stripped)
+		cur := base
+		for {
+			next := stripSingleGatewayColonTag(cur)
+			if next == cur {
+				break
+			}
+			candidates = append(candidates, next)
+			cur = next
 		}
 		for _, c := range candidates {
 			addWithSeparators(c)
@@ -289,6 +330,17 @@ func secondaryAliases(exact []string) []string {
 }
 
 func stripGatewayColonTag(alias string) string {
+	cur := alias
+	for {
+		next := stripSingleGatewayColonTag(cur)
+		if next == cur {
+			return cur
+		}
+		cur = next
+	}
+}
+
+func stripSingleGatewayColonTag(alias string) string {
 	idx := strings.LastIndexByte(alias, ':')
 	if idx <= 0 || idx == len(alias)-1 {
 		return alias

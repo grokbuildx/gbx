@@ -275,6 +275,9 @@ func startXaiOAuth(parent context.Context, modelSpec, credentialFile string) (*R
 	cancelDiscovery()
 	catalogFallback := false
 	if discoverErr != nil || len(models) == 0 {
+		if parent.Err() != nil {
+			return nil, parent.Err()
+		}
 		if discoverErr == nil {
 			discoverErr = fmt.Errorf("xAI returned an empty model catalog")
 		}

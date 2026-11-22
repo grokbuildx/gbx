@@ -20,6 +20,7 @@ type qoderModel struct {
 	PriceFactor        *float64
 	Reasoning          bool
 	Vision             bool
+	VisionKnown        bool
 	IsNew              bool
 	PromotionAvailable bool
 	Source             string

@@ -207,32 +207,121 @@ func inferModelsDevProviderID(p provider.Provider) string {
 	return inferModelsDevProviderFromHint(p.Name, p.Endpoint)
 }
 
-func inferModelsDevProviderFromHint(name, endpoint string) string {
-	host := ""
-	if parsed, err := url.Parse(strings.TrimSpace(endpoint)); err == nil {
-		host = strings.ToLower(parsed.Hostname())
+// IsOfficialXaiEndpoint reports whether endpoint targets an official xAI API host.
+func IsOfficialXaiEndpoint(endpoint string) bool {
+	host := endpointHostname(endpoint)
+	return hostMatchesDomain(host, "api.x.ai") || hostMatchesDomain(host, "x.ai")
+}
+
+// IsXaiAPIProvider reports whether an API-key provider should use xAI's
+// Responses compatibility rules (tool flattening, effort clamping, local
+// compaction). Free-form provider names never hijack protocol routing.
+func IsXaiAPIProvider(p provider.Provider) bool {
+	if strings.TrimSpace(p.OAuthProvider) != "" {
+		return false
 	}
-	haystack := strings.ToLower(strings.TrimSpace(name) + " " + host + " " + strings.TrimSpace(endpoint))
+	if strings.EqualFold(strings.TrimSpace(p.ModelsDevProvider), "xai") {
+		return true
+	}
+	if provider.IsModelsDevType(p.Type) && strings.EqualFold(provider.ModelsDevCatalogID(p), "xai") {
+		return true
+	}
+	return IsOfficialXaiEndpoint(p.Endpoint)
+}
+
+func endpointHostname(endpoint string) string {
+	trimmed := strings.TrimSpace(endpoint)
+	if trimmed == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(trimmed); err == nil && parsed.Hostname() != "" {
+		return strings.ToLower(parsed.Hostname())
+	}
+	if !strings.Contains(trimmed, "://") {
+		if parsed, err := url.Parse("https://" + trimmed); err == nil {
+			return strings.ToLower(parsed.Hostname())
+		}
+	}
+	return ""
+}
+
+func hostMatchesDomain(host, domain string) bool {
+	return host == domain || strings.HasSuffix(host, "."+domain)
+}
+
+func nameTokens(name string) []string {
+	return strings.FieldsFunc(strings.ToLower(strings.TrimSpace(name)), func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	})
+}
+
+func hasAnyToken(tokens []string, candidates ...string) bool {
+	for _, token := range tokens {
+		for _, want := range candidates {
+			if token == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func inferModelsDevProviderFromHint(name, endpoint string) string {
+	// Stage 1: exact/suffix hostname match only (never inspect URL path segments
+	// like /v1beta/openai or /inference/openai/v1).
+	if host := endpointHostname(endpoint); host != "" {
+		switch {
+		case hostMatchesDomain(host, "api.x.ai"), hostMatchesDomain(host, "x.ai"):
+			return "xai"
+		case hostMatchesDomain(host, "generativelanguage.googleapis.com"), hostMatchesDomain(host, "aiplatform.googleapis.com"):
+			return "google"
+		case hostMatchesDomain(host, "api.openai.com"), hostMatchesDomain(host, "openai.com"):
+			return "openai"
+		case hostMatchesDomain(host, "api.kimi.com"):
+			return "kimi-code-plan-global"
+		case hostMatchesDomain(host, "moonshot.cn"), hostMatchesDomain(host, "moonshot.ai"):
+			return "moonshotai"
+		case hostMatchesDomain(host, "openrouter.ai"):
+			return "openrouter"
+		case hostMatchesDomain(host, "anthropic.com"):
+			return "anthropic"
+		case hostMatchesDomain(host, "deepseek.com"):
+			return "deepseek"
+		case hostMatchesDomain(host, "dashscope.aliyuncs.com"),
+			hostMatchesDomain(host, "dashscope-intl.aliyuncs.com"),
+			hostMatchesDomain(host, "dashscope-us.aliyuncs.com"):
+			return "alibaba"
+		case hostMatchesDomain(host, "bigmodel.cn"), hostMatchesDomain(host, "z.ai"):
+			return "zai"
+		}
+	}
+
+	// Stage 2: token-bounded provider name fallback.
+	lowerName := strings.ToLower(strings.TrimSpace(name))
+	if lowerName == "" {
+		return ""
+	}
+	tokens := nameTokens(lowerName)
 	switch {
-	case strings.Contains(haystack, "api.x.ai"), strings.Contains(haystack, "xai"), strings.Contains(haystack, "grok"):
+	case hasAnyToken(tokens, "xai", "grok"):
 		return "xai"
-	case strings.Contains(haystack, "api.openai.com"), strings.Contains(haystack, "openai"):
-		return "openai"
-	case strings.Contains(haystack, "generativelanguage.googleapis.com"), strings.Contains(haystack, "google"), strings.Contains(haystack, "gemini"):
+	case hasAnyToken(tokens, "google", "gemini"):
 		return "google"
-	case strings.Contains(haystack, "api.kimi.com"), strings.Contains(haystack, "kimi-for-coding"), strings.Contains(haystack, "kimi-code"):
+	case hasAnyToken(tokens, "openai"):
+		return "openai"
+	case strings.Contains(lowerName, "kimi-for-coding"), strings.Contains(lowerName, "kimi-code"), hasAnyToken(tokens, "kimi"):
 		return "kimi-code-plan-global"
-	case strings.Contains(haystack, "api.moonshot"), strings.Contains(haystack, "moonshot"):
+	case hasAnyToken(tokens, "moonshot", "moonshotai"):
 		return "moonshotai"
-	case strings.Contains(haystack, "openrouter"):
+	case hasAnyToken(tokens, "openrouter"):
 		return "openrouter"
-	case strings.Contains(haystack, "anthropic"):
+	case hasAnyToken(tokens, "anthropic", "claude"):
 		return "anthropic"
-	case strings.Contains(haystack, "deepseek"):
+	case hasAnyToken(tokens, "deepseek"):
 		return "deepseek"
-	case strings.Contains(haystack, "dashscope"), strings.Contains(haystack, "alibaba"), strings.Contains(haystack, "qwen"):
+	case hasAnyToken(tokens, "dashscope", "alibaba", "qwen"):
 		return "alibaba"
-	case strings.Contains(haystack, "bigmodel.cn"), strings.Contains(haystack, "z.ai"), strings.Contains(haystack, "zai"), strings.Contains(haystack, "glm"):
+	case hasAnyToken(tokens, "bigmodel", "zai", "glm"):
 		return "zai"
 	default:
 		return ""

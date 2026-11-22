@@ -153,20 +153,53 @@ func (g *Gateway) buildModels(runtime *oauthproxy.Runtime, configured provider.P
 	return nil
 }
 
+func isNativeCodexModel(p provider.Provider, model string) (native, codexOAuth bool) {
+	p.Type = provider.EffectiveType(p)
+	oauth := strings.ToLower(strings.TrimSpace(p.OAuthProvider))
+	codexOAuth = oauth == "gpt" || oauth == "codex"
+	xaiAPI := oauthproxy.IsXaiAPIProvider(p)
+	mixed := oauth == "" && len(p.ModelProtocols) > 0
+	providerNative := codexOAuth ||
+		(oauth == "" && !mixed && !xaiAPI && provider.IsOpenAIResponsesType(p.Type))
+	if providerNative {
+		return true, codexOAuth
+	}
+	if !mixed || xaiAPI {
+		return false, false
+	}
+	lower := strings.ToLower(strings.TrimSpace(model))
+	modelProtocol := p.ModelProtocols[lower]
+	if modelProtocol == "" {
+		modelProtocol = p.ModelProtocols[provider.StripContextSuffix(lower)]
+	}
+	return provider.IsOpenAIResponsesType(modelProtocol), false
+}
+
 func buildProviderCatalog(runtime *oauthproxy.Runtime, configured provider.Provider) ([]Model, map[string]Route, error) {
 	var err error
 	p := configured
 	p.Type = provider.EffectiveType(p)
-	oauth := strings.ToLower(strings.TrimSpace(p.OAuthProvider))
-	codexOAuth := oauth == "gpt" || oauth == "codex"
-	xaiAPI := oauth == "" && strings.EqualFold(oauthproxy.ModelsDevProviderID(p), "xai")
-	mixed := oauth == "" && len(p.ModelProtocols) > 0
-	native := codexOAuth ||
-		oauth == "" && !mixed && !xaiAPI && provider.IsOpenAIResponsesType(p.Type)
 	details, names := runtime.ModelDetails(), runtime.ModelDisplayNames()
-	models := runtime.Models()
+	rawModels := runtime.Models()
+	models := make([]string, 0, len(rawModels))
+	seenModels := make(map[string]bool, len(rawModels))
+	for _, raw := range rawModels {
+		model := strings.TrimSpace(raw)
+		if model == "" {
+			continue
+		}
+		key := strings.ToLower(model)
+		if seenModels[key] {
+			continue
+		}
+		seenModels[key] = true
+		models = append(models, model)
+	}
 	details = withGPTReasoningDefaults(models, details)
-	details, err = withModelsDevMetadata(models, details, names, p, !native)
+	details, err = withModelsDevMetadataPerModel(models, details, names, p, func(model string) bool {
+		modelNative, _ := isNativeCodexModel(p, model)
+		return !modelNative
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -175,11 +208,7 @@ func buildProviderCatalog(runtime *oauthproxy.Runtime, configured provider.Provi
 	for _, model := range models {
 		alias := "gbx/" + url.PathEscape(p.Name) + "/" + model
 		_, info, _ := lookupModelInfo(details, model)
-		modelProtocol := p.ModelProtocols[strings.ToLower(model)]
-		if modelProtocol == "" {
-			modelProtocol = p.ModelProtocols[strings.TrimSuffix(strings.ToLower(model), "[1m]")]
-		}
-		modelNative := native || mixed && !xaiAPI && provider.IsOpenAIResponsesType(modelProtocol)
+		modelNative, codexOAuth := isNativeCodexModel(p, model)
 		routes[alias] = Route{Provider: p.Name, Alias: alias, Model: model, NativeResponses: modelNative, CodexNativeTools: codexOAuth, MaxOutputTokens: info.MaxOutputTokens}
 		entry := newModel(alias, model, details, names)
 		if modelNative && !codexOAuth {

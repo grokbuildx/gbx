@@ -573,7 +573,7 @@ func qoderModelsFromCatalog(entries []map[string]any) []qoderModel {
 		reasoning, _ := entry["is_reasoning"].(bool)
 		thinkingConfig, hasThinking := entry["thinking_config"]
 		hasThinking = hasThinking && thinkingConfig != nil
-		vision, _ := entry["is_vl"].(bool)
+		vision, hasVision := entry["is_vl"].(bool)
 		isNew, _ := entry["is_new"].(bool)
 		_, promotionAvailable := entry["promotion"].(map[string]any)
 		name := firstMetadataString(entry, "display_name")
@@ -587,7 +587,7 @@ func qoderModelsFromCatalog(entries []map[string]any) []qoderModel {
 		models = append(models, qoderModel{
 			ID: id, Name: name, ContextWindow: contextWindow,
 			MaxTokens: qoderInt(entry["max_output_tokens"]), PriceFactor: qoderFloatPointer(entry, "price_factor"),
-			Reasoning: reasoning || hasThinking, Vision: vision, IsNew: isNew,
+			Reasoning: reasoning || hasThinking, Vision: vision, VisionKnown: hasVision, IsNew: isNew,
 			PromotionAvailable: promotionAvailable, Source: source, Config: entry,
 		})
 	}
@@ -595,13 +595,13 @@ func qoderModelsFromCatalog(entries []map[string]any) []qoderModel {
 }
 
 // qoderModelDetail is the picker metadata for one catalog entry. A model with
-// no credit rate, effort rungs, context window or vision contributes nothing.
-// Effort rungs are published even when the catalog leaves is_reasoning false,
-// because Kimi and Performance advertise efforts that way. Retain advertised
-// image and token capabilities alongside rates and reasoning controls.
+// no credit rate, effort rungs, context window or explicit vision capability
+// contributes nothing. Effort rungs are published even when the catalog leaves
+// is_reasoning false, because Kimi and Performance advertise efforts that way.
+// Retain advertised image and token capabilities alongside rates and reasoning controls.
 func qoderModelDetail(model qoderModel) (protocol.ModelInfo, bool) {
 	levels, defaultLevel := qoderReasoningLevels(model.Config)
-	if model.PriceFactor == nil && len(levels) == 0 && model.ContextWindow <= 0 && !model.Vision {
+	if model.PriceFactor == nil && len(levels) == 0 && model.ContextWindow <= 0 && !model.Vision && !model.VisionKnown {
 		return protocol.ModelInfo{}, false
 	}
 	info := protocol.ModelInfo{
@@ -610,6 +610,8 @@ func qoderModelDetail(model qoderModel) (protocol.ModelInfo, bool) {
 	}
 	if model.Vision {
 		info.InputModalities = []string{"text", "image"}
+	} else if model.VisionKnown {
+		info.InputModalities = []string{"text"}
 	}
 	if model.PriceFactor != nil {
 		info.RateMultiplier = model.PriceFactor

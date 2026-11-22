@@ -53,7 +53,7 @@ func requestCodexModelInfos(ctx context.Context, client *http.Client, endpoint s
 	if auth.accountID != "" {
 		request.Header.Set("Chatgpt-Account-Id", auth.accountID)
 	}
-	response, err := client.Do(request)
+	response, err := doCredentialRequest(client, request)
 	if err != nil {
 		return nil, 0, fmt.Errorf("discover GPT models: %w", err)
 	}
@@ -67,15 +67,17 @@ func requestCodexModelInfos(ctx context.Context, client *http.Client, endpoint s
 	}
 	var catalog struct {
 		Models []struct {
-			Slug                  string                    `json:"slug"`
-			Visibility            string                    `json:"visibility"`
-			DisplayName           string                    `json:"display_name"`
-			ContextWindow         int                       `json:"context_window"`
-			MaxContextWindow      int                       `json:"max_context_window"`
-			MaxOutputTokens       int                       `json:"max_output_tokens"`
-			InputModalities       []string                  `json:"input_modalities"`
-			ReasoningLevels       []protocol.ReasoningLevel `json:"supported_reasoning_levels"`
-			DefaultReasoningLevel string                    `json:"default_reasoning_level"`
+			Slug                       string                    `json:"slug"`
+			Visibility                 string                    `json:"visibility"`
+			DisplayName                string                    `json:"display_name"`
+			ContextWindow              int                       `json:"context_window"`
+			MaxContextWindow           int                       `json:"max_context_window"`
+			MaxOutputTokens            int                       `json:"max_output_tokens"`
+			InputModalities            []string                  `json:"input_modalities"`
+			ReasoningLevels            []protocol.ReasoningLevel `json:"supported_reasoning_levels"`
+			DefaultReasoningLevel      string                    `json:"default_reasoning_level"`
+			SupportsParallelToolCalls  *bool                     `json:"supports_parallel_tool_calls"`
+			SupportsReasoningSummaries *bool                     `json:"supports_reasoning_summaries"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(body, &catalog); err != nil {
@@ -99,7 +101,9 @@ func requestCodexModelInfos(ctx context.Context, client *http.Client, endpoint s
 			ID: id, DisplayName: model.DisplayName, ContextWindow: window,
 			MaxOutputTokens: model.MaxOutputTokens, InputModalities: modalities,
 			ReasoningLevels: model.ReasoningLevels, DefaultReasoningLevel: model.DefaultReasoningLevel,
-			ReasoningKnown: model.ReasoningLevels != nil || strings.TrimSpace(model.DefaultReasoningLevel) != "",
+			ReasoningKnown:             model.ReasoningLevels != nil || strings.TrimSpace(model.DefaultReasoningLevel) != "",
+			SupportsParallelToolCalls:  model.SupportsParallelToolCalls,
+			SupportsReasoningSummaries: model.SupportsReasoningSummaries,
 		})
 	}
 	if len(models) == 0 {

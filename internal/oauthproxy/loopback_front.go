@@ -1,9 +1,11 @@
 package oauthproxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -37,6 +39,7 @@ func loopbackFrontMuxWithCompact(ctx context.Context, key string, models, respon
 		statefulCompact = withSharedResponsesHistory(key, cache, compact, false)
 	}
 	chat := chatCompletionsFront(key, responses)
+	singleModel := singleModelHandler(key, models)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
@@ -44,11 +47,107 @@ func loopbackFrontMuxWithCompact(ctx context.Context, key string, models, respon
 	})
 	for _, prefix := range []string{"/v1", ""} {
 		mux.HandleFunc(prefix+"/models", models)
+		mux.HandleFunc(prefix+"/models/{id...}", singleModel)
 		mux.HandleFunc(prefix+"/responses", statefulResponses)
 		mux.HandleFunc(prefix+"/responses/compact", statefulCompact)
 		mux.HandleFunc(prefix+"/chat/completions", chat)
 	}
 	return mux
+}
+
+type modelBufferWriter struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (w *modelBufferWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *modelBufferWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+}
+
+func (w *modelBufferWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.body.Write(p)
+}
+
+func singleModelHandler(key string, listHandler http.HandlerFunc) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		if !modelsRequestAllowed(writer, request, key) {
+			return
+		}
+		requestedID := strings.TrimSpace(request.PathValue("id"))
+		if requestedID == "" {
+			listHandler(writer, request)
+			return
+		}
+		listReq := request.Clone(request.Context())
+		listReq.URL.Path = "/v1/models"
+		rec := &modelBufferWriter{}
+		listHandler(rec, listReq)
+		status := rec.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		if status != http.StatusOK {
+			for k, vals := range rec.header {
+				for _, v := range vals {
+					writer.Header().Add(k, v)
+				}
+			}
+			writer.WriteHeader(status)
+			_, _ = writer.Write(rec.body.Bytes())
+			return
+		}
+		var payload struct {
+			Data []map[string]any `json:"data"`
+		}
+		if json.Unmarshal(rec.body.Bytes(), &payload) != nil {
+			writeProxyError(writer, http.StatusBadGateway, "api_error", "invalid model catalog response")
+			return
+		}
+		var ciMatch, bareMatch map[string]any
+		reqBare := stripContextModelSuffix(requestedID)
+		for _, entry := range payload.Data {
+			id, _ := entry["id"].(string)
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if id == requestedID {
+				writer.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(writer).Encode(entry)
+				return
+			}
+			if ciMatch == nil && strings.EqualFold(id, requestedID) {
+				ciMatch = entry
+			}
+			if bareMatch == nil && reqBare != "" && strings.EqualFold(stripContextModelSuffix(id), reqBare) {
+				bareMatch = entry
+			}
+		}
+		chosen := ciMatch
+		if chosen == nil {
+			chosen = bareMatch
+		}
+		if chosen != nil {
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(chosen)
+			return
+		}
+		writeProxyErrorDetail(writer, http.StatusNotFound, "invalid_request_error", "model_not_found", "model",
+			fmt.Sprintf("The model %q does not exist", requestedID))
+	}
 }
 
 // loopbackAuthorized checks the per-session key a client sends as a bearer
@@ -126,14 +225,27 @@ func serveModelListWithProvider(writer http.ResponseWriter, request *http.Reques
 	}
 	index, _ := modelsdev.CachedIndex()
 	data := make([]map[string]any, 0, len(models))
-	for _, model := range models {
+	seen := make(map[string]bool, len(models))
+	for _, rawModel := range models {
+		model := strings.TrimSpace(rawModel)
+		if model == "" {
+			continue
+		}
+		dedupKey := strings.ToLower(model)
+		if seen[dedupKey] {
+			continue
+		}
+		seen[dedupKey] = true
 		entry := modelListEntry(model)
-		info, hasDetail := lookupModelDetail(details, model)
-		target := strings.TrimSpace(model)
+		target := model
 		if routes != nil {
-			if routed := strings.TrimSpace(routes[strings.ToLower(target)]); routed != "" {
+			if routed := strings.TrimSpace(routes[dedupKey]); routed != "" {
 				target = routed
 			}
+		}
+		info, hasDetail := lookupModelDetail(details, model)
+		if !hasDetail && !strings.EqualFold(target, model) {
+			info, hasDetail = lookupModelDetail(details, target)
 		}
 		displayName := strings.TrimSpace(info.DisplayName)
 		if hasDetail {
@@ -149,6 +261,12 @@ func serveModelListWithProvider(writer http.ResponseWriter, request *http.Reques
 			}
 			if len(info.InputModalities) > 0 {
 				entry["input_modalities"] = append([]string(nil), info.InputModalities...)
+			}
+			if info.SupportsParallelToolCalls != nil {
+				entry["supports_parallel_tool_calls"] = *info.SupportsParallelToolCalls
+			}
+			if info.SupportsReasoningSummaries != nil {
+				entry["supports_reasoning_summaries"] = *info.SupportsReasoningSummaries
 			}
 		}
 		if index != nil {
@@ -174,15 +292,7 @@ func serveModelListWithProvider(writer http.ResponseWriter, request *http.Reques
 }
 
 func hasGeminiEffortSuffix(lower string) bool {
-	if !strings.HasPrefix(lower, "gemini-") {
-		return false
-	}
-	for _, level := range []string{"-minimal", "-low", "-medium", "-high"} {
-		if strings.HasSuffix(lower, level) {
-			return true
-		}
-	}
-	return false
+	return protocol.HasGeminiEffortSuffix(lower)
 }
 
 func resolveFallbackModelReasoning(index *modelsdev.Index, providerID, target, displayOrAlias string) ([]protocol.ReasoningLevel, string, bool) {

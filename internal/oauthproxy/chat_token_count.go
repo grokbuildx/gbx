@@ -24,7 +24,7 @@ func countChatInputTokens(model string, body []byte) (int, string) {
 	var err error
 	estimator := "bytes_over_2_fallback"
 	switch {
-	case strings.HasPrefix(model, "gpt-5"), strings.HasPrefix(model, "gpt-4o"), strings.HasPrefix(model, "chatgpt-4o"), strings.HasPrefix(model, "gpt-4.1"), strings.HasPrefix(model, "gpt-4.5"), strings.HasPrefix(model, "o1"), strings.HasPrefix(model, "o3"), strings.HasPrefix(model, "o4"):
+	case strings.HasPrefix(model, "gpt-6"), strings.HasPrefix(model, "gpt-5"), strings.HasPrefix(model, "gpt-4o"), strings.HasPrefix(model, "chatgpt-4o"), strings.HasPrefix(model, "gpt-4.1"), strings.HasPrefix(model, "gpt-4.5"), strings.HasPrefix(model, "o1"), strings.HasPrefix(model, "o3"), strings.HasPrefix(model, "o4"):
 		count, err = countCodexResponsesInputTokens(body)
 		estimator = "o200k_base"
 	case strings.HasPrefix(model, "gpt-4"), strings.HasPrefix(model, "gpt-3.5"):

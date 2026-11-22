@@ -699,6 +699,39 @@ type workbuddyModel struct {
 	SupportsImages    bool   `json:"supportsImages"`
 	SupportsToolCall  bool   `json:"supportsToolCall"`
 	SupportsReasoning bool   `json:"supportsReasoning"`
+	supportsImagesSet bool
+}
+
+func (m *workbuddyModel) UnmarshalJSON(data []byte) error {
+	type wire struct {
+		ID                string `json:"id"`
+		Name              string `json:"name"`
+		Credits           any    `json:"credits"`
+		MaxAllowedSize    int64  `json:"maxAllowedSize"`
+		MaxOutputTokens   int64  `json:"maxOutputTokens"`
+		SupportsImages    *bool  `json:"supportsImages"`
+		SupportsToolCall  bool   `json:"supportsToolCall"`
+		SupportsReasoning bool   `json:"supportsReasoning"`
+	}
+	var decoded wire
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	m.ID = decoded.ID
+	m.Name = decoded.Name
+	m.Credits = decoded.Credits
+	m.MaxAllowedSize = decoded.MaxAllowedSize
+	m.MaxOutputTokens = decoded.MaxOutputTokens
+	m.SupportsToolCall = decoded.SupportsToolCall
+	m.SupportsReasoning = decoded.SupportsReasoning
+	if decoded.SupportsImages != nil {
+		m.SupportsImages = *decoded.SupportsImages
+		m.supportsImagesSet = true
+	} else {
+		m.SupportsImages = false
+		m.supportsImagesSet = false
+	}
+	return nil
 }
 
 type workbuddyProductConfig struct {
@@ -794,6 +827,8 @@ func buildWorkBuddyRoutes(modelSpec string, catalog []workbuddyModel) ([]runtime
 		}
 		if model.SupportsImages {
 			info.InputModalities = []string{"text", "image"}
+		} else if model.supportsImagesSet {
+			info.InputModalities = []string{"text"}
 		}
 		if multiplier := workbuddyCreditMultiplier(model.Credits); multiplier != nil {
 			info.RateMultiplier = multiplier
@@ -923,6 +958,7 @@ func startWorkBuddyOAuth(parent context.Context, providerName, modelSpec, creden
 	routes, models, names, details := buildWorkBuddyRoutes(modelSpec, catalog)
 	enrichWorkBuddyModelDetails(details)
 	proxyRuntime, err := startOpenAIChatRuntimeService(parent, deployment.baseURL, routes, nil, func(service *chatCompletionsService) {
+		service.models = append([]string(nil), models...)
 		service.normalizeBody = sanitizeWorkBuddyPayload
 		service.modelDetails = details
 		service.modelsDevProvider = "workbuddy"

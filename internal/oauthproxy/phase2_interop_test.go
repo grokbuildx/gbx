@@ -726,38 +726,37 @@ func TestPhase2MixedCaseModelDetailsLookup(t *testing.T) {
 		},
 	}
 
-	modelsToServe := []string{"Gemini-4-Argon", "gemini-4-argon"}
-	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	req.Header.Set("Authorization", "Bearer test-key")
-	rec := httptest.NewRecorder()
-	serveModelListWithDetails(rec, req, "test-key", modelsToServe, details)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /v1/models status = %d: %s", rec.Code, rec.Body.String())
-	}
+	for _, modelID := range []string{"Gemini-4-Argon", "gemini-4-argon"} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		rec := httptest.NewRecorder()
+		serveModelListWithDetails(rec, req, "test-key", []string{modelID}, details)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /v1/models (%s) status = %d: %s", modelID, rec.Code, rec.Body.String())
+		}
 
-	raw := rec.Body.Bytes()
-	if gjson.GetBytes(raw, "data.#").Int() != 2 {
-		t.Fatalf("expected 2 model entries, got %s", raw)
-	}
-	for i := range 2 {
-		prefix := fmt.Sprintf("data.%d", i)
+		raw := rec.Body.Bytes()
+		if gjson.GetBytes(raw, "data.#").Int() != 1 {
+			t.Fatalf("expected 1 model entry for %s, got %s", modelID, raw)
+		}
+		prefix := "data.0"
 		if got := gjson.GetBytes(raw, prefix+".api_backend").String(); got != "responses" {
-			t.Fatalf("entry %d api_backend = %q, want responses (%s)", i, got, raw)
+			t.Fatalf("%s api_backend = %q, want responses (%s)", modelID, got, raw)
 		}
 		if got := gjson.GetBytes(raw, prefix+".display_name").String(); got != "Gemini 4 Argon" {
-			t.Fatalf("entry %d display_name = %q, want Gemini 4 Argon (%s)", i, got, raw)
+			t.Fatalf("%s display_name = %q, want Gemini 4 Argon (%s)", modelID, got, raw)
 		}
 		if got := gjson.GetBytes(raw, prefix+".context_window").Int(); got != 1_048_576 {
-			t.Fatalf("entry %d context_window = %d, want 1048576 (%s)", i, got, raw)
+			t.Fatalf("%s context_window = %d, want 1048576 (%s)", modelID, got, raw)
 		}
 		if got := gjson.GetBytes(raw, prefix+".max_input_tokens").Int(); got != 1_048_576 {
-			t.Fatalf("entry %d max_input_tokens = %d, want 1048576 (%s)", i, got, raw)
+			t.Fatalf("%s max_input_tokens = %d, want 1048576 (%s)", modelID, got, raw)
 		}
 		if got := gjson.GetBytes(raw, prefix+".max_output_tokens").Int(); got != 65_536 {
-			t.Fatalf("entry %d max_output_tokens = %d, want 65536 (%s)", i, got, raw)
+			t.Fatalf("%s max_output_tokens = %d, want 65536 (%s)", modelID, got, raw)
 		}
 		if got := gjson.GetBytes(raw, prefix+".input_modalities").Raw; got != `["text","image"]` {
-			t.Fatalf("entry %d input_modalities = %s, want [\"text\",\"image\"] (%s)", i, got, raw)
+			t.Fatalf("%s input_modalities = %s, want [\"text\",\"image\"] (%s)", modelID, got, raw)
 		}
 	}
 }

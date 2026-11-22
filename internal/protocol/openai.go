@@ -30,7 +30,9 @@ type ModelInfo struct {
 	DefaultReasoningLevel string
 	// ReasoningKnown distinguishes an authoritative empty effort list from
 	// missing metadata, so compatibility defaults do not invent controls.
-	ReasoningKnown bool
+	ReasoningKnown             bool
+	SupportsParallelToolCalls  *bool
+	SupportsReasoningSummaries *bool
 }
 
 // ModelResponse is the OpenAI-compatible /models list payload.

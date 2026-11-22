@@ -21,16 +21,28 @@ import (
 	"github.com/grokbuildx/gbx/internal/providersession"
 )
 
+const fallbackDiscoveryInterval = 5 * time.Minute
+
 type catalogRefresh struct {
 	configStamp     string
 	initialized     bool
 	providers       []provider.Provider
 	runtimeHash     string
+	fallbackCatalog bool
 	lastDiscovery   time.Time
 	lastFailedStamp string
 	retryAfter      time.Time
 	failCount       int
 	done            <-chan struct{}
+}
+
+func hasFallbackBinding(bindings []codex.RuntimeBinding) bool {
+	for _, b := range bindings {
+		if b.Provider.OAuthProvider != "" && b.Runtime != nil && (b.Runtime.ModelCatalogIsFallback() || b.Runtime.ModelCatalogIsStale()) {
+			return true
+		}
+	}
+	return false
 }
 
 type reloadRequest struct {
@@ -82,6 +94,14 @@ func providersHash(providers []provider.Provider) string {
 	return providerHash(provider.Provider{Model: key.String()})
 }
 
+func stripOneMMarkersCSV(spec string) string {
+	parts := strings.Split(spec, ",")
+	for i, part := range parts {
+		parts[i] = provider.StripContextSuffix(strings.TrimSpace(part))
+	}
+	return strings.Join(parts, ",")
+}
+
 func runtimeProvidersHash(providers []provider.Provider) string {
 	runtimeProviders := make([]provider.Provider, len(providers))
 	for i, p := range providers {
@@ -92,7 +112,14 @@ func runtimeProvidersHash(providers []provider.Provider) string {
 		for _, key := range provider.ManagedContextEnvKeys() {
 			delete(p.Env, key)
 		}
-		p.Model = strings.ReplaceAll(p.Model, "[1m]", "")
+		// OAuth runtimes publish bare model IDs from upstream discovery, so
+		// toggling [1m] only changes context metadata. API-key runtimes derive
+		// their route slugs directly from Provider.Model, so keep [1m] in the
+		// runtime hash to rebuild and drop stale slugs when toggled.
+		if strings.TrimSpace(p.OAuthProvider) != "" {
+			p.Model = stripOneMMarkersCSV(p.Model)
+			p.DefaultModel = provider.StripContextSuffix(strings.TrimSpace(p.DefaultModel))
+		}
 		if len(p.Env) == 0 {
 			p.Env = nil
 		}
@@ -136,6 +163,9 @@ func (r *catalogRefresh) update(ctx context.Context, m *Manager, gateway *codex.
 			discoveryDue = true
 			break
 		}
+	}
+	if !discoveryDue && r.fallbackCatalog && !r.lastDiscovery.IsZero() && time.Since(r.lastDiscovery) >= fallbackDiscoveryInterval {
+		discoveryDue = true
 	}
 	if !force && r.initialized && stamp == r.configStamp && metadataStamp == state.MetadataStamp && !discoveryDue {
 		return nil
@@ -268,6 +298,7 @@ func (r *catalogRefresh) update(ctx context.Context, m *Manager, gateway *codex.
 		}
 		r.done = done
 		r.runtimeHash = nextRuntimeHash
+		r.fallbackCatalog = hasFallbackBinding(bindings)
 		r.lastDiscovery = time.Now()
 	} else {
 		if err := gateway.RefreshProvidersMetadata(latest, func(models []codex.Model) error { return persist(models, false) }); err != nil {

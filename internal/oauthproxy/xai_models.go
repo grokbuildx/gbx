@@ -254,7 +254,10 @@ func addXaiDisplayAliases(service *codexResponsesService, models []xaiModel) {
 	for _, model := range models {
 		id, name := strings.TrimSpace(model.ID), strings.TrimSpace(model.Name)
 		if id != "" && name != "" {
-			service.modelRoute[strings.ToLower(name)] = id
+			key := strings.ToLower(name)
+			if _, exists := service.modelRoute[key]; !exists {
+				service.modelRoute[key] = id
+			}
 		}
 	}
 }

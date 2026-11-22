@@ -80,7 +80,13 @@ func newAnthropicMessagesService(apiKey, endpoint string, routes []runtimeModelR
 
 // messagesURL is the Messages endpoint for a client model.
 func (s *anthropicMessagesService) messagesURL(clientModel string) string {
-	base := s.modelEndpoint[strings.ToLower(clientModel)]
+	trimmed := strings.ToLower(strings.TrimSpace(clientModel))
+	base := s.modelEndpoint[trimmed]
+	if base == "" {
+		if bare := strings.ToLower(stripContextModelSuffix(trimmed)); bare != "" && bare != trimmed {
+			base = s.modelEndpoint[bare]
+		}
+	}
 	if base == "" {
 		base = s.endpoint
 	}

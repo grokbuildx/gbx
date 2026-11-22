@@ -20,6 +20,10 @@ func withModelsDevReasoning(models []string, details map[string]protocol.ModelIn
 }
 
 func withModelsDevMetadata(models []string, details map[string]protocol.ModelInfo, names map[string]string, configured provider.Provider, includeReasoning bool) (map[string]protocol.ModelInfo, error) {
+	return withModelsDevMetadataPerModel(models, details, names, configured, func(string) bool { return includeReasoning })
+}
+
+func withModelsDevMetadataPerModel(models []string, details map[string]protocol.ModelInfo, names map[string]string, configured provider.Provider, includeReasoningFor func(model string) bool) (map[string]protocol.ModelInfo, error) {
 	index, err := modelsdev.CachedIndex()
 	if err != nil {
 		// Metadata is optional. A first offline setup must not block model use.
@@ -48,10 +52,18 @@ func withModelsDevMetadata(models []string, details map[string]protocol.ModelInf
 				modified = true
 			}
 		}
+		includeReasoning := includeReasoningFor == nil || includeReasoningFor(id)
 		if !includeReasoning || info.ReasoningKnown {
 			if modified {
 				details[key] = info
 			}
+			continue
+		}
+		if protocol.HasGeminiEffortSuffix(id) {
+			info.ReasoningKnown = true
+			info.ReasoningLevels = nil
+			info.DefaultReasoningLevel = ""
+			details[key] = info
 			continue
 		}
 		efforts, found := index.Efforts(providerID, id, name)

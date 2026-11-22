@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	kiroModelsCacheTTL   = time.Hour
-	kiroModelsAPIVersion = "0.9.2"
+	kiroModelsCacheTTL            = time.Hour
+	kiroModelsStaleFailureBackoff = time.Minute
+	kiroModelsAPIVersion          = "0.9.2"
 )
 
 var kiroAvailableModelsEndpoint = func(region string) string {
@@ -73,8 +74,9 @@ type kiroPortalModelsRequest struct {
 }
 
 type kiroModelCacheEntry struct {
-	models    []kiroAvailableModel
-	fetchedAt time.Time
+	models     []kiroAvailableModel
+	fetchedAt  time.Time
+	retryAfter time.Time
 }
 
 // kiroModelFetch is one in-flight discovery call. Concurrent requests for the
@@ -118,12 +120,24 @@ func (c *kiroModelCatalog) cached(path string) (kiroModelCacheEntry, bool) {
 }
 
 func (c *kiroModelCatalog) store(path string, models []kiroAvailableModel, fetchedAt time.Time) {
+	if len(models) == 0 {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.cache == nil {
 		c.cache = make(map[string]kiroModelCacheEntry)
 	}
 	c.cache[path] = kiroModelCacheEntry{models: models, fetchedAt: fetchedAt}
+}
+
+func (c *kiroModelCatalog) markStaleFailure(path string, until time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.cache[path]; ok {
+		entry.retryAfter = until
+		c.cache[path] = entry
+	}
 }
 
 // retain evicts cached catalogs for credentials that are no longer selected, so
@@ -209,7 +223,7 @@ func (s *kiroService) availableModels(ctx context.Context) ([]kiroAvailableModel
 	for _, candidate := range credentials {
 		live[candidate.path] = struct{}{}
 		cached, hasCache := catalog.cached(candidate.path)
-		if hasCache && now.Sub(cached.fetchedAt) < catalog.ttl {
+		if hasCache && (now.Sub(cached.fetchedAt) < catalog.ttl || now.Before(cached.retryAfter)) {
 			mergeKiroAvailableModels(merged, cached.models)
 			successes++
 			continue
@@ -247,6 +261,7 @@ func (s *kiroService) availableModels(ctx context.Context) ([]kiroAvailableModel
 		result := <-results
 		if result.err != nil {
 			if result.pending.hasCache {
+				catalog.markStaleFailure(result.pending.credential.path, time.Now().Add(kiroModelsStaleFailureBackoff))
 				mergeKiroAvailableModels(merged, result.pending.cached.models)
 				successes++
 				LogWarnf("kiro model discovery uses stale cache credential=%q error=%v", result.pending.credential.fileName, result.err)
@@ -384,6 +399,10 @@ func (c *kiroModelCatalog) fetchCredentialModelsWithToken(ctx context.Context, s
 		if err == nil {
 			LogInfof("kiro web portal model discovery credential=%q model_count=%d", credential.fileName, len(models))
 			return models, nil
+		}
+		var upstreamErr *kiroUpstreamError
+		if errors.As(err, &upstreamErr) && upstreamErr.status == http.StatusUnauthorized {
+			return nil, err
 		}
 		LogWarnf("kiro web portal model discovery fallback credential=%q error=%v", credential.fileName, err)
 	}
@@ -538,6 +557,9 @@ func (c *kiroModelCatalog) requestPortalModels(ctx context.Context, service *kir
 	if err := codec.NewDecoderBytes(raw, kiroCBORHandle).Decode(&decoded); err != nil {
 		return nil, fmt.Errorf("decode Kiro Web Portal ListAvailableModels response: %w", err)
 	}
+	if len(decoded.Models) == 0 {
+		return nil, fmt.Errorf("Kiro Web Portal ListAvailableModels returned no models")
+	}
 	return decoded.Models, nil
 }
 
@@ -651,6 +673,9 @@ func (c *kiroModelCatalog) requestAvailableModels(ctx context.Context, service *
 	var decoded kiroAvailableModelsResponse
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		return nil, fmt.Errorf("decode Kiro ListAvailableModels response: %w", err)
+	}
+	if len(decoded.Models) == 0 {
+		return nil, fmt.Errorf("Kiro ListAvailableModels returned no models")
 	}
 	return decoded.Models, nil
 }

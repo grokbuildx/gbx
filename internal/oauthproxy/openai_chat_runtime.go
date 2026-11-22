@@ -503,7 +503,14 @@ func (s *chatCompletionsService) convertRequest(raw []byte) (*chatCompletionsCon
 	if err != nil {
 		return nil, err
 	}
-	if route := s.modelRoute[strings.ToLower(converted.clientModel)]; route != "" {
+	trimmedClient := strings.ToLower(strings.TrimSpace(converted.clientModel))
+	route := s.modelRoute[trimmedClient]
+	if route == "" {
+		if bare := strings.ToLower(stripContextModelSuffix(trimmedClient)); bare != "" && bare != trimmedClient {
+			route = s.modelRoute[bare]
+		}
+	}
+	if route != "" {
 		if s.normalizeModel != nil {
 			route = s.normalizeModel(route)
 		}
@@ -540,8 +547,17 @@ func (s *chatCompletionsService) convertRequest(raw []byte) (*chatCompletionsCon
 		}
 	}
 	if s.normalizeRequest != nil {
+		prevModel := converted.model
 		if err := s.normalizeRequest(converted); err != nil {
 			return nil, err
+		}
+		if !strings.EqualFold(strings.TrimSpace(prevModel), strings.TrimSpace(converted.model)) {
+			if err := s.clampChatMaxTokens(converted); err != nil {
+				return nil, err
+			}
+			if err := s.normalizeChatReasoning(converted); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return converted, nil

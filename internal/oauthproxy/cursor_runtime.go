@@ -1400,10 +1400,11 @@ func cursorEffectiveModels(modelSpec string, discovered []string) (models []stri
 		seen := make(map[string]bool, len(aliases)+len(discovered))
 		for _, model := range append(append([]string(nil), aliases...), discovered...) {
 			id := strings.TrimSpace(model)
-			if id == "" || seen[id] {
+			key := strings.ToLower(id)
+			if id == "" || seen[key] {
 				continue
 			}
-			seen[id] = true
+			seen[key] = true
 			models = append(models, id)
 		}
 		return models, false

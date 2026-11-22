@@ -134,7 +134,7 @@ func startCodexResponsesAPIWithProvider(parent context.Context, endpoint, upstre
 		func(apiKey, endpoint string, routes []runtimeModelRoute, auth codexResponsesAuthorizer, usage *UsageTracker) *codexResponsesService {
 			service := newCodexResponsesService(apiKey, endpoint, routes, auth, usage)
 			service.modelsDevProvider = strings.TrimSpace(providerID)
-			if strings.EqualFold(service.modelsDevProvider, "xai") {
+			if service.isXaiBackend() {
 				service.flattenTools = true
 			}
 			return service
@@ -355,9 +355,9 @@ func (s *codexResponsesService) serveConverted(writer http.ResponseWriter, reque
 	requestCtx = withClientSession(requestCtx, request)
 	started := time.Now()
 	clientModel := codexResponsesModel(raw)
-	route, ok := s.modelRoute[strings.ToLower(strings.TrimSpace(clientModel))]
+	route, ok := s.resolveModelRoute(clientModel)
 	if !ok && clientModel != "" {
-		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", "model is not in the provider catalog")
+		writeProxyErrorDetail(writer, http.StatusNotFound, "invalid_request_error", "model_not_found", "model", "model is not in the provider catalog")
 		return
 	}
 	scope := s.reasoningScope(firstNonEmptyString(route, clientModel))
@@ -369,9 +369,9 @@ func (s *codexResponsesService) serveConverted(writer http.ResponseWriter, reque
 		return
 	}
 	if !ok {
-		route, ok = s.modelRoute[strings.ToLower(strings.TrimSpace(converted.clientModel))]
+		route, ok = s.resolveModelRoute(converted.clientModel)
 		if !ok {
-			writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", "model is not in the provider catalog")
+			writeProxyErrorDetail(writer, http.StatusNotFound, "invalid_request_error", "model_not_found", "model", "model is not in the provider catalog")
 			return
 		}
 		scope = s.reasoningScope(route)
@@ -434,8 +434,24 @@ func (s *codexResponsesService) serveConverted(writer http.ResponseWriter, reque
 		"model", converted.model, "status", http.StatusOK, "stream", converted.stream, "duration", logDuration(started))
 }
 
+func (s *codexResponsesService) resolveModelRoute(model string) (string, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(model))
+	if trimmed == "" {
+		return "", false
+	}
+	if route, ok := s.modelRoute[trimmed]; ok && route != "" {
+		return route, true
+	}
+	if bare := strings.ToLower(stripContextModelSuffix(trimmed)); bare != "" && bare != trimmed {
+		if route, ok := s.modelRoute[bare]; ok && route != "" {
+			return route, true
+		}
+	}
+	return "", false
+}
+
 func (s *codexResponsesService) isXaiBackend() bool {
-	return s.xai || strings.EqualFold(strings.TrimSpace(s.modelsDevProvider), "xai")
+	return s.xai || strings.EqualFold(strings.TrimSpace(s.modelsDevProvider), "xai") || IsOfficialXaiEndpoint(s.endpoint)
 }
 
 func (s *codexResponsesService) reasoningScope(model string) string {
@@ -1011,9 +1027,9 @@ func normalizePassthroughImagePart(part map[string]any) {
 func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, request *http.Request, payload map[string]any, compact bool) {
 	started := time.Now()
 	model, _ := payload["model"].(string)
-	resolved, ok := s.modelRoute[strings.ToLower(strings.TrimSpace(model))]
+	resolved, ok := s.resolveModelRoute(model)
 	if !ok {
-		writeProxyError(writer, 400, "invalid_request_error", "model is not in the provider catalog")
+		writeProxyErrorDetail(writer, http.StatusNotFound, "invalid_request_error", "model_not_found", "model", "model is not in the provider catalog")
 		return
 	}
 	payload["model"] = resolved

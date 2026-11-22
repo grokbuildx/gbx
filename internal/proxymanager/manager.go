@@ -508,7 +508,7 @@ func (m *Manager) Run(ctx context.Context, p provider.Provider, id string) (runE
 	defer stopMenuBar()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	refresh := catalogRefresh{providers: providers, runtimeHash: runtimeProvidersHash(providers), lastDiscovery: time.Now(), done: runtimeDone}
+	refresh := catalogRefresh{providers: providers, runtimeHash: runtimeProvidersHash(providers), fallbackCatalog: hasFallbackBinding(bindings), lastDiscovery: time.Now(), done: runtimeDone}
 	for {
 		select {
 		case <-ticker.C:
