@@ -50,12 +50,13 @@ type assemblerBlock struct {
 	// Data is reasoning the upstream returned only in encrypted form.
 	Data string
 	// ID, Name and Arguments describe a tool call.
-	ID         string
-	Name       string
-	Arguments  string
-	spec       toolSpec
-	closed     bool
-	incomplete bool
+	ID          string
+	Name        string
+	Arguments   string
+	Annotations []map[string]any
+	spec        toolSpec
+	closed      bool
+	incomplete  bool
 }
 
 type assemblerToolAccumulator struct {
@@ -275,8 +276,19 @@ func (a *responseAssembler) item(index int, complete bool) map[string]any {
 			"content": []any{map[string]any{"type": "refusal", "refusal": a.blockContent(index)}}}
 	default:
 		return map[string]any{"id": block.ItemID, "type": "message", "role": "assistant", "status": status,
-			"content": []any{map[string]any{"type": "output_text", "text": a.blockContent(index), "annotations": []any{}}}}
+			"content": []any{map[string]any{"type": "output_text", "text": a.blockContent(index), "annotations": assemblerAnnotationsSlice(block.Annotations)}}}
 	}
+}
+
+func assemblerAnnotationsSlice(annotations []map[string]any) []any {
+	if len(annotations) == 0 {
+		return []any{}
+	}
+	out := make([]any, len(annotations))
+	for i, ann := range annotations {
+		out[i] = ann
+	}
+	return out
 }
 
 func (a *responseAssembler) outputItems() []map[string]any {
@@ -477,6 +489,36 @@ func (a *responseAssembler) addText(text string) error {
 	a.recordEstimatedOutput(text)
 	return a.emit("response.output_text.delta", map[string]any{
 		"item_id": a.blocks[index].ItemID, "output_index": index, "content_index": 0, "delta": text,
+	})
+}
+
+func (a *responseAssembler) addAnnotation(annotation map[string]any) error {
+	if len(annotation) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(annotation)
+	if err != nil || len(encoded) == 0 {
+		return nil
+	}
+	if err := a.retain(len(encoded)); err != nil {
+		return err
+	}
+	index, err := a.ensureBlock(blockText)
+	if err != nil {
+		return err
+	}
+	cloned := make(map[string]any, len(annotation))
+	for k, v := range annotation {
+		cloned[k] = v
+	}
+	annIdx := len(a.blocks[index].Annotations)
+	a.blocks[index].Annotations = append(a.blocks[index].Annotations, cloned)
+	return a.emit("response.output_text.annotation.added", map[string]any{
+		"item_id":          a.blocks[index].ItemID,
+		"output_index":     index,
+		"content_index":    0,
+		"annotation_index": annIdx,
+		"annotation":       cloned,
 	})
 }
 
@@ -786,7 +828,7 @@ func (a *responseAssembler) closeActiveWithIncomplete(incomplete bool) error {
 		}
 		if err := a.emit("response.content_part.done", map[string]any{
 			"item_id": block.ItemID, "output_index": index, "content_index": 0,
-			"part": map[string]any{"type": "output_text", "text": content, "annotations": []any{}}}); err != nil {
+			"part": map[string]any{"type": "output_text", "text": content, "annotations": assemblerAnnotationsSlice(block.Annotations)}}); err != nil {
 			return err
 		}
 	}

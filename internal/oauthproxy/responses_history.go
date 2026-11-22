@@ -16,6 +16,8 @@ const (
 	responsesHistoryMaxEntries   = 64
 	responsesHistoryMaxTotalSize = 64 << 20
 	responsesHistoryMaxEntrySize = 16 << 20
+	responsesHistoryMaxItems     = 1024
+	responsesHistoryMaxItemSize  = 16 << 20
 	responsesHistoryMaxPeekBytes = int64(128 << 20)
 	responsesHistoryTTL          = 30 * time.Minute
 )
@@ -27,19 +29,24 @@ type responsesHistoryEntry struct {
 }
 
 // responsesHistoryCache stores recent Responses turns in memory per loopback
-// runtime so clients using stateful `previous_response_id` (such as Grok Build
-// or OpenAI Responses SDKs) work seamlessly against stateless or converted
-// providers without persisting conversation state upstream (`store=false`).
+// runtime so clients using stateful `previous_response_id` or `item_reference`
+// (such as Grok Build or OpenAI Responses SDKs) work seamlessly against
+// stateless or converted providers without persisting conversation state
+// upstream (`store=false`).
 type responsesHistoryCache struct {
-	mu        sync.Mutex
-	entries   map[string]responsesHistoryEntry
-	order     []string
-	totalSize int
+	mu            sync.Mutex
+	entries       map[string]responsesHistoryEntry
+	order         []string
+	totalSize     int
+	items         map[string]responsesHistoryEntry
+	itemOrder     []string
+	itemTotalSize int
 }
 
 func newResponsesHistoryCache() *responsesHistoryCache {
 	return &responsesHistoryCache{
 		entries: make(map[string]responsesHistoryEntry),
+		items:   make(map[string]responsesHistoryEntry),
 	}
 }
 
@@ -76,6 +83,67 @@ func (c *responsesHistoryCache) put(id string, items []any, now time.Time) {
 	}
 	c.order = append(c.order, id)
 	c.totalSize += len(encoded)
+	c.indexItemsLocked(items, now)
+}
+
+func (c *responsesHistoryCache) indexItemsLocked(items []any, now time.Time) {
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		itemID := strings.TrimSpace(stringValue(item["id"]))
+		if itemID == "" {
+			continue
+		}
+		encoded, err := json.Marshal(item)
+		if err != nil || len(encoded) == 0 || len(encoded) > responsesHistoryMaxEntrySize {
+			continue
+		}
+		if existing, ok := c.items[itemID]; ok {
+			c.itemTotalSize -= len(existing.itemsJSON)
+			c.removeItemOrderLocked(itemID)
+		}
+		for (len(c.itemOrder) >= responsesHistoryMaxItems || c.itemTotalSize+len(encoded) > responsesHistoryMaxItemSize) && len(c.itemOrder) > 0 {
+			oldest := c.itemOrder[0]
+			c.itemOrder = c.itemOrder[1:]
+			if victim, ok := c.items[oldest]; ok {
+				c.itemTotalSize -= len(victim.itemsJSON)
+				delete(c.items, oldest)
+			}
+		}
+		c.items[itemID] = responsesHistoryEntry{
+			id:        itemID,
+			itemsJSON: encoded,
+			expiresAt: now.Add(responsesHistoryTTL),
+		}
+		c.itemOrder = append(c.itemOrder, itemID)
+		c.itemTotalSize += len(encoded)
+	}
+}
+
+func (c *responsesHistoryCache) getItem(id string, now time.Time) (map[string]any, bool) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneLocked(now)
+	entry, ok := c.items[id]
+	if !ok {
+		return nil, false
+	}
+	entry.expiresAt = now.Add(responsesHistoryTTL)
+	c.items[id] = entry
+	c.removeItemOrderLocked(id)
+	c.itemOrder = append(c.itemOrder, id)
+
+	var item map[string]any
+	if err := decodeProtocolJSON(entry.itemsJSON, &item); err != nil || item == nil {
+		return nil, false
+	}
+	return item, true
 }
 
 func marshalBoundedResponsesHistory(items []any, limit int) ([]byte, bool) {
@@ -113,6 +181,32 @@ func isResponsesHistoryImageMap(m map[string]any) bool {
 	return false
 }
 
+func isResponsesHistoryFileMap(m map[string]any) bool {
+	kind := strings.ToLower(strings.TrimSpace(stringValue(m["type"])))
+	if kind == "input_file" || kind == "file" {
+		if strings.TrimSpace(stringValue(m["file_data"])) != "" {
+			return true
+		}
+		if nested, ok := m["file"].(map[string]any); ok && strings.TrimSpace(stringValue(nested["file_data"])) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func isResponsesHistoryAudioMap(m map[string]any) bool {
+	kind := strings.ToLower(strings.TrimSpace(stringValue(m["type"])))
+	if kind == "input_audio" {
+		if strings.TrimSpace(stringValue(m["data"])) != "" {
+			return true
+		}
+		if nested, ok := m["input_audio"].(map[string]any); ok && strings.TrimSpace(stringValue(nested["data"])) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func isResponsesHistoryInlineImageString(value string) bool {
 	trimmed := strings.ToLower(strings.TrimSpace(value))
 	return strings.HasPrefix(trimmed, "data:image/") || strings.HasPrefix(trimmed, "data:;base64,")
@@ -132,7 +226,7 @@ func countResponsesHistoryImages(value any) int {
 		}
 		return n
 	case map[string]any:
-		if isResponsesHistoryImageMap(v) {
+		if isResponsesHistoryImageMap(v) || isResponsesHistoryFileMap(v) || isResponsesHistoryAudioMap(v) {
 			return 1
 		}
 		n := 0
@@ -244,6 +338,14 @@ func pruneResponsesHistoryValue(value any, dropped *int, dropLimit int) any {
 			*dropped++
 			return map[string]any{"type": "input_text", "text": "[historical screenshot omitted]"}
 		}
+		if isResponsesHistoryFileMap(v) {
+			*dropped++
+			return map[string]any{"type": "input_text", "text": "[file omitted]"}
+		}
+		if isResponsesHistoryAudioMap(v) {
+			*dropped++
+			return map[string]any{"type": "input_text", "text": "[audio omitted]"}
+		}
 		out := make(map[string]any, len(v))
 		changed := false
 		for k, elem := range v {
@@ -288,23 +390,38 @@ func (c *responsesHistoryCache) get(id string, now time.Time) ([]any, bool) {
 }
 
 func (c *responsesHistoryCache) pruneLocked(now time.Time) {
-	if len(c.order) == 0 {
-		return
-	}
-	kept := c.order[:0]
-	for _, id := range c.order {
-		entry, ok := c.entries[id]
-		if !ok {
-			continue
+	if len(c.order) > 0 {
+		kept := c.order[:0]
+		for _, id := range c.order {
+			entry, ok := c.entries[id]
+			if !ok {
+				continue
+			}
+			if now.After(entry.expiresAt) {
+				c.totalSize -= len(entry.itemsJSON)
+				delete(c.entries, id)
+				continue
+			}
+			kept = append(kept, id)
 		}
-		if now.After(entry.expiresAt) {
-			c.totalSize -= len(entry.itemsJSON)
-			delete(c.entries, id)
-			continue
-		}
-		kept = append(kept, id)
+		c.order = kept
 	}
-	c.order = kept
+	if len(c.itemOrder) > 0 {
+		kept := c.itemOrder[:0]
+		for _, id := range c.itemOrder {
+			entry, ok := c.items[id]
+			if !ok {
+				continue
+			}
+			if now.After(entry.expiresAt) {
+				c.itemTotalSize -= len(entry.itemsJSON)
+				delete(c.items, id)
+				continue
+			}
+			kept = append(kept, id)
+		}
+		c.itemOrder = kept
+	}
 }
 
 func (c *responsesHistoryCache) removeOrderLocked(target string) {
@@ -316,8 +433,110 @@ func (c *responsesHistoryCache) removeOrderLocked(target string) {
 	}
 }
 
+func (c *responsesHistoryCache) removeItemOrderLocked(target string) {
+	for i, id := range c.itemOrder {
+		if id == target {
+			c.itemOrder = append(c.itemOrder[:i], c.itemOrder[i+1:]...)
+			return
+		}
+	}
+}
+
+type statefulExpandError struct {
+	code    string
+	param   string
+	message string
+}
+
+func expandResponsesStatefulRequest(cache *responsesHistoryCache, raw []byte, now time.Time) ([]byte, *statefulExpandError) {
+	prev := gjson.GetBytes(raw, "previous_response_id")
+	hasPrev := prev.Exists() && prev.Type != gjson.Null
+	hasItemRef := bytes.Contains(raw, []byte(`"item_reference"`))
+	if !hasPrev && !hasItemRef {
+		return raw, nil
+	}
+	var payload map[string]any
+	if err := decodeProtocolJSON(raw, &payload); err != nil {
+		return raw, nil
+	}
+	changed := false
+	var priorItems []any
+	if hasPrev {
+		if prev.Type != gjson.String {
+			return nil, &statefulExpandError{param: "previous_response_id", message: "previous_response_id must be a string"}
+		}
+		prevID := strings.TrimSpace(prev.String())
+		delete(payload, "previous_response_id")
+		changed = true
+		if prevID != "" {
+			var ok bool
+			priorItems, ok = cache.get(prevID, now)
+			if !ok {
+				return nil, &statefulExpandError{
+					code:    "previous_response_not_found",
+					param:   "previous_response_id",
+					message: "previous_response_id is unknown or expired",
+				}
+			}
+		}
+	}
+
+	currentItems, err := normalizeResponsesInputSlice(payload["input"])
+	if err != nil {
+		if hasPrev {
+			return nil, &statefulExpandError{param: "input", message: err.Error()}
+		}
+		return raw, nil
+	}
+	if hasItemRef {
+		expanded := make([]any, 0, len(currentItems))
+		for _, elem := range currentItems {
+			item, isMap := elem.(map[string]any)
+			if isMap && stringValue(item["type"]) == "item_reference" {
+				refID := strings.TrimSpace(stringValue(item["id"]))
+				resolved, ok := cache.getItem(refID, now)
+				if !ok {
+					return nil, &statefulExpandError{
+						code:    "item_not_found",
+						param:   "input",
+						message: "item_reference id is unknown or expired",
+					}
+				}
+				expanded = append(expanded, resolved)
+				changed = true
+				continue
+			}
+			expanded = append(expanded, elem)
+		}
+		currentItems = expanded
+	}
+	if len(priorItems) > 0 {
+		combined := make([]any, 0, len(priorItems)+len(currentItems))
+		combined = append(combined, priorItems...)
+		combined = append(combined, currentItems...)
+		payload["input"] = combined
+		changed = true
+	} else if hasItemRef && changed {
+		payload["input"] = currentItems
+	}
+	if !changed {
+		return raw, nil
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, &statefulExpandError{message: "encode expanded Responses request"}
+	}
+	return encoded, nil
+}
+
 func withResponsesHistory(apiKey string, next http.HandlerFunc) http.HandlerFunc {
-	cache := newResponsesHistoryCache()
+	return withSharedResponsesHistory(apiKey, newResponsesHistoryCache(), next, true)
+}
+
+func withSharedResponsesHistory(apiKey string, cache *responsesHistoryCache, next http.HandlerFunc, recordOutput bool) http.HandlerFunc {
+	if cache == nil {
+		cache = newResponsesHistoryCache()
+	}
 	return func(writer http.ResponseWriter, request *http.Request) {
 		if !loopbackAuthorized(request, apiKey) || request.Method != http.MethodPost || request.Body == nil {
 			next(writer, request)
@@ -333,54 +552,21 @@ func withResponsesHistory(apiKey string, next http.HandlerFunc) http.HandlerFunc
 			return
 		}
 
-		requestBytes := raw
-		if prev := gjson.GetBytes(raw, "previous_response_id"); prev.Exists() && prev.Type != gjson.Null {
-			prevID := strings.TrimSpace(prev.String())
-			if prev.Type != gjson.String {
-				writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", "previous_response_id must be a string")
-				return
-			}
-			if prevID != "" {
-				priorItems, ok := cache.get(prevID, time.Now())
-				if !ok {
-					writeProxyErrorDetail(writer, http.StatusBadRequest, "invalid_request_error", "previous_response_not_found",
-						"previous_response_id", "previous_response_id is unknown or expired")
-					return
-				}
-				var payload map[string]any
-				if err := decodeProtocolJSON(raw, &payload); err != nil {
-					writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", "invalid Responses request JSON")
-					return
-				}
-				currentItems, err := normalizeResponsesInputSlice(payload["input"])
-				if err != nil {
-					writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
-					return
-				}
-				combined := make([]any, 0, len(priorItems)+len(currentItems))
-				combined = append(combined, priorItems...)
-				combined = append(combined, currentItems...)
-				payload["input"] = combined
-				delete(payload, "previous_response_id")
-				expanded, err := json.Marshal(payload)
-				if err != nil {
-					writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", "encode expanded Responses request")
-					return
-				}
-				requestBytes = expanded
-			} else {
-				var payload map[string]any
-				if decodeProtocolJSON(raw, &payload) == nil {
-					delete(payload, "previous_response_id")
-					if cleaned, err := json.Marshal(payload); err == nil {
-						requestBytes = cleaned
-					}
-				}
-			}
+		storeField := gjson.GetBytes(raw, "store")
+		shouldStore := recordOutput && !(storeField.Exists() && storeField.Type == gjson.False)
+
+		requestBytes, expandErr := expandResponsesStatefulRequest(cache, raw, time.Now())
+		if expandErr != nil {
+			writeProxyErrorDetail(writer, http.StatusBadRequest, "invalid_request_error", expandErr.code, expandErr.param, expandErr.message)
+			return
 		}
 
 		request.Body = io.NopCloser(bytes.NewReader(requestBytes))
 		request.ContentLength = int64(len(requestBytes))
+		if !shouldStore {
+			next(writer, request)
+			return
+		}
 		observer := &responsesHistoryObserver{target: writer}
 		next(observer, request)
 		if responseID, outputItems, ok := observer.completedResponse(); ok {

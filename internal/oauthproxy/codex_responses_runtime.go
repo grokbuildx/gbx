@@ -309,7 +309,10 @@ func (s *codexResponsesService) handler() http.Handler {
 }
 
 func (s *codexResponsesService) handlerForContext(ctx context.Context) http.Handler {
-	return loopbackFrontMuxForContext(ctx, s.apiKey, s.handleModels, s.handleResponses)
+	if s.isXaiBackend() {
+		return loopbackFrontMuxForContext(ctx, s.apiKey, s.handleModels, s.handleResponses)
+	}
+	return loopbackFrontMuxWithCompact(ctx, s.apiKey, s.handleModels, s.handleResponses, s.handleResponses)
 }
 
 func (s *codexResponsesService) authorized(request *http.Request) bool {
@@ -482,10 +485,8 @@ func (s *codexResponsesService) writeUpstreamError(writer http.ResponseWriter, r
 // requestSessionID is the client's conversation id, or a fresh one. Codex sends
 // Session_id; Grok Build sends x-grok-conv-id.
 func (s *codexResponsesService) requestSessionID(request *http.Request) string {
-	for _, name := range []string{"Session_id", "X-Grok-Conv-Id", "X-Session-Id"} {
-		if value := strings.TrimSpace(request.Header.Get(name)); value != "" && len(value) <= 256 {
-			return value
-		}
+	if id := extractClientSessionID(request); id != "" {
+		return id
 	}
 	return uuidString()
 }
@@ -824,8 +825,12 @@ func (s *codexResponsesService) addClientMetadata(body []byte, sessionID string)
 		metadata = make(map[string]any, 4)
 	}
 	metadata["x-codex-installation-id"] = s.installationID
-	metadata["session_id"] = sessionID
-	metadata["thread_id"] = sessionID
+	if strings.TrimSpace(stringValue(metadata["session_id"])) == "" {
+		metadata["session_id"] = sessionID
+	}
+	if strings.TrimSpace(stringValue(metadata["thread_id"])) == "" {
+		metadata["thread_id"] = sessionID
+	}
 	metadata["x-codex-window-id"] = s.windowID
 	payload["client_metadata"] = metadata
 	encoded, err := json.Marshal(payload)
@@ -867,6 +872,139 @@ func firstHeader(headers http.Header, names ...string) string {
 
 type codexCompactRequest struct{}
 
+func (s *codexResponsesService) isCodexOAuth() bool {
+	if s.authorizer == nil || !s.authorizer.isOAuth() || s.isXaiBackend() {
+		return false
+	}
+	_, ok := s.authorizer.(*codexOAuthAuthorizer)
+	return ok
+}
+
+// normalizePassthroughCodexOAuthPayload ensures ChatGPT Codex OAuth requests
+// carry top-level instructions (hoisting any leading role:"system" input items)
+// and rewrites remaining mid-conversation role:"system" items to "developer".
+func normalizePassthroughCodexOAuthPayload(payload map[string]any) {
+	if payload == nil {
+		return
+	}
+	instructions := stringValue(payload["instructions"])
+	items, ok := payload["input"].([]any)
+	if !ok {
+		if _, exists := payload["instructions"]; !exists {
+			payload["instructions"] = ""
+		}
+		return
+	}
+	filtered := make([]any, 0, len(items))
+	seenNonSystem := false
+	for _, raw := range items {
+		item, isMap := raw.(map[string]any)
+		if !isMap {
+			seenNonSystem = true
+			filtered = append(filtered, raw)
+			continue
+		}
+		kind := stringValue(item["type"])
+		role := strings.ToLower(strings.TrimSpace(stringValue(item["role"])))
+		if (kind == "" || kind == "message") && role == "system" {
+			if !seenNonSystem {
+				if text := extractPassthroughMessageText(item["content"]); text != "" {
+					if instructions != "" {
+						instructions += "\n"
+					}
+					instructions += text
+				}
+				continue
+			}
+			cloned := make(map[string]any, len(item))
+			for k, v := range item {
+				cloned[k] = v
+			}
+			cloned["role"] = "developer"
+			filtered = append(filtered, cloned)
+			continue
+		}
+		seenNonSystem = true
+		filtered = append(filtered, raw)
+	}
+	payload["instructions"] = instructions
+	payload["input"] = filtered
+}
+
+func extractPassthroughMessageText(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, elem := range v {
+			m, ok := elem.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t := stringValue(m["text"]); t != "" {
+				parts = append(parts, t)
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
+}
+
+// normalizePassthroughResponsesImages repairs non-standard image parts (such as
+// uppercase DATA:, image/jpg, octet-stream, or nested image_url objects) in
+// passthrough Responses payloads without forcing full tool flattening.
+func normalizePassthroughResponsesImages(payload map[string]any) {
+	if payload == nil {
+		return
+	}
+	items, ok := payload["input"].([]any)
+	if !ok {
+		return
+	}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch stringValue(item["type"]) {
+		case "", "message":
+			normalizePassthroughImageContainer(item["content"])
+		case "function_call_output", "computer_call_output":
+			normalizePassthroughImageContainer(item["output"])
+		}
+	}
+}
+
+func normalizePassthroughImageContainer(raw any) {
+	switch v := raw.(type) {
+	case map[string]any:
+		normalizePassthroughImagePart(v)
+	case []any:
+		for _, elem := range v {
+			if m, ok := elem.(map[string]any); ok {
+				normalizePassthroughImagePart(m)
+			}
+		}
+	}
+}
+
+func normalizePassthroughImagePart(part map[string]any) {
+	if !responsesImagePartNeedsNormalization(part) {
+		return
+	}
+	parsed, err := responsesImagePart(part)
+	if err != nil {
+		return
+	}
+	normalized := responsesInputImagePart(parsed)
+	clear(part)
+	for k, v := range normalized {
+		part[k] = v
+	}
+}
+
 // servePassthrough forwards a Responses request to the Responses upstream. It
 // shares authorization, refresh and retry with converted requests, and reads
 // token usage off the relayed stream.
@@ -881,6 +1019,11 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 	payload["model"] = resolved
 	scope := s.reasoningScope(resolved)
 	wantsStream, _ := payload["stream"].(bool)
+	if s.isCodexOAuth() {
+		normalizePassthroughCodexOAuthPayload(payload)
+	}
+	normalizePassthroughResponsesImages(payload)
+	sanitizePassthroughResponsesInputScoped(payload, scope)
 	if !compact {
 		payload["stream"] = true
 		payload["store"] = false
@@ -896,7 +1039,6 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 			s.normalizeXaiReasoning(resolved, payload)
 			normalizeXaiImageDetail(payload)
 		}
-		sanitizePassthroughResponsesInputScoped(payload, scope)
 	}
 	sessionID := s.requestSessionID(request)
 	if !compact && strings.TrimSpace(stringValue(payload["prompt_cache_key"])) == "" {

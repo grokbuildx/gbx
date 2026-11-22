@@ -283,6 +283,12 @@ func (s *chatCompletionsService) handleResponses(writer http.ResponseWriter, req
 		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	if sess := firstNonEmptyString(clientSession(requestCtx), converted.sessionID); sess != "" {
+		converted.sessionID = sess
+		if clientSession(requestCtx) == "" {
+			requestCtx = context.WithValue(requestCtx, clientSessionKey{}, sess)
+		}
+	}
 	LogDebugEvent("request_converted", "component", "openai_chat", "request_id", requestID,
 		"client_model", converted.clientModel, "upstream_model", converted.model,
 		"stream", converted.stream, "body_bytes", len(converted.body),

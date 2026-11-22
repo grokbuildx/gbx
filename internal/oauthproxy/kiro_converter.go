@@ -69,6 +69,10 @@ type kiroContent struct {
 const kiroEmptyToolResultText = "(no output)"
 
 func convertResponsesToKiro(raw []byte) (*kiroConvertedRequest, error) {
+	return convertResponsesToKiroWithSession(raw, "")
+}
+
+func convertResponsesToKiroWithSession(raw []byte, httpSessionID string) (*kiroConvertedRequest, error) {
 	request, err := parseResponsesRequest(raw)
 	if err != nil {
 		return nil, err
@@ -77,17 +81,18 @@ func convertResponsesToKiro(raw []byte) (*kiroConvertedRequest, error) {
 		request.MaxOutputTokens = 32_000
 	}
 
-	lastUser := -1
-	for index := len(request.Turns) - 1; index >= 0; index-- {
-		if request.Turns[index].Role == "user" {
-			lastUser = index
-			break
-		}
+	messages := append([]conversationTurn(nil), request.Turns...)
+	if len(messages) == 0 {
+		return nil, fmt.Errorf("input must contain a message")
 	}
-	if lastUser < 0 {
-		return nil, fmt.Errorf("input must contain a user message")
+	// Preserve a trailing assistant turn inside history instead of truncating it,
+	// and synthesize a minimal continuation prompt as Kiro's currentMessage.
+	if messages[len(messages)-1].Role == "assistant" {
+		messages = append(messages, conversationTurn{
+			Role:  "user",
+			Parts: []conversationPart{textPart("Continue.")},
+		})
 	}
-	messages := request.Turns[:lastUser+1]
 	model := mapKiroModel(request.Model)
 	toolNameMap := make(map[string]string)
 	tools, declaredTools, err := convertKiroTools(request.Tools, toolNameMap)
@@ -96,7 +101,7 @@ func convertResponsesToKiro(raw []byte) (*kiroConvertedRequest, error) {
 	}
 
 	thinkingEnabled := request.thinkingEnabled()
-	history := make([]any, 0, len(messages)+2)
+	history := make([]any, 0, len(messages)+3)
 	systemText := strings.TrimSpace(request.System)
 	if instruction := structuredOutputPromptInstruction(request.Format); instruction != "" {
 		if systemText != "" {
@@ -119,17 +124,34 @@ func convertResponsesToKiro(raw []byte) (*kiroConvertedRequest, error) {
 				"content": "I will follow these instructions.",
 			}},
 		)
+		// If the real conversation begins with an assistant turn, insert a
+		// synthetic user separator so it is never merged into the protected
+		// system acknowledgment pair.
+		if len(messages) > 1 && messages[0].Role == "assistant" {
+			history = append(history, map[string]any{"userInputMessage": map[string]any{
+				"content": "Continue.",
+				"modelId": model,
+				"origin":  "AI_EDITOR",
+			}})
+		}
 	}
 
 	historicalToolNames := make(map[string]bool)
 	emptyToolRuns := 0
 	for _, message := range messages[:len(messages)-1] {
-		content := parseKiroContent(message, toolNameMap)
+		content, err := parseKiroContentChecked(message, toolNameMap)
+		if err != nil {
+			return nil, err
+		}
 		emptyToolRuns += content.emptyResults
 		switch message.Role {
-		case "user":
+		case "user", "developer", "system":
+			text := content.text
+			if (message.Role == "developer" || message.Role == "system") && strings.TrimSpace(text) != "" {
+				text = "[Developer instruction]\n" + text
+			}
 			userMessage := map[string]any{
-				"content": content.text,
+				"content": text,
 				"modelId": model,
 				"origin":  "AI_EDITOR",
 			}
@@ -163,7 +185,15 @@ func convertResponsesToKiro(raw []byte) (*kiroConvertedRequest, error) {
 	}
 	history = normalizeKiroHistory(history)
 
-	currentContent := parseKiroContent(messages[len(messages)-1], toolNameMap)
+	lastTurn := messages[len(messages)-1]
+	currentContent, err := parseKiroContentChecked(lastTurn, toolNameMap)
+	if err != nil {
+		return nil, err
+	}
+	currentText := currentContent.text
+	if (lastTurn.Role == "developer" || lastTurn.Role == "system") && strings.TrimSpace(currentText) != "" {
+		currentText = "[Developer instruction]\n" + currentText
+	}
 	emptyToolRuns += currentContent.emptyResults
 	for name := range historicalToolNames {
 		if declaredTools[name] {
@@ -187,7 +217,7 @@ func convertResponsesToKiro(raw []byte) (*kiroConvertedRequest, error) {
 		contextValue["toolResults"] = currentContent.toolResults
 	}
 	currentMessage := map[string]any{
-		"content":                 currentContent.text,
+		"content":                 currentText,
 		"modelId":                 model,
 		"origin":                  "AI_EDITOR",
 		"userInputMessageContext": contextValue,
@@ -196,11 +226,12 @@ func convertResponsesToKiro(raw []byte) (*kiroConvertedRequest, error) {
 		currentMessage["images"] = currentContent.images
 	}
 
+	sessionKey := firstNonEmptyString(request.CacheKey, httpSessionID, request.SafetyIdentifier, request.User)
 	conversationState := map[string]any{
 		"agentContinuationId": uuid.NewString(),
 		"agentTaskType":       "vibe",
 		"chatTriggerType":     "MANUAL",
-		"conversationId":      kiroConversationID(request.CacheKey),
+		"conversationId":      kiroConversationID(sessionKey),
 		"currentMessage":      map[string]any{"userInputMessage": currentMessage},
 	}
 	if len(history) > 0 {
@@ -211,6 +242,9 @@ func convertResponsesToKiro(raw []byte) (*kiroConvertedRequest, error) {
 	dedupedMedia := deduplicateKiroInlineMedia(conversationState)
 	_, droppedMedia := limitKiroInlineMedia(conversationState, kiroMaxInlineMediaSegments)
 	resizedMedia, correctedMedia := processKiroInlineMedia(conversationState)
+	// Always drop empty history messages, restore strict role alternation, and
+	// ensure currentMessage is non-empty even when below the 160K token budget.
+	droppedEmpty := normalizeKiroBudgetHistory(conversationState)
 	body := map[string]any{"conversationState": conversationState}
 	if additional := kiroReasoningFields(request, model); additional != nil {
 		body["additionalModelRequestFields"] = additional
@@ -248,7 +282,7 @@ func convertResponsesToKiro(raw []byte) (*kiroConvertedRequest, error) {
 		originalTokens:  budgetStats.originalTokens,
 		finalTokens:     budgetStats.finalTokens,
 		budgetMedia:     budgetStats.droppedImages,
-		budgetHistory:   budgetStats.droppedHistoryMessages,
+		budgetHistory:   budgetStats.droppedHistoryMessages + droppedEmpty,
 		budgetTexts:     budgetStats.truncatedTexts,
 		budgetTextBytes: budgetStats.droppedTextBytes,
 		budgetTools:     budgetStats.droppedTools,
@@ -278,6 +312,12 @@ func limitKiroInlineMedia(conversationState map[string]any, limit int) (kept, dr
 		case remaining == 0:
 			dropped += len(images)
 			delete(message, "images")
+			if strings.TrimSpace(metadataString(message, "content")) == "" {
+				context, _ := message["userInputMessageContext"].(map[string]any)
+				if len(kiroAnySlice(context["toolResults"])) == 0 {
+					message["content"] = "[earlier image omitted]"
+				}
+			}
 		case len(images) > remaining:
 			dropped += len(images) - remaining
 			message["images"] = append([]any(nil), images[len(images)-remaining:]...)
@@ -536,12 +576,17 @@ func shortenKiroToolName(name string, nameMap map[string]string) string {
 }
 
 func parseKiroContent(turn conversationTurn, nameMap map[string]string) kiroContent {
+	content, _ := parseKiroContentChecked(turn, nameMap)
+	return content
+}
+
+func parseKiroContentChecked(turn conversationTurn, nameMap map[string]string) (kiroContent, error) {
 	var result kiroContent
 	var textParts []string
 	var thinkingParts []string
 	for _, part := range turn.Parts {
 		switch part.Kind {
-		case partText:
+		case partText, partRefusal:
 			if part.Text != "" {
 				textParts = append(textParts, part.Text)
 			}
@@ -550,8 +595,23 @@ func parseKiroContent(turn conversationTurn, nameMap map[string]string) kiroCont
 				thinkingParts = append(thinkingParts, part.Text)
 			}
 		case partImage:
-			if image := kiroImageFromPart(part); image != nil {
+			if turn.Role == "assistant" {
+				continue
+			}
+			image, err := kiroImageFromPartChecked(part)
+			if err != nil {
+				return kiroContent{}, err
+			}
+			if image != nil {
 				result.images = append(result.images, image)
+			}
+		case partFile:
+			if turn.Role != "assistant" {
+				return kiroContent{}, fmt.Errorf("this provider does not support input_file content parts")
+			}
+		case partAudio:
+			if turn.Role != "assistant" {
+				return kiroContent{}, fmt.Errorf("this provider does not support input_audio content parts")
 			}
 		case partToolResult:
 			if part.CallID == "" {
@@ -559,9 +619,20 @@ func parseKiroContent(turn conversationTurn, nameMap map[string]string) kiroCont
 			}
 			resultText := part.outputText()
 			var resultImages []any
-			for _, piece := range part.outputImages() {
-				if image := kiroImageFromPart(piece); image != nil {
-					resultImages = append(resultImages, image)
+			for _, piece := range part.Output {
+				switch piece.Kind {
+				case partImage:
+					image, err := kiroImageFromPartChecked(piece)
+					if err != nil {
+						return kiroContent{}, err
+					}
+					if image != nil {
+						resultImages = append(resultImages, image)
+					}
+				case partFile:
+					return kiroContent{}, fmt.Errorf("this provider does not support input_file in tool results")
+				case partAudio:
+					return kiroContent{}, fmt.Errorf("this provider does not support input_audio in tool results")
 				}
 			}
 			if len(resultImages) > 0 {
@@ -603,31 +674,45 @@ func parseKiroContent(turn conversationTurn, nameMap map[string]string) kiroCont
 	}
 	result.text = strings.Join(textParts, "\n")
 	result.thinking = strings.Join(thinkingParts, "")
-	return result
+	return result, nil
 }
 
 func kiroImageFromPart(part conversationPart) any {
+	img, _ := kiroImageFromPartChecked(part)
+	return img
+}
+
+func kiroImageFromPartChecked(part conversationPart) (any, error) {
 	if part.Data == "" {
-		return nil
+		if part.FileID != "" {
+			return nil, fmt.Errorf("this provider does not support image file_id references")
+		}
+		if part.URL != "" {
+			return nil, fmt.Errorf("this provider only supports inline base64 data URL images, not remote image URLs")
+		}
+		return nil, fmt.Errorf("image input is missing base64 data")
 	}
+	data := stripASCIIWhitespace(part.Data)
 	mediaType := strings.ToLower(strings.TrimSpace(part.MediaType))
 	if semi := strings.IndexByte(mediaType, ';'); semi >= 0 {
 		mediaType = strings.TrimSpace(mediaType[:semi])
-	}
-	if mediaType == "" || mediaType == "application/octet-stream" {
-		mediaType = sniffBase64ImageMediaType(part.Data)
 	}
 	format := strings.TrimPrefix(mediaType, "image/")
 	if format == "jpg" {
 		format = "jpeg"
 	}
 	if format != "jpeg" && format != "png" && format != "gif" && format != "webp" {
-		return nil
+		if sniffed := sniffBase64ImageMediaType(data); sniffed != "" {
+			format = strings.TrimPrefix(sniffed, "image/")
+		}
+	}
+	if format != "jpeg" && format != "png" && format != "gif" && format != "webp" {
+		return nil, fmt.Errorf("this provider only supports jpeg, png, gif, and webp images (got %q)", mediaType)
 	}
 	return map[string]any{
 		"format": format,
-		"source": map[string]any{"bytes": part.Data},
-	}
+		"source": map[string]any{"bytes": data},
+	}, nil
 }
 
 // kiroConversationID keeps one upstream conversation per client session. A

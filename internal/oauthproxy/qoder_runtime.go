@@ -226,7 +226,7 @@ func (service *qoderService) handleResponses(writer http.ResponseWriter, request
 		writeInboundBodyError(writer, err)
 		return
 	}
-	converted, err := convertResponsesToQoder(raw, service.models)
+	converted, err := convertResponsesToQoderWithSession(raw, service.models, extractClientSessionID(request))
 	if err != nil {
 		LogWarnEvent("request_rejected", "component", "qoder", "request_id", requestID,
 			"path", request.URL.Path, "status", http.StatusBadRequest, "reason", "request_conversion",

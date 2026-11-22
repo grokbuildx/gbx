@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"image"
 	"image/color"
+	_ "image/gif"
 	"image/jpeg"
 	_ "image/png"
 	"math"
@@ -95,13 +96,11 @@ func processKiroImage(value any) (resized, corrected bool) {
 }
 
 func decodeKiroBase64(value string) ([]byte, error) {
-	if comma := strings.IndexByte(value, ','); strings.HasPrefix(value, "data:") && comma >= 0 {
-		value = value[comma+1:]
+	trimmed := strings.TrimSpace(value)
+	if comma := strings.IndexByte(trimmed, ','); hasCaseInsensitivePrefix(trimmed, "data:") && comma >= 0 {
+		trimmed = trimmed[comma+1:]
 	}
-	if raw, err := base64.StdEncoding.DecodeString(value); err == nil {
-		return raw, nil
-	}
-	return base64.RawStdEncoding.DecodeString(value)
+	return decodeBase64Flexible(trimmed)
 }
 
 func normalizeKiroImageFormat(format string) string {

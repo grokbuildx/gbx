@@ -317,7 +317,7 @@ func (s *kiroService) handleResponses(writer http.ResponseWriter, request *http.
 		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", "invalid Responses request: request body is empty")
 		return
 	}
-	converted, err := convertResponsesToKiro(raw)
+	converted, err := convertResponsesToKiroWithSession(raw, extractClientSessionID(request))
 	if err != nil {
 		LogWarnEvent("request_rejected", "component", "kiro", "request_id", requestID,
 			"path", request.URL.Path, "status", http.StatusBadRequest, "reason", "request_conversion", "error", err)

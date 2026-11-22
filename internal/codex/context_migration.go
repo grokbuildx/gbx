@@ -21,16 +21,19 @@ var sessionIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 func migrationSessionID(r *http.Request, metadata ...map[string]any) string {
 	for _, fields := range metadata {
 		for _, key := range []string{"thread_id", "session_id"} {
-			if value, _ := fields[key].(string); value != "" {
-				return strings.ToLower(value)
+			if value, _ := fields[key].(string); strings.TrimSpace(value) != "" {
+				return strings.ToLower(strings.TrimSpace(value))
 			}
 		}
 	}
-	session := strings.ToLower(r.Header.Get("Session_id"))
-	if session == "" {
-		session = strings.ToLower(r.Header.Get("X-Codex-Session-Id"))
+	if r != nil {
+		for _, header := range []string{"Session_id", "Session-Id", "Thread-Id", "X-Codex-Session-Id", "X-Grok-Conv-Id", "X-Claude-Code-Session-Id"} {
+			if session := strings.ToLower(strings.TrimSpace(r.Header.Get(header))); session != "" {
+				return session
+			}
+		}
 	}
-	return session
+	return ""
 }
 
 func isClientCompaction(r *http.Request, request responseRequest, items []map[string]any, path string) bool {
@@ -76,7 +79,9 @@ func (g *Gateway) migrateNativeContext(r *http.Request, route Route, items []map
 		digest := sha256.Sum256([]byte(encoded))
 		key := hex.EncodeToString(digest[:])
 		owner := historyOwner(r) + ":" + session
-		recovered, ok := g.migrations.get(key, route.Alias, owner)
+		// Share recovered migration cache across GBX model switches (A -> B -> A)
+		// so switching models never re-scans the local transcript from disk.
+		recovered, ok := g.migrations.get(key, "migration", owner)
 		if !ok {
 			recoveredNew = true
 			home, err := Home()
@@ -88,7 +93,7 @@ func (g *Gateway) migrateNativeContext(r *http.Request, route Route, items []map
 				return nil, false, unavailableMigration()
 			}
 			recovered = []map[string]any{{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": text}}}}
-			g.migrations.put(key, route.Alias, owner, recovered)
+			g.migrations.put(key, "migration", owner, recovered)
 		}
 		result = append(result, recovered...)
 	}
@@ -172,11 +177,15 @@ func scanMigrationTranscript(reader io.Reader, session, encrypted, account strin
 	scanner.Buffer(make([]byte, 64<<10), maxBodyBytes)
 	verified := false
 	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
 		var event struct {
 			Type    string          `json:"type"`
 			Payload json.RawMessage `json:"payload"`
 		}
-		if json.Unmarshal(scanner.Bytes(), &event) != nil {
+		if json.Unmarshal([]byte(line), &event) != nil {
 			return false, unavailableMigration()
 		}
 		if event.Type == "session_meta" {
@@ -188,10 +197,12 @@ func scanMigrationTranscript(reader io.Reader, session, encrypted, account strin
 					ThreadID string `json:"thread_id"`
 				} `json:"history_base"`
 			}
-			if json.Unmarshal(event.Payload, &metadata) != nil || (metadata.ID != session && metadata.Session != session) || (account != "" && metadata.Account != "" && metadata.Account != account) {
+			if json.Unmarshal(event.Payload, &metadata) != nil ||
+				(!strings.EqualFold(metadata.ID, session) && !strings.EqualFold(metadata.Session, session)) ||
+				(account != "" && metadata.Account != "" && metadata.Account != account) {
 				return false, unavailableMigration()
 			}
-			if metadata.HistoryBase != nil && (metadata.HistoryBase.ThreadID != metadata.ID || excerpt.records == 0) {
+			if metadata.HistoryBase != nil && (!strings.EqualFold(metadata.HistoryBase.ThreadID, metadata.ID) || excerpt.records == 0) {
 				return false, unavailableMigration()
 			}
 			verified = true
@@ -230,7 +241,7 @@ func scanMigrationTranscript(reader io.Reader, session, encrypted, account strin
 func visibleMigrationRecord(item map[string]any) string {
 	kind, _ := item["type"].(string)
 	switch kind {
-	case "message":
+	case "", "message":
 		role, _ := item["role"].(string)
 		if role != "user" && role != "assistant" {
 			return ""
@@ -268,6 +279,14 @@ func visibleMigrationText(value any) string {
 					parts = append(parts, "[image omitted]")
 					continue
 				}
+				if isFileContentItem(item) {
+					parts = append(parts, "[file omitted]")
+					continue
+				}
+				if isAudioContentItem(item) {
+					parts = append(parts, "[audio omitted]")
+					continue
+				}
 				if kind, _ := item["type"].(string); kind == "input_text" || kind == "output_text" || kind == "text" {
 					if text, ok := item["text"].(string); ok {
 						if isInlineImageData(text) {
@@ -287,6 +306,12 @@ func visibleMigrationText(value any) string {
 	case map[string]any:
 		if isImageContentItem(value) {
 			return "[image omitted]"
+		}
+		if isFileContentItem(value) {
+			return "[file omitted]"
+		}
+		if isAudioContentItem(value) {
+			return "[audio omitted]"
 		}
 		if text, ok := value["text"].(string); ok && text != "" {
 			if isInlineImageData(text) {

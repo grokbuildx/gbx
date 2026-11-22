@@ -52,8 +52,13 @@ func responsesNeedFlattening(payload map[string]any) bool {
 			"shell_call", "shell_call_output",
 			"local_shell_call", "local_shell_call_output",
 			"apply_patch_call", "apply_patch_call_output",
-			"mcp_call", "mcp_list_tools", "mcp_approval_request", "mcp_approval_response":
+			"mcp_call", "mcp_list_tools", "mcp_approval_request", "mcp_approval_response",
+			"web_search_call", "file_search_call", "code_interpreter_call", "image_generation_call":
 			return true
+		case "", "message":
+			if responsesOutputNeedsImageNormalization(item["content"]) {
+				return true
+			}
 		case "function_call_output":
 			if responsesOutputNeedsImageNormalization(item["output"]) {
 				return true
@@ -89,12 +94,19 @@ func responsesImagePartNeedsNormalization(part map[string]any) bool {
 		if _, isMap := part["image_url"].(map[string]any); isMap {
 			return true
 		}
-		if urlVal, _ := part["image_url"].(string); strings.HasPrefix(strings.TrimSpace(urlVal), "data:") {
-			if header, _, ok := strings.Cut(strings.TrimSpace(urlVal), ","); ok {
+		if urlVal, _ := part["image_url"].(string); hasCaseInsensitivePrefix(strings.TrimSpace(urlVal), "data:") {
+			trimmed := strings.TrimSpace(urlVal)
+			if !strings.HasPrefix(trimmed, "data:") {
+				// Uppercase DATA: prefix needs normalization.
+				return true
+			}
+			if header, _, ok := strings.Cut(trimmed, ","); ok {
 				meta := strings.TrimPrefix(header, "data:")
-				// Standard data:image/<type>;base64 has no extra parameters or empty MIME.
+				// Standard data:image/<type>;base64 has no extra parameters, empty MIME, jpg alias, or octet-stream.
 				mime, isBase64 := strings.CutSuffix(meta, ";base64")
-				if !isBase64 || strings.TrimSpace(mime) == "" || strings.Contains(mime, ";") {
+				mimeLower := strings.ToLower(strings.TrimSpace(mime))
+				if !isBase64 || mimeLower == "" || strings.Contains(mime, ";") ||
+					mimeLower == "image/jpg" || mimeLower == "application/octet-stream" || !strings.HasPrefix(mimeLower, "image/") {
 					return true
 				}
 			}
@@ -122,6 +134,9 @@ func convertResponsesForUpstreamWithScope(raw []byte, sessionID, scope string) (
 			return nil, err
 		}
 		input = append(input, items...)
+	}
+	if len(input) == 0 {
+		return nil, fmt.Errorf("Responses input has no renderable items")
 	}
 	reasoning := map[string]any{}
 	if request.Effort != "" {
@@ -270,9 +285,16 @@ func codexTurnItems(turn conversationTurn) ([]any, error) {
 }
 
 func codexTurnItemsScoped(turn conversationTurn, scope string) ([]any, error) {
+	assistant := turn.Role == "assistant"
 	textType := "input_text"
-	if turn.Role == "assistant" {
+	if assistant {
 		textType = "output_text"
+	}
+	if len(turn.Parts) == 0 {
+		if turn.Role == "user" {
+			return []any{map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": ""}}}}, nil
+		}
+		return nil, nil
 	}
 	result := make([]any, 0, len(turn.Parts))
 	var content []any
@@ -287,10 +309,35 @@ func codexTurnItemsScoped(turn conversationTurn, scope string) ([]any, error) {
 		switch part.Kind {
 		case partText:
 			content = append(content, map[string]any{"type": textType, "text": part.Text})
+		case partRefusal:
+			if assistant {
+				content = append(content, map[string]any{"type": "refusal", "refusal": part.Text})
+			} else {
+				content = append(content, map[string]any{"type": "input_text", "text": part.Text})
+			}
 		case partImage:
+			if assistant {
+				continue
+			}
 			content = append(content, responsesInputImagePart(part))
+		case partFile:
+			if assistant {
+				continue
+			}
+			content = append(content, responsesInputFilePart(part))
+		case partAudio:
+			if assistant {
+				continue
+			}
+			content = append(content, map[string]any{
+				"type": "input_audio",
+				"input_audio": map[string]any{
+					"data":   part.Data,
+					"format": part.Format,
+				},
+			})
 		case partReasoning:
-			if turn.Role != "assistant" || !strings.HasPrefix(part.Signature, codexReasoningSignaturePrefix) {
+			if !assistant || !strings.HasPrefix(part.Signature, codexReasoningSignaturePrefix) {
 				continue
 			}
 			item, ok, err := codexReasoningFromSignatureScoped(part.Signature, scope)
@@ -310,13 +357,30 @@ func codexTurnItemsScoped(turn conversationTurn, scope string) ([]any, error) {
 		case partToolResult:
 			flush()
 			var output any = part.outputText()
-			if images := part.outputImages(); len(images) > 0 {
+			hasStructured := false
+			for _, piece := range part.Output {
+				if piece.Kind == partImage || piece.Kind == partFile || piece.Kind == partAudio {
+					hasStructured = true
+					break
+				}
+			}
+			if hasStructured {
 				parts := make([]any, 0, len(part.Output))
 				for _, piece := range part.Output {
-					if piece.Kind == partImage {
+					switch piece.Kind {
+					case partImage:
 						parts = append(parts, responsesInputImagePart(piece))
-					} else if piece.Text != "" {
-						parts = append(parts, map[string]any{"type": "input_text", "text": piece.Text})
+					case partFile:
+						parts = append(parts, responsesInputFilePart(piece))
+					case partAudio:
+						parts = append(parts, map[string]any{
+							"type":        "input_audio",
+							"input_audio": map[string]any{"data": piece.Data, "format": piece.Format},
+						})
+					default:
+						if piece.Text != "" {
+							parts = append(parts, map[string]any{"type": "input_text", "text": piece.Text})
+						}
 					}
 				}
 				output = parts
@@ -329,9 +393,34 @@ func codexTurnItemsScoped(turn conversationTurn, scope string) ([]any, error) {
 }
 
 func responsesInputImagePart(part conversationPart) map[string]any {
-	out := map[string]any{"type": "input_image", "image_url": part.imageURL()}
+	out := map[string]any{"type": "input_image"}
+	if part.FileID != "" && part.URL == "" && part.Data == "" {
+		out["file_id"] = part.FileID
+	} else {
+		out["image_url"] = part.imageURL()
+	}
 	if part.Detail != "" {
 		out["detail"] = part.Detail
+	}
+	return out
+}
+
+func responsesInputFilePart(part conversationPart) map[string]any {
+	out := map[string]any{"type": "input_file"}
+	if part.FileID != "" {
+		out["file_id"] = part.FileID
+	}
+	if part.Filename != "" {
+		out["filename"] = part.Filename
+	}
+	if part.Data != "" {
+		mediaType := part.MediaType
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		out["file_data"] = "data:" + mediaType + ";base64," + part.Data
+	} else if part.URL != "" {
+		out["file_url"] = part.URL
 	}
 	return out
 }

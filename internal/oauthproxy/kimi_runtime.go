@@ -474,6 +474,9 @@ func normalizeKimiBody(body []byte) ([]byte, error) {
 			}
 			messageItems = append(messageItems, messageJSON)
 		}
+		if dropped > 0 {
+			messageItems = mergeAdjacentKimiUserMessages(messageItems)
+		}
 		updated, err := sjson.SetRawBytes(body, "messages", []byte(joinRawJSONStrings(messageItems)))
 		if err != nil {
 			return body, fmt.Errorf("kimi: rebuild messages: %w", err)
@@ -481,6 +484,65 @@ func normalizeKimiBody(body []byte) ([]byte, error) {
 		out = updated
 	}
 	return out, nil
+}
+
+// mergeAdjacentKimiUserMessages combines consecutive user messages that became
+// adjacent after dropping an empty assistant turn between them.
+func mergeAdjacentKimiUserMessages(items []string) []string {
+	if len(items) < 2 {
+		return items
+	}
+	out := make([]string, 0, len(items))
+	for _, raw := range items {
+		if len(out) > 0 && strings.TrimSpace(gjson.Get(out[len(out)-1], "role").String()) == "user" &&
+			strings.TrimSpace(gjson.Get(raw, "role").String()) == "user" {
+			if merged, ok := mergeTwoKimiUserMessages(out[len(out)-1], raw); ok {
+				out[len(out)-1] = merged
+				continue
+			}
+		}
+		out = append(out, raw)
+	}
+	return out
+}
+
+func mergeTwoKimiUserMessages(firstRaw, secondRaw string) (string, bool) {
+	var first, second map[string]any
+	if decodeProtocolJSON([]byte(firstRaw), &first) != nil || decodeProtocolJSON([]byte(secondRaw), &second) != nil {
+		return "", false
+	}
+	leftStr, leftIsStr := first["content"].(string)
+	rightStr, rightIsStr := second["content"].(string)
+	if leftIsStr && rightIsStr {
+		switch {
+		case leftStr == "":
+			first["content"] = rightStr
+		case rightStr == "":
+			first["content"] = leftStr
+		default:
+			first["content"] = leftStr + "\n" + rightStr
+		}
+	} else {
+		toParts := func(val any) []any {
+			switch v := val.(type) {
+			case string:
+				if v == "" {
+					return nil
+				}
+				return []any{map[string]any{"type": "text", "text": v}}
+			case []any:
+				return v
+			default:
+				return nil
+			}
+		}
+		first["content"] = append(toParts(first["content"]), toParts(second["content"])...)
+	}
+	encoded, err := json.Marshal(first)
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
 }
 
 // joinRawJSONStrings joins raw JSON values into a JSON array.

@@ -45,6 +45,10 @@ type qoderToolCall struct {
 }
 
 func convertResponsesToQoder(raw []byte, catalog []qoderModel) (*qoderConvertedRequest, error) {
+	return convertResponsesToQoderWithSession(raw, catalog, "")
+}
+
+func convertResponsesToQoderWithSession(raw []byte, catalog []qoderModel, httpSessionID string) (*qoderConvertedRequest, error) {
 	request, err := parseResponsesRequest(raw)
 	if err != nil {
 		return nil, err
@@ -52,6 +56,9 @@ func convertResponsesToQoder(raw []byte, catalog []qoderModel) (*qoderConvertedR
 	model, ok := qoderSelectModel(request.Model, catalog)
 	if !ok {
 		return nil, fmt.Errorf("Qoder has no available models")
+	}
+	if err := validateQoderTurns(request.Turns); err != nil {
+		return nil, err
 	}
 	messages, lastUser := qoderTransformTurns(request.Turns)
 	if system := strings.TrimSpace(request.System); system != "" {
@@ -127,7 +134,7 @@ func convertResponsesToQoder(raw []byte, catalog []qoderModel) (*qoderConvertedR
 		parameters["enable_thinking"] = false
 	}
 	recordID := qoderStableID("qoder-record", request.Model, string(raw), fmt.Sprintf("mt=%d", maxTokens))
-	sessionSeed := firstNonEmptyString(strings.TrimSpace(request.CacheKey), strings.TrimSpace(request.SafetyIdentifier), strings.TrimSpace(request.User), uuid.NewString())
+	sessionSeed := firstNonEmptyString(strings.TrimSpace(request.CacheKey), strings.TrimSpace(httpSessionID), strings.TrimSpace(request.SafetyIdentifier), strings.TrimSpace(request.User), uuid.NewString())
 	sessionID := qoderStableID("qoder-session", model.ID, sessionSeed) + "-" + sessionSeed
 	body := map[string]any{
 		"request_id":       uuid.NewString(),
@@ -183,6 +190,36 @@ func convertResponsesToQoder(raw []byte, catalog []qoderModel) (*qoderConvertedR
 		adapter:     &adapter,
 		inputTokens: adapter.inputTokens,
 	}, nil
+}
+
+func validateQoderTurns(turns []conversationTurn) error {
+	for _, turn := range turns {
+		for _, part := range turn.Parts {
+			switch part.Kind {
+			case partFile:
+				return fmt.Errorf("Qoder does not support input_file content parts")
+			case partAudio:
+				return fmt.Errorf("Qoder does not support input_audio content parts")
+			case partImage:
+				if part.FileID != "" && part.URL == "" && part.Data == "" {
+					return fmt.Errorf("Qoder does not support image file_id references")
+				}
+			case partToolResult:
+				for _, sub := range part.Output {
+					if sub.Kind == partFile {
+						return fmt.Errorf("Qoder does not support input_file content parts")
+					}
+					if sub.Kind == partAudio {
+						return fmt.Errorf("Qoder does not support input_audio content parts")
+					}
+					if sub.Kind == partImage && sub.FileID != "" && sub.URL == "" && sub.Data == "" {
+						return fmt.Errorf("Qoder does not support image file_id references")
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func qoderSelectModel(requested string, catalog []qoderModel) (qoderModel, bool) {
@@ -264,7 +301,9 @@ func qoderTransformTurns(turns []conversationTurn) ([]any, string) {
 				})
 			}
 		case "assistant":
-			transformed = append(transformed, qoderTransformAssistantTurn(turn))
+			if msg := qoderTransformAssistantTurn(turn); msg != nil {
+				transformed = append(transformed, msg)
+			}
 		}
 	}
 	return transformed, lastUser
@@ -274,14 +313,18 @@ func qoderTransformUserTurn(turn conversationTurn) ([]any, string) {
 	toolMessages := make([]any, 0, len(turn.Parts))
 	parts := make([]any, 0, len(turn.Parts))
 	var toolImages []any
-	var allText strings.Builder
+	var textParts []string
+	hasImages := false
 	for _, part := range turn.Parts {
 		switch part.Kind {
-		case partText:
-			parts = append(parts, map[string]any{"type": "text", "text": part.Text})
-			allText.WriteString(part.Text)
+		case partText, partRefusal:
+			if part.Text != "" {
+				parts = append(parts, map[string]any{"type": "text", "text": part.Text})
+				textParts = append(textParts, part.Text)
+			}
 		case partImage:
 			if imageURL := part.imageURL(); imageURL != "" {
+				hasImages = true
 				parts = append(parts, map[string]any{"type": "image_url", "image_url": chatImageURLObject(part)})
 			}
 		case partToolResult:
@@ -297,6 +340,7 @@ func qoderTransformUserTurn(turn conversationTurn) ([]any, string) {
 				if sub.Kind == partImage {
 					if imageURL := sub.imageURL(); imageURL != "" {
 						hasImage = true
+						hasImages = true
 						toolText = append(toolText, "[image attached in the following user message]")
 						toolImages = append(toolImages, map[string]any{"type": "text", "text": "Image from tool result " + part.CallID + ":"}, map[string]any{"type": "image_url", "image_url": chatImageURLObject(sub)})
 					}
@@ -315,32 +359,34 @@ func qoderTransformUserTurn(turn conversationTurn) ([]any, string) {
 	messages := make([]any, 0, len(toolMessages)+1)
 	messages = append(messages, toolMessages...)
 	parts = append(parts, toolImages...)
+	joinedText := strings.Join(textParts, "\n")
 	if len(parts) > 0 {
 		content := any(parts)
-		if len(parts) == 1 {
-			if part, ok := parts[0].(map[string]any); ok && part["type"] == "text" {
-				content = part["text"]
-			}
+		if !hasImages {
+			content = joinedText
 		}
 		messages = append(messages, map[string]any{"role": "user", "content": content})
 	}
 	if len(messages) == 0 {
 		messages = append(messages, map[string]any{"role": "user", "content": ""})
 	}
-	return messages, allText.String()
+	return messages, joinedText
 }
 
 func qoderTransformAssistantTurn(turn conversationTurn) any {
-	var content strings.Builder
+	var textParts []string
+	var reasoningParts []string
 	toolCalls := make([]qoderToolCall, 0)
 	for _, part := range turn.Parts {
 		switch part.Kind {
-		case partText:
-			content.WriteString(part.Text)
+		case partText, partRefusal:
+			if part.Text != "" {
+				textParts = append(textParts, part.Text)
+			}
 		case partReasoning:
-			content.WriteString("<thinking>")
-			content.WriteString(part.Text)
-			content.WriteString("</thinking>\n\n")
+			if strings.TrimSpace(part.Text) != "" {
+				reasoningParts = append(reasoningParts, part.Text)
+			}
 		case partToolCall:
 			arguments := strings.TrimSpace(string(part.Arguments))
 			if arguments == "" || arguments == "null" {
@@ -352,13 +398,23 @@ func qoderTransformAssistantTurn(turn conversationTurn) any {
 			toolCalls = append(toolCalls, call)
 		}
 	}
+	var content strings.Builder
+	for _, r := range reasoningParts {
+		content.WriteString("<thinking>")
+		content.WriteString(r)
+		content.WriteString("</thinking>\n\n")
+	}
+	if len(textParts) > 0 {
+		content.WriteString(strings.Join(textParts, "\n"))
+	}
+	if content.Len() == 0 && len(toolCalls) == 0 {
+		return nil
+	}
 	message := map[string]any{"role": "assistant"}
 	if content.Len() > 0 {
 		message["content"] = content.String()
-	} else if len(toolCalls) > 0 {
-		message["content"] = " "
 	} else {
-		message["content"] = nil
+		message["content"] = " "
 	}
 	if len(toolCalls) > 0 {
 		message["tool_calls"] = toolCalls

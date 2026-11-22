@@ -2,7 +2,6 @@ package oauthproxy
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -79,6 +78,12 @@ func deduplicateKiroInlineMedia(conversationState map[string]any) (dropped int) 
 		}
 		if len(retained) == 0 {
 			delete(message, "images")
+			if strings.TrimSpace(metadataString(message, "content")) == "" {
+				context, _ := message["userInputMessageContext"].(map[string]any)
+				if len(kiroAnySlice(context["toolResults"])) == 0 {
+					message["content"] = "[earlier image omitted]"
+				}
+			}
 		} else {
 			message["images"] = retained
 		}
@@ -90,7 +95,7 @@ func kiroImageDigest(value any) [32]byte {
 	if image, ok := value.(map[string]any); ok {
 		if source, ok := image["source"].(map[string]any); ok {
 			if encoded, ok := source["bytes"].(string); ok {
-				if decoded, err := base64.StdEncoding.DecodeString(encoded); err == nil {
+				if decoded, err := decodeBase64Flexible(encoded); err == nil {
 					return sha256.Sum256(decoded)
 				}
 				return sha256.Sum256([]byte(encoded))
@@ -101,10 +106,11 @@ func kiroImageDigest(value any) [32]byte {
 	return sha256.Sum256(raw)
 }
 
-// normalizeKiroHistory merges adjacent messages with the same role and ensures
-// that the current user message is preceded by an assistant history message.
+// normalizeKiroHistory merges adjacent messages with the same role, guarantees
+// history starts with a user message, and ensures that the current user message
+// is preceded by an assistant history message.
 func normalizeKiroHistory(history []any) []any {
-	normalized := make([]any, 0, len(history)+1)
+	normalized := make([]any, 0, len(history)+2)
 	for _, entry := range history {
 		kind, message := kiroHistoryMessage(entry)
 		if kind == "" {
@@ -118,6 +124,16 @@ func normalizeKiroHistory(history []any) []any {
 			}
 		}
 		normalized = append(normalized, entry)
+	}
+	if len(normalized) > 0 {
+		if kind, _ := kiroHistoryMessage(normalized[0]); kind == "assistant" {
+			normalized = append([]any{map[string]any{
+				"userInputMessage": map[string]any{
+					"content": "Continue.",
+					"origin":  "AI_EDITOR",
+				},
+			}}, normalized...)
+		}
 	}
 	if len(normalized) > 0 {
 		if kind, _ := kiroHistoryMessage(normalized[len(normalized)-1]); kind == "user" {

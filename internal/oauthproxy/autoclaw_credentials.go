@@ -165,7 +165,11 @@ func (a *autoClawOAuthAuthorizer) decorateHeader(header http.Header, converted *
 	header.Set("X-Lang", "zh-CN")
 	header.Set("X-Channel", "official")
 	header.Set("x_trace_id", "autoclaw-desktop")
-	if sessionID := strings.TrimSpace(a.sessionID); sessionID != "" {
+	sessionID := strings.TrimSpace(a.sessionID)
+	if converted != nil && strings.TrimSpace(converted.sessionID) != "" {
+		sessionID = strings.TrimSpace(converted.sessionID)
+	}
+	if sessionID != "" {
 		header.Set("X-Session-Id", sessionID)
 	}
 	if agentID := strings.TrimSpace(a.agentID); agentID != "" {

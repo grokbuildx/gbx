@@ -72,6 +72,8 @@ func chatToResponsesRequest(raw []byte) ([]byte, *chatFrontRequest, error) {
 			}
 			if len(content) > 0 {
 				input = append(input, map[string]any{"type": "message", "role": role, "content": content})
+			} else if role == "user" {
+				input = append(input, map[string]any{"type": "message", "role": "user", "content": []any{}})
 			}
 		case "assistant":
 			reasoning, _ := message["reasoning_content"].(string)
@@ -87,6 +89,9 @@ func chatToResponsesRequest(raw []byte) ([]byte, *chatFrontRequest, error) {
 			content, err := chatFrontContent(message["content"], "output_text")
 			if err != nil {
 				return nil, nil, err
+			}
+			if refusal, _ := message["refusal"].(string); refusal != "" {
+				content = append(content, map[string]any{"type": "refusal", "refusal": refusal})
 			}
 			if len(content) > 0 {
 				input = append(input, map[string]any{"type": "message", "role": "assistant", "content": content})
@@ -280,22 +285,57 @@ func chatFrontContent(value any, textType string) ([]any, error) {
 				}
 			case "refusal":
 				if text, _ := part["refusal"].(string); text != "" {
-					parts = append(parts, map[string]any{"type": textType, "text": text})
+					parts = append(parts, map[string]any{"type": "refusal", "refusal": text})
 				}
 			case "image_url":
 				url, _ := part["image_url"].(string)
 				detail, _ := part["detail"].(string)
+				fileID := strings.TrimSpace(stringValue(part["file_id"]))
 				if nested, ok := part["image_url"].(map[string]any); ok {
 					url, _ = nested["url"].(string)
 					if detail == "" {
 						detail, _ = nested["detail"].(string)
 					}
+					if fileID == "" {
+						fileID = strings.TrimSpace(stringValue(nested["file_id"]))
+					}
 				}
-				imgPart := map[string]any{"type": "input_image", "image_url": url}
+				imgPart := map[string]any{"type": "input_image"}
+				if url != "" {
+					imgPart["image_url"] = url
+				} else if fileID != "" {
+					imgPart["file_id"] = fileID
+				} else {
+					imgPart["image_url"] = url
+				}
 				if norm := normalizeImageDetail(detail); norm != "" {
 					imgPart["detail"] = norm
 				}
 				parts = append(parts, imgPart)
+			case "file", "input_file":
+				src := part
+				if nested, ok := part["file"].(map[string]any); ok && nested != nil {
+					src = nested
+				}
+				filePart := map[string]any{"type": "input_file"}
+				for _, key := range []string{"file_id", "file_url", "file_data", "filename", "media_type", "mime_type"} {
+					if val := strings.TrimSpace(firstNonEmptyString(stringValue(src[key]), stringValue(part[key]))); val != "" {
+						filePart[key] = val
+					}
+				}
+				parts = append(parts, filePart)
+			case "input_audio":
+				src := part
+				if nested, ok := part["input_audio"].(map[string]any); ok && nested != nil {
+					src = nested
+				}
+				parts = append(parts, map[string]any{
+					"type": "input_audio",
+					"input_audio": map[string]any{
+						"data":   firstNonEmptyString(stringValue(src["data"]), stringValue(part["data"])),
+						"format": firstNonEmptyString(stringValue(src["format"]), stringValue(part["format"])),
+					},
+				})
 			default:
 				return nil, fmt.Errorf("unsupported Chat Completions content part %q", part["type"])
 			}
@@ -640,6 +680,15 @@ func (w *chatFrontWriter) streamEvent(raw []byte) error {
 			return err
 		}
 		return w.chunk(map[string]any{"content": text}, nil, nil)
+	case "response.output_text.annotation.added":
+		ann := mapValue(event["annotation"])
+		if ann == nil {
+			return nil
+		}
+		if err := w.ensureRole(); err != nil {
+			return err
+		}
+		return w.chunk(map[string]any{"annotations": []any{chatFrontAnnotation(ann)}}, nil, nil)
 	case "response.refusal.delta":
 		delta := stringValue(event["delta"])
 		if delta == "" {
@@ -932,6 +981,7 @@ func chatFrontUsage(value any) map[string]any {
 func chatFrontCompletion(response map[string]any, id string, created int64, model string) map[string]any {
 	var text, refusal, reasoning strings.Builder
 	var calls []any
+	var annotations []any
 	appendReasoning := func(s string) {
 		if s == "" {
 			return
@@ -953,6 +1003,11 @@ func chatFrontCompletion(response map[string]any, id string, created int64, mode
 					text.WriteString(value)
 				} else if value, _ := part["refusal"].(string); value != "" {
 					refusal.WriteString(value)
+				}
+				for _, rawAnn := range sliceValue(part["annotations"]) {
+					if ann := mapValue(rawAnn); ann != nil {
+						annotations = append(annotations, chatFrontAnnotation(ann))
+					}
 				}
 			}
 		case "reasoning":
@@ -988,6 +1043,9 @@ func chatFrontCompletion(response map[string]any, id string, created int64, mode
 			message["content"] = nil
 		}
 	}
+	if len(annotations) > 0 {
+		message["annotations"] = annotations
+	}
 	if reasoning.Len() > 0 {
 		message["reasoning_content"] = reasoning.String()
 	}
@@ -1004,4 +1062,20 @@ func chatFrontCompletion(response map[string]any, id string, created int64, mode
 		}},
 		"usage": chatFrontUsage(response["usage"]),
 	}
+}
+
+func chatFrontAnnotation(ann map[string]any) map[string]any {
+	if stringValue(ann["type"]) == "url_citation" {
+		if _, alreadyNested := ann["url_citation"]; alreadyNested {
+			return ann
+		}
+		nested := map[string]any{}
+		for _, k := range []string{"url", "title", "start_index", "end_index", "cited_text"} {
+			if v, ok := ann[k]; ok {
+				nested[k] = v
+			}
+		}
+		return map[string]any{"type": "url_citation", "url_citation": nested}
+	}
+	return ann
 }

@@ -24,6 +24,7 @@ type codexResponsesStreamState struct {
 	functionCount      int
 	retained           int
 	textPartsSeen      map[string]bool
+	annotationsSeen    map[string]bool
 	outputAliases      map[string]string
 	reasoningPartsSeen map[string]bool
 	reasoningDone      map[string]bool
@@ -257,6 +258,12 @@ func (s *codexResponsesStreamState) process(payload []byte) error {
 			s.assembler.stopReason = stopRefusal
 		}
 		return s.assembler.addRefusal(refusal)
+	case "response.output_text.annotation.added":
+		if ann := mapValue(event["annotation"]); ann != nil {
+			s.markAnnotationPart(event, nil, intValue(event["content_index"]))
+			return s.assembler.addAnnotation(ann)
+		}
+		return nil
 	case "response.content_part.done":
 		part := mapValue(event["part"])
 		if part == nil {
@@ -265,10 +272,21 @@ func (s *codexResponsesStreamState) process(payload []byte) error {
 		kind := stringValue(part["type"])
 		if kind == "output_text" {
 			text := stringValue(part["text"])
-			if text == "" || s.markTextPart(event, nil, intValue(event["content_index"])) {
-				return nil
+			if text != "" && !s.markTextPart(event, nil, intValue(event["content_index"])) {
+				if err := s.assembler.addText(text); err != nil {
+					return err
+				}
 			}
-			return s.assembler.addText(text)
+			if anns := sliceValue(part["annotations"]); len(anns) > 0 && !s.markAnnotationPart(event, nil, intValue(event["content_index"])) {
+				for _, rawAnn := range anns {
+					if ann := mapValue(rawAnn); ann != nil {
+						if err := s.assembler.addAnnotation(ann); err != nil {
+							return err
+						}
+					}
+				}
+			}
+			return nil
 		}
 		if kind == "refusal" {
 			refusal := stringValue(part["refusal"])
@@ -322,6 +340,18 @@ func (s *codexResponsesStreamState) process(payload []byte) error {
 	return nil
 }
 
+func (s *codexResponsesStreamState) markAnnotationPart(event, item map[string]any, contentIndex int) bool {
+	if s.annotationsSeen == nil {
+		s.annotationsSeen = make(map[string]bool)
+	}
+	key := fmt.Sprintf("%s:%d", s.textItemKey(event, item), contentIndex)
+	if s.annotationsSeen[key] {
+		return true
+	}
+	s.annotationsSeen[key] = true
+	return false
+}
+
 func (s *codexResponsesStreamState) processOutputItem(event map[string]any, terminal bool) error {
 	item := mapValue(event["item"])
 	switch stringValue(item["type"]) {
@@ -332,10 +362,10 @@ func (s *codexResponsesStreamState) processOutputItem(event map[string]any, term
 			if kind != "output_text" && kind != "refusal" {
 				continue
 			}
-			if s.markTextPart(event, item, index) {
-				continue
-			}
 			if kind == "refusal" {
+				if s.markTextPart(event, item, index) {
+					continue
+				}
 				refusal := stringValue(content["refusal"])
 				if refusal != "" {
 					if s.assembler.stopReason == "" {
@@ -347,9 +377,20 @@ func (s *codexResponsesStreamState) processOutputItem(event map[string]any, term
 				}
 				continue
 			}
-			if text := stringValue(content["text"]); text != "" {
-				if err := s.assembler.addText(text); err != nil {
-					return err
+			if !s.markTextPart(event, item, index) {
+				if text := stringValue(content["text"]); text != "" {
+					if err := s.assembler.addText(text); err != nil {
+						return err
+					}
+				}
+			}
+			if anns := sliceValue(content["annotations"]); len(anns) > 0 && !s.markAnnotationPart(event, item, index) {
+				for _, rawAnn := range anns {
+					if ann := mapValue(rawAnn); ann != nil {
+						if err := s.assembler.addAnnotation(ann); err != nil {
+							return err
+						}
+					}
 				}
 			}
 		}

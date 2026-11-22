@@ -19,11 +19,22 @@ func loopbackFrontMux(key string, models, responses http.HandlerFunc) *http.Serv
 
 // loopbackFrontMuxForContext builds the loopback mux, bypassing the per-runtime
 // previous_response_id history cache when disabled on ctx (for example when
-// codex.Gateway already owns conversation history).
+// codex.Gateway already owns conversation history). Non-Codex runtimes use
+// local summary compaction on /responses/compact by default.
 func loopbackFrontMuxForContext(ctx context.Context, key string, models, responses http.HandlerFunc) *http.ServeMux {
+	return loopbackFrontMuxWithCompact(ctx, key, models, responses, nil)
+}
+
+func loopbackFrontMuxWithCompact(ctx context.Context, key string, models, responses, compact http.HandlerFunc) *http.ServeMux {
+	if compact == nil {
+		compact = localCompactionHandler(key, responses)
+	}
 	statefulResponses := responses
+	statefulCompact := compact
 	if !historyCacheDisabled(ctx) {
-		statefulResponses = withResponsesHistory(key, responses)
+		cache := newResponsesHistoryCache()
+		statefulResponses = withSharedResponsesHistory(key, cache, responses, true)
+		statefulCompact = withSharedResponsesHistory(key, cache, compact, false)
 	}
 	chat := chatCompletionsFront(key, responses)
 	mux := http.NewServeMux()
@@ -34,7 +45,7 @@ func loopbackFrontMuxForContext(ctx context.Context, key string, models, respons
 	for _, prefix := range []string{"/v1", ""} {
 		mux.HandleFunc(prefix+"/models", models)
 		mux.HandleFunc(prefix+"/responses", statefulResponses)
-		mux.HandleFunc(prefix+"/responses/compact", responses)
+		mux.HandleFunc(prefix+"/responses/compact", statefulCompact)
 		mux.HandleFunc(prefix+"/chat/completions", chat)
 	}
 	return mux

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/grokbuildx/gbx/internal/protocol"
 )
@@ -68,7 +69,10 @@ func convertResponsesToAnthropicMessagesWithOptions(raw []byte, opts anthropicCo
 		upstreamModel = stripContextModelSuffix(opts.overrideModel)
 	}
 
-	messages := anthropicMessagesScoped(request.Turns, opts.scope)
+	messages, err := anthropicMessagesScoped(request.Turns, opts.scope)
+	if err != nil {
+		return nil, err
+	}
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("request has no messages for the Anthropic Messages upstream")
 	}
@@ -264,15 +268,23 @@ func clampAnthropicEffort(asked string, catalogEfforts []string) string {
 // anthropicMessages renders conversation turns as Messages, merging adjacent
 // turns of one role and dropping turns left empty.
 func anthropicMessages(turns []conversationTurn) []map[string]any {
-	return anthropicMessagesScoped(turns, "")
+	msgs, _ := anthropicMessagesScoped(turns, "")
+	return msgs
 }
 
-func anthropicMessagesScoped(turns []conversationTurn, scope string) []map[string]any {
+func anthropicMessagesScoped(turns []conversationTurn, scope string) ([]map[string]any, error) {
 	var messages []map[string]any
 	for _, turn := range turns {
-		content := anthropicTurnContentScoped(turn, scope)
+		content, err := anthropicTurnContentScoped(turn, scope)
+		if err != nil {
+			return nil, err
+		}
 		if len(content) == 0 {
-			continue
+			if turn.Role == "user" && len(turn.Parts) == 0 {
+				content = []map[string]any{{"type": "text", "text": "Continue."}}
+			} else {
+				continue
+			}
 		}
 		role := "user"
 		if turn.Role == "assistant" {
@@ -288,6 +300,11 @@ func anthropicMessagesScoped(turns []conversationTurn, scope string) []map[strin
 	// Messages must start with a user turn.
 	if len(messages) > 0 && messages[0]["role"] != "user" {
 		messages = append([]map[string]any{{"role": "user", "content": []map[string]any{{"type": "text", "text": "Continue."}}}}, messages...)
+	}
+	// Avoid trailing assistant prefill, which fails when extended thinking is
+	// enabled or on Claude 4.6+ models that reject assistant prefill.
+	if len(messages) > 0 && messages[len(messages)-1]["role"] == "assistant" {
+		messages = append(messages, map[string]any{"role": "user", "content": []map[string]any{{"type": "text", "text": "Continue."}}})
 	}
 	// Rolling cache breakpoints on up to the 2 most recent user turns
 	// (combined with tools[last] and system[last], stays within Anthropic's 4-breakpoint cap).
@@ -306,7 +323,7 @@ func anthropicMessagesScoped(turns []conversationTurn, scope string) []map[strin
 			break
 		}
 	}
-	return messages
+	return messages, nil
 }
 
 // anthropicThinkingReplayable reports whether thinking may be enabled for this
@@ -318,7 +335,7 @@ func anthropicThinkingReplayable(messages []map[string]any) bool {
 		role, _ := messages[i]["role"].(string)
 		blocks, _ := messages[i]["content"].([]map[string]any)
 		if role == "user" {
-			if !anthropicIsToolResultOnlyMessage(blocks) {
+			if !anthropicHasToolResult(blocks) {
 				// Reached the start of the current tool loop.
 				return true
 			}
@@ -345,16 +362,13 @@ func anthropicThinkingReplayable(messages []map[string]any) bool {
 	return true
 }
 
-func anthropicIsToolResultOnlyMessage(blocks []map[string]any) bool {
-	if len(blocks) == 0 {
-		return false
-	}
+func anthropicHasToolResult(blocks []map[string]any) bool {
 	for _, block := range blocks {
-		if block["type"] != "tool_result" {
-			return false
+		if block["type"] == "tool_result" {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // anthropicOrderBlocks applies Messages' ordering rules: tool results lead a
@@ -382,23 +396,54 @@ func anthropicOrderBlocks(role string, blocks []map[string]any) []map[string]any
 
 // anthropicTurnContent renders one turn's parts as Messages content blocks.
 func anthropicTurnContent(turn conversationTurn) []map[string]any {
-	return anthropicTurnContentScoped(turn, "")
+	blocks, _ := anthropicTurnContentScoped(turn, "")
+	return blocks
 }
 
-func anthropicTurnContentScoped(turn conversationTurn, scope string) []map[string]any {
+func anthropicTurnContentScoped(turn conversationTurn, scope string) ([]map[string]any, error) {
+	if turn.Role == "developer" || turn.Role == "system" {
+		var texts []string
+		for _, part := range turn.Parts {
+			if part.Kind == partText && strings.TrimSpace(part.Text) != "" {
+				texts = append(texts, part.Text)
+			}
+		}
+		if len(texts) == 0 {
+			return nil, nil
+		}
+		return []map[string]any{{"type": "text", "text": "[Developer instruction]\n" + strings.Join(texts, "\n")}}, nil
+	}
 	assistant := turn.Role == "assistant"
 	var blocks []map[string]any
 	for _, part := range turn.Parts {
 		switch part.Kind {
-		case partText:
+		case partText, partRefusal:
 			if strings.TrimSpace(part.Text) != "" {
 				blocks = append(blocks, map[string]any{"type": "text", "text": part.Text})
 			}
 		case partImage:
 			if !assistant {
-				if image := anthropicImage(part); image != nil {
+				image, err := anthropicImage(part)
+				if err != nil {
+					return nil, err
+				}
+				if image != nil {
 					blocks = append(blocks, image)
 				}
+			}
+		case partFile:
+			if !assistant {
+				doc, err := anthropicDocument(part)
+				if err != nil {
+					return nil, err
+				}
+				if doc != nil {
+					blocks = append(blocks, doc)
+				}
+			}
+		case partAudio:
+			if !assistant {
+				return nil, fmt.Errorf("Anthropic Messages does not support input_audio content parts")
 			}
 		case partReasoning:
 			if assistant {
@@ -418,11 +463,15 @@ func anthropicTurnContentScoped(turn conversationTurn, scope string) []map[strin
 			}
 		case partToolResult:
 			if !assistant && part.CallID != "" {
-				blocks = append(blocks, anthropicToolResult(part))
+				tr, err := anthropicToolResult(part)
+				if err != nil {
+					return nil, err
+				}
+				blocks = append(blocks, tr)
 			}
 		}
 	}
-	return blocks
+	return blocks, nil
 }
 
 // anthropicReasoning restores thinking this backend produced. Reasoning from
@@ -445,33 +494,94 @@ func anthropicReasoningScoped(part conversationPart, scope string) map[string]an
 	return nil
 }
 
-func anthropicImage(part conversationPart) map[string]any {
+func anthropicImage(part conversationPart) (map[string]any, error) {
 	switch {
 	case part.Data != "":
-		mediaType := part.MediaType
+		data := stripASCIIWhitespace(part.Data)
+		mediaType := sniffBase64ImageMediaType(data)
+		if mediaType == "" {
+			mediaType = strings.ToLower(strings.TrimSpace(part.MediaType))
+			if mediaType == "image/jpg" {
+				mediaType = "image/jpeg"
+			}
+		}
 		if mediaType == "" {
 			mediaType = "image/png"
 		}
-		return map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": mediaType, "data": part.Data}}
+		switch mediaType {
+		case "image/jpeg", "image/png", "image/gif", "image/webp":
+		default:
+			return nil, fmt.Errorf("Anthropic Messages only supports jpeg, png, gif, and webp images (got %q)", mediaType)
+		}
+		return map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": mediaType, "data": data}}, nil
 	case part.URL != "":
-		return map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": part.URL}}
+		return map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": part.URL}}, nil
+	case part.FileID != "":
+		return nil, fmt.Errorf("Anthropic Messages does not support image file_id references")
 	default:
-		return nil
+		return nil, nil
 	}
 }
 
-func anthropicToolResult(part conversationPart) map[string]any {
+func anthropicDocument(part conversationPart) (map[string]any, error) {
+	if part.FileID != "" && part.Data == "" && part.URL == "" {
+		return nil, fmt.Errorf("Anthropic Messages does not support OpenAI file_id references")
+	}
+	mediaType := strings.ToLower(strings.TrimSpace(part.MediaType))
+	var source map[string]any
+	switch {
+	case part.Data != "":
+		data := stripASCIIWhitespace(part.Data)
+		switch {
+		case mediaType == "application/pdf":
+			source = map[string]any{"type": "base64", "media_type": "application/pdf", "data": data}
+		case strings.HasPrefix(mediaType, "text/") || mediaType == "application/json" || mediaType == "application/xml":
+			decoded, err := decodeBase64Flexible(data)
+			if err != nil || !utf8.Valid(decoded) {
+				return nil, fmt.Errorf("Anthropic text document must contain valid UTF-8 base64 data")
+			}
+			source = map[string]any{"type": "text", "media_type": "text/plain", "data": string(decoded)}
+		default:
+			return nil, fmt.Errorf("Anthropic Messages only supports PDF and plain-text documents (got %q)", mediaType)
+		}
+	case part.URL != "":
+		source = map[string]any{"type": "url", "url": part.URL}
+	default:
+		return nil, fmt.Errorf("input_file requires file_data or file_url for Anthropic Messages")
+	}
+	doc := map[string]any{"type": "document", "source": source}
+	if part.Filename != "" {
+		doc["title"] = part.Filename
+	}
+	return doc, nil
+}
+
+func anthropicToolResult(part conversationPart) (map[string]any, error) {
 	var content []map[string]any
 	for _, piece := range part.Output {
 		switch piece.Kind {
 		case partText:
-			if piece.Text != "" {
+			if strings.TrimSpace(piece.Text) != "" {
 				content = append(content, map[string]any{"type": "text", "text": piece.Text})
 			}
 		case partImage:
-			if image := anthropicImage(piece); image != nil {
+			image, err := anthropicImage(piece)
+			if err != nil {
+				return nil, err
+			}
+			if image != nil {
 				content = append(content, image)
 			}
+		case partFile:
+			doc, err := anthropicDocument(piece)
+			if err != nil {
+				return nil, err
+			}
+			if doc != nil {
+				content = append(content, doc)
+			}
+		case partAudio:
+			return nil, fmt.Errorf("Anthropic Messages does not support input_audio in tool results")
 		}
 	}
 	block := map[string]any{"type": "tool_result", "tool_use_id": part.CallID}
@@ -480,7 +590,7 @@ func anthropicToolResult(part conversationPart) map[string]any {
 	} else {
 		block["content"] = ""
 	}
-	return block
+	return block, nil
 }
 
 func anthropicTool(tool conversationTool) map[string]any {

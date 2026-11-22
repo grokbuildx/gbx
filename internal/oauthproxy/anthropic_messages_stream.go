@@ -112,13 +112,14 @@ func (s *anthropicStreamState) process(payload []byte) error {
 		}
 	case "content_block_start":
 		var block struct {
-			Type      string `json:"type"`
-			ID        string `json:"id"`
-			Name      string `json:"name"`
-			Text      string `json:"text"`
-			Thinking  string `json:"thinking"`
-			Signature string `json:"signature"`
-			Data      string `json:"data"`
+			Type      string           `json:"type"`
+			ID        string           `json:"id"`
+			Name      string           `json:"name"`
+			Text      string           `json:"text"`
+			Thinking  string           `json:"thinking"`
+			Signature string           `json:"signature"`
+			Data      string           `json:"data"`
+			Citations []map[string]any `json:"citations"`
 		}
 		if err := json.Unmarshal(event.ContentBlock, &block); err != nil {
 			return fmt.Errorf("decode Anthropic content block: %w", err)
@@ -160,7 +161,16 @@ func (s *anthropicStreamState) process(payload []byte) error {
 			}
 			return a.addOpaqueReasoning(prefixed)
 		case "text":
-			return a.addText(block.Text)
+			if err := a.addText(block.Text); err != nil {
+				return err
+			}
+			for _, citation := range block.Citations {
+				if ann := anthropicCitationToAnnotation(citation); ann != nil {
+					if err := a.addAnnotation(ann); err != nil {
+						return err
+					}
+				}
+			}
 		}
 	case "content_block_delta":
 		state := s.blocks[event.Index]
@@ -168,11 +178,12 @@ func (s *anthropicStreamState) process(payload []byte) error {
 			return fmt.Errorf("Anthropic delta for unknown content block %d", event.Index)
 		}
 		var delta struct {
-			Type        string `json:"type"`
-			Text        string `json:"text"`
-			Thinking    string `json:"thinking"`
-			Signature   string `json:"signature"`
-			PartialJSON string `json:"partial_json"`
+			Type        string         `json:"type"`
+			Text        string         `json:"text"`
+			Thinking    string         `json:"thinking"`
+			Signature   string         `json:"signature"`
+			PartialJSON string         `json:"partial_json"`
+			Citation    map[string]any `json:"citation"`
 		}
 		if err := json.Unmarshal(event.Delta, &delta); err != nil {
 			return fmt.Errorf("decode Anthropic delta: %w", err)
@@ -180,6 +191,10 @@ func (s *anthropicStreamState) process(payload []byte) error {
 		switch delta.Type {
 		case "text_delta":
 			return a.addText(delta.Text)
+		case "citations_delta":
+			if ann := anthropicCitationToAnnotation(delta.Citation); ann != nil {
+				return a.addAnnotation(ann)
+			}
 		case "thinking_delta":
 			if delta.Thinking != "" {
 				state.thinking = true
@@ -321,4 +336,32 @@ func anthropicStopReason(reason string) string {
 	default:
 		return stopEndTurn
 	}
+}
+
+func anthropicCitationToAnnotation(citation map[string]any) map[string]any {
+	if len(citation) == 0 {
+		return nil
+	}
+	kind := stringValue(citation["type"])
+	if kind == "web_search_result_location" {
+		ann := map[string]any{"type": "url_citation"}
+		if u := stringValue(citation["url"]); u != "" {
+			ann["url"] = u
+		}
+		if title := stringValue(citation["title"]); title != "" {
+			ann["title"] = title
+		}
+		if cited := stringValue(citation["cited_text"]); cited != "" {
+			ann["cited_text"] = cited
+		}
+		return ann
+	}
+	out := make(map[string]any, len(citation))
+	for k, v := range citation {
+		out[k] = v
+	}
+	if _, hasType := out["type"]; !hasType {
+		out["type"] = "citation"
+	}
+	return out
 }

@@ -20,6 +20,7 @@ type responseRequest struct {
 	Instructions       string           `json:"instructions"`
 	Tools              []map[string]any `json:"tools"`
 	Stream             bool             `json:"stream"`
+	Store              *bool            `json:"store"`
 	PreviousResponseID string           `json:"previous_response_id"`
 	MaxOutputTokens    int              `json:"max_output_tokens"`
 	Reasoning          map[string]any   `json:"reasoning"`
@@ -44,7 +45,7 @@ func hoistCompactionTrigger(items []map[string]any) ([]map[string]any, bool) {
 
 // Summarization has no live tools. Preserve historical calls/results as text
 // so the summarization request cannot resume a tool loop, and omit inline
-// screenshot/image payloads so compaction stays within model context limits.
+// screenshot/image/file/audio payloads so compaction stays within model context limits.
 func compactionItems(items []map[string]any) []map[string]any {
 	result := make([]map[string]any, 0, len(items)+1)
 	for _, item := range items {
@@ -59,7 +60,7 @@ func compactionItems(items []map[string]any) []map[string]any {
 				output = item["tools"]
 			}
 			result = append(result, map[string]any{"type": "message", "role": "user", "content": fmt.Sprintf("Previous tool result (%s):\n%s", textValue(item["call_id"]), compactionTextValue(output))})
-		case "message":
+		case "", "message":
 			result = append(result, sanitizeCompactionMessage(item))
 		default:
 			result = append(result, item)
@@ -122,6 +123,16 @@ func sanitizeCompactionMessage(item map[string]any) map[string]any {
 			if isImageContentItem(part) {
 				changed = true
 				sanitized = append(sanitized, map[string]any{"type": partType, "text": "[image omitted]"})
+				continue
+			}
+			if isFileContentItem(part) {
+				changed = true
+				sanitized = append(sanitized, map[string]any{"type": partType, "text": "[file omitted]"})
+				continue
+			}
+			if isAudioContentItem(part) {
+				changed = true
+				sanitized = append(sanitized, map[string]any{"type": partType, "text": "[audio omitted]"})
 				continue
 			}
 			if text, ok := part["text"].(string); ok && isInlineImageData(text) {
@@ -188,13 +199,34 @@ func sanitizeCompactionValue(value any) (any, bool) {
 		if isImageContentItem(v) {
 			return "[image omitted]", true
 		}
+		if isFileContentItem(v) {
+			return "[file omitted]", true
+		}
+		if isAudioContentItem(v) {
+			return "[audio omitted]", true
+		}
 		changed := false
 		out := make(map[string]any, len(v))
 		for k, elem := range v {
-			if (k == "image_url" || k == "file_data") && elem != nil {
-				out[k] = "[image omitted]"
-				changed = true
-				continue
+			switch k {
+			case "image_url":
+				if elem != nil {
+					out[k] = "[image omitted]"
+					changed = true
+					continue
+				}
+			case "file_data":
+				if elem != nil {
+					out[k] = "[file omitted]"
+					changed = true
+					continue
+				}
+			case "input_audio":
+				if elem != nil {
+					out[k] = "[audio omitted]"
+					changed = true
+					continue
+				}
 			}
 			next, elemChanged := sanitizeCompactionValue(elem)
 			changed = changed || elemChanged
@@ -217,6 +249,37 @@ func isImageContentItem(item map[string]any) bool {
 	}
 	if _, ok := item["image_url"].(map[string]any); ok {
 		return true
+	}
+	return false
+}
+
+func isFileContentItem(item map[string]any) bool {
+	kind, _ := item["type"].(string)
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "input_file", "file":
+		if v, ok := item["file_data"].(string); ok && strings.TrimSpace(v) != "" {
+			return true
+		}
+		if nested, ok := item["file"].(map[string]any); ok {
+			if v, ok := nested["file_data"].(string); ok && strings.TrimSpace(v) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isAudioContentItem(item map[string]any) bool {
+	kind, _ := item["type"].(string)
+	if strings.EqualFold(strings.TrimSpace(kind), "input_audio") {
+		if v, ok := item["data"].(string); ok && strings.TrimSpace(v) != "" {
+			return true
+		}
+		if nested, ok := item["input_audio"].(map[string]any); ok {
+			if v, ok := nested["data"].(string); ok && strings.TrimSpace(v) != "" {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -261,10 +324,15 @@ func (g *Gateway) serveBridge(w http.ResponseWriter, r *http.Request, body []byt
 	if request.PreviousResponseID != "" {
 		previous, ok := g.history.get(request.PreviousResponseID, route.Alias, owner)
 		if !ok {
-			writeError(w, 400, "invalid_request_error", "previous_response_id is unknown, expired, or belongs to another route", "previous_response_not_found")
+			writeErrorParam(w, 400, "invalid_request_error", "previous_response_id is unknown, expired, or belongs to another route", "previous_response_not_found", "previous_response_id")
 			return
 		}
 		items = append(previous, items...)
+	}
+	items, err = g.history.expandItemReferences(items, route.Alias, owner)
+	if err != nil {
+		writeErrorParam(w, 400, "invalid_request_error", err.Error(), "item_not_found", "input")
+		return
 	}
 	var migrated bool
 	items, migrated, err = g.migrateNativeContext(r, route, items, request.ClientMetadata)
@@ -311,12 +379,16 @@ func (g *Gateway) serveBridge(w http.ResponseWriter, r *http.Request, body []byt
 	if pendingNotice && !compactionRequest {
 		notice = "GBX context migration: resumed from a bounded local transcript excerpt. The encrypted summary was not decrypted; older details may be missing.\n\n"
 	}
+	shouldStore := request.Store == nil || *request.Store
 	record := func(result map[string]any) {
 		if result["status"] != "completed" && result["status"] != "incomplete" {
 			return
 		}
 		if notice != "" {
 			g.migrationNotices.remove(noticeID, "migration-notice", owner)
+		}
+		if !shouldStore {
+			return
 		}
 		id, _ := result["id"].(string)
 		output, _ := result["output"].([]any)
@@ -345,7 +417,9 @@ func (g *Gateway) serveBridge(w http.ResponseWriter, r *http.Request, body []byt
 		summaryItem := map[string]any{"type": "message", "role": "user", "content": "Conversation summary:\n" + summary}
 		if triggered && !compact {
 			id := randomID("resp_")
-			g.history.put(id, route.Alias, owner, []map[string]any{summaryItem})
+			if shouldStore {
+				g.history.put(id, route.Alias, owner, []map[string]any{summaryItem})
+			}
 			writeBridgeCompaction(w, request, id, summary, result["usage"])
 		} else {
 			summaryItem["content"] = []any{map[string]any{"type": "input_text", "text": summaryItem["content"]}}
@@ -418,19 +492,31 @@ func decodeBridgeJSON(raw []byte, target any) error {
 }
 
 func responseSummary(result map[string]any) string {
-	var summary strings.Builder
+	var parts []string
 	output, _ := result["output"].([]any)
 	for _, entry := range output {
 		item, _ := entry.(map[string]any)
+		if item == nil {
+			continue
+		}
+		if kind, _ := item["type"].(string); kind != "message" {
+			continue
+		}
 		content, _ := item["content"].([]any)
 		for _, value := range content {
 			part, _ := value.(map[string]any)
+			if part == nil {
+				continue
+			}
+			if kind, _ := part["type"].(string); kind != "output_text" {
+				continue
+			}
 			if text, _ := part["text"].(string); text != "" {
-				summary.WriteString(text)
+				parts = append(parts, text)
 			}
 		}
 	}
-	return strings.TrimSpace(summary.String())
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 func encodeCompactionSummary(summary string) string {
@@ -441,29 +527,112 @@ func decodeCompactionSummary(encoded string) (string, bool) {
 	return oauthproxy.DecodeCompactionSummary(encoded)
 }
 
+const (
+	responseHistoryTTL          = 30 * time.Minute
+	responseHistoryMaxItems     = 1024
+	responseHistoryMaxItemBytes = 16 << 20
+)
+
+type historyKey struct {
+	ID, Route, Owner string
+}
+
 type historyEntry struct {
 	Route, Owner string
 	Items        []byte
 	At           time.Time
 }
+
 type responseHistory struct {
 	sync.Mutex
-	entries map[string]historyEntry
-	bytes   int
+	entries   map[historyKey]historyEntry
+	bytes     int
+	items     map[historyKey]historyEntry
+	itemBytes int
+}
+
+func (h *responseHistory) pruneExpiredLocked(now time.Time) {
+	for k, e := range h.entries {
+		if now.Sub(e.At) > responseHistoryTTL {
+			h.bytes -= len(e.Items)
+			delete(h.entries, k)
+		}
+	}
+	for k, e := range h.items {
+		if now.Sub(e.At) > responseHistoryTTL {
+			h.itemBytes -= len(e.Items)
+			delete(h.items, k)
+		}
+	}
 }
 
 func (h *responseHistory) get(id, route, owner string) ([]map[string]any, bool) {
 	h.Lock()
 	defer h.Unlock()
-	e, ok := h.entries[id]
-	if !ok || e.Route != route || e.Owner != owner || time.Since(e.At) > 30*time.Minute {
+	now := time.Now()
+	h.pruneExpiredLocked(now)
+	key := historyKey{ID: id, Route: route, Owner: owner}
+	e, ok := h.entries[key]
+	if !ok {
 		return nil, false
 	}
+	e.At = now
+	h.entries[key] = e
 	var items []map[string]any
 	if decodeBridgeJSON(e.Items, &items) != nil {
 		return nil, false
 	}
 	return items, true
+}
+
+func (h *responseHistory) getItem(id, route, owner string) (map[string]any, bool) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, false
+	}
+	h.Lock()
+	defer h.Unlock()
+	now := time.Now()
+	h.pruneExpiredLocked(now)
+	key := historyKey{ID: id, Route: route, Owner: owner}
+	e, ok := h.items[key]
+	if !ok {
+		return nil, false
+	}
+	e.At = now
+	h.items[key] = e
+	var item map[string]any
+	if decodeBridgeJSON(e.Items, &item) != nil || item == nil {
+		return nil, false
+	}
+	return item, true
+}
+
+func (h *responseHistory) expandItemReferences(items []map[string]any, route, owner string) ([]map[string]any, error) {
+	hasRef := false
+	for _, item := range items {
+		if kind, _ := item["type"].(string); kind == "item_reference" {
+			hasRef = true
+			break
+		}
+	}
+	if !hasRef {
+		return items, nil
+	}
+	expanded := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if kind, _ := item["type"].(string); kind == "item_reference" {
+			refID, _ := item["id"].(string)
+			resolved, ok := h.getItem(refID, route, owner)
+			if !ok {
+				return nil, fmt.Errorf("item_reference id is unknown, expired, or belongs to another route")
+			}
+			expanded = append(expanded, resolved)
+			continue
+		}
+		expanded = append(expanded, item)
+	}
+	return expanded, nil
 }
 
 const maxCachedHistoryImages = 6
@@ -476,32 +645,79 @@ func (h *responseHistory) put(id, route, owner string, items []map[string]any) {
 	if !ok {
 		return
 	}
+	now := time.Now()
 	h.Lock()
 	defer h.Unlock()
 	if h.entries == nil {
-		h.entries = make(map[string]historyEntry)
+		h.entries = make(map[historyKey]historyEntry)
 	}
-	if existing, ok := h.entries[id]; ok {
+	if h.items == nil {
+		h.items = make(map[historyKey]historyEntry)
+	}
+	h.pruneExpiredLocked(now)
+	key := historyKey{ID: id, Route: route, Owner: owner}
+	if existing, ok := h.entries[key]; ok {
 		h.bytes -= len(existing.Items)
-		delete(h.entries, id)
+		delete(h.entries, key)
 	}
 	for len(h.entries) >= 64 || h.bytes+len(raw) > 128<<20 {
-		var oldest string
+		var oldest historyKey
+		var found bool
 		var at time.Time
 		for k, e := range h.entries {
-			if oldest == "" || e.At.Before(at) {
+			if !found || e.At.Before(at) {
 				oldest = k
 				at = e.At
+				found = true
 			}
 		}
-		if oldest == "" {
+		if !found {
 			break
 		}
 		h.bytes -= len(h.entries[oldest].Items)
 		delete(h.entries, oldest)
 	}
-	h.entries[id] = historyEntry{Route: route, Owner: owner, Items: raw, At: time.Now()}
+	h.entries[key] = historyEntry{Route: route, Owner: owner, Items: raw, At: now}
 	h.bytes += len(raw)
+	h.indexItemsLocked(route, owner, items, now)
+}
+
+func (h *responseHistory) indexItemsLocked(route, owner string, items []map[string]any, now time.Time) {
+	for _, item := range items {
+		itemID, _ := item["id"].(string)
+		itemID = strings.TrimSpace(itemID)
+		if itemID == "" {
+			continue
+		}
+		encoded, err := json.Marshal(item)
+		if err != nil || len(encoded) == 0 || len(encoded) > maxBodyBytes {
+			continue
+		}
+		key := historyKey{ID: itemID, Route: route, Owner: owner}
+		if existing, ok := h.items[key]; ok {
+			h.itemBytes -= len(existing.Items)
+			delete(h.items, key)
+		}
+		for len(h.items) >= responseHistoryMaxItems || h.itemBytes+len(encoded) > responseHistoryMaxItemBytes {
+			var oldest historyKey
+			var found bool
+			var at time.Time
+			for k, e := range h.items {
+				if !found || e.At.Before(at) {
+					oldest = k
+					at = e.At
+					found = true
+				}
+			}
+			if !found {
+				break
+			}
+			h.itemBytes -= len(h.items[oldest].Items)
+			delete(h.items, oldest)
+		}
+		h.items[key] = historyEntry{Route: route, Owner: owner, Items: encoded, At: now}
+		h.itemBytes += len(encoded)
+	}
 }
 
 func marshalBoundedHistoryItems(items []map[string]any, limit int) ([]byte, bool) {
@@ -546,7 +762,7 @@ func countInlineImagesValue(value any) int {
 		}
 		return n
 	case map[string]any:
-		if isImageContentItem(v) {
+		if isImageContentItem(v) || isFileContentItem(v) || isAudioContentItem(v) {
 			return 1
 		}
 		n := 0
@@ -559,18 +775,69 @@ func countInlineImagesValue(value any) int {
 	}
 }
 
+func codexBuiltinCallID(item map[string]any) string {
+	if id, _ := item["call_id"].(string); strings.TrimSpace(id) != "" {
+		return strings.TrimSpace(id)
+	}
+	id, _ := item["id"].(string)
+	return strings.TrimSpace(id)
+}
+
 func pruneInlineHistoryImages(items []map[string]any, totalImages, keepNewest int) []map[string]any {
 	dropLimit := totalImages - keepNewest
 	if dropLimit <= 0 {
 		return items
 	}
 	dropped := 0
+	demotedCalls := make(map[string]bool)
 	out := make([]map[string]any, len(items))
 	for i, item := range items {
+		if dropped < dropLimit {
+			if kind, _ := item["type"].(string); kind == "computer_call_output" {
+				if imgCount := countInlineImagesValue(item["output"]); imgCount > 0 {
+					dropped += imgCount
+					callID := codexBuiltinCallID(item)
+					if callID != "" {
+						demotedCalls[callID] = true
+					}
+					summary := "[historical screenshot omitted]"
+					if currentURL, _ := item["current_url"].(string); strings.TrimSpace(currentURL) != "" {
+						summary = "Current URL: " + strings.TrimSpace(currentURL) + "\n" + summary
+					}
+					if callID != "" {
+						summary = "Previous computer call output (" + callID + "):\n" + summary
+					}
+					out[i] = map[string]any{
+						"type":    "message",
+						"role":    "user",
+						"content": []any{map[string]any{"type": "input_text", "text": summary}},
+					}
+					continue
+				}
+			}
+		}
 		if pruned, ok := pruneInlineImagesValue(item, &dropped, dropLimit).(map[string]any); ok {
 			out[i] = pruned
 		} else {
 			out[i] = item
+		}
+	}
+	if len(demotedCalls) > 0 {
+		for i, item := range out {
+			if kind, _ := item["type"].(string); kind != "computer_call" {
+				continue
+			}
+			callID := codexBuiltinCallID(item)
+			if !demotedCalls[callID] {
+				continue
+			}
+			_, payload := compactionToolCallSummary("computer_call", item)
+			args := compactionTextValue(payload)
+			out[i] = map[string]any{
+				"type":    "message",
+				"role":    "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "Previous computer call (" + callID + "):\n" + args}},
+			}
 		}
 	}
 	return out
@@ -607,6 +874,14 @@ func pruneInlineImagesValue(value any, dropped *int, dropLimit int) any {
 			*dropped++
 			return map[string]any{"type": "input_text", "text": "[historical screenshot omitted]"}
 		}
+		if isFileContentItem(v) {
+			*dropped++
+			return map[string]any{"type": "input_text", "text": "[file omitted]"}
+		}
+		if isAudioContentItem(v) {
+			*dropped++
+			return map[string]any{"type": "input_text", "text": "[audio omitted]"}
+		}
 		out := make(map[string]any, len(v))
 		changed := false
 		for k, elem := range v {
@@ -629,8 +904,9 @@ func pruneInlineImagesValue(value any, dropped *int, dropLimit int) any {
 func (h *responseHistory) remove(id, route, owner string) {
 	h.Lock()
 	defer h.Unlock()
-	if e, ok := h.entries[id]; ok && e.Route == route && e.Owner == owner {
+	key := historyKey{ID: id, Route: route, Owner: owner}
+	if e, ok := h.entries[key]; ok {
 		h.bytes -= len(e.Items)
-		delete(h.entries, id)
+		delete(h.entries, key)
 	}
 }

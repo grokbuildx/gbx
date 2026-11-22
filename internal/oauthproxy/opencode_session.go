@@ -18,15 +18,31 @@ const (
 
 type clientSessionKey struct{}
 
+// extractClientSessionID reads the conversation/session identifier from common
+// client headers (Claude Code, Codex legacy/modern, Grok Build, generic).
+func extractClientSessionID(incoming *http.Request) string {
+	if incoming == nil {
+		return ""
+	}
+	for _, name := range []string{
+		claudeCodeSessionHeader,
+		"Session_id",
+		"Session-Id",
+		"Thread-Id",
+		"X-Grok-Conv-Id",
+		"X-Codex-Session-Id",
+		"X-Session-Id",
+	} {
+		if id := strings.TrimSpace(incoming.Header.Get(name)); id != "" && len(id) <= 256 {
+			return id
+		}
+	}
+	return ""
+}
+
 // withClientSession records the client session ID of an incoming request.
 func withClientSession(ctx context.Context, incoming *http.Request) context.Context {
-	if incoming == nil {
-		return ctx
-	}
-	id := strings.TrimSpace(incoming.Header.Get(claudeCodeSessionHeader))
-	if id == "" {
-		id = strings.TrimSpace(incoming.Header.Get("Session_id"))
-	}
+	id := extractClientSessionID(incoming)
 	if id == "" {
 		return ctx
 	}

@@ -323,7 +323,7 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	r = r.WithContext(context.WithValue(r.Context(), runtimeRequestKey{}, snapshot.runtimes[route.Alias]))
 	if route.NativeResponses {
-		g.forwardResponses(w, r, nativeHistory(body), route, path)
+		g.forwardResponses(w, r, nativeHistory(body), request, route, path)
 		return
 	}
 	g.serveBridge(w, r, body, request, route, path == "/responses/compact")
@@ -397,9 +397,57 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	return body, nil
 }
 
-func (g *Gateway) forwardResponses(w http.ResponseWriter, r *http.Request, body []byte, route Route, path string) {
+func (g *Gateway) forwardResponses(w http.ResponseWriter, r *http.Request, body []byte, request responseRequest, route Route, path string) {
 	var fields map[string]json.RawMessage
-	_ = json.Unmarshal(body, &fields)
+	if json.Unmarshal(body, &fields) != nil || fields == nil {
+		fields = map[string]json.RawMessage{}
+	}
+	items, err := inputItems(fields["input"])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error(), "")
+		return
+	}
+	owner := historyOwner(r)
+	inputModified := false
+	if request.PreviousResponseID != "" {
+		previous, ok := g.history.get(request.PreviousResponseID, route.Alias, owner)
+		if !ok {
+			writeErrorParam(w, http.StatusBadRequest, "invalid_request_error", "previous_response_id is unknown, expired, or belongs to another route", "previous_response_not_found", "previous_response_id")
+			return
+		}
+		items = append(previous, items...)
+		delete(fields, "previous_response_id")
+		inputModified = true
+	}
+	hasItemRef := false
+	for _, item := range items {
+		if kind, _ := item["type"].(string); kind == "item_reference" {
+			hasItemRef = true
+			break
+		}
+	}
+	if hasItemRef {
+		items, err = g.history.expandItemReferences(items, route.Alias, owner)
+		if err != nil {
+			writeErrorParam(w, http.StatusBadRequest, "invalid_request_error", err.Error(), "item_not_found", "input")
+			return
+		}
+		inputModified = true
+	}
+	if !route.CodexNativeTools && hasOpaqueCompaction(items) {
+		var migrated bool
+		items, migrated, err = g.migrateNativeContext(r, route, items, request.ClientMetadata)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error(), "context_migration_unavailable")
+			return
+		}
+		if migrated || len(items) > 0 {
+			inputModified = true
+		}
+	}
+	if inputModified {
+		fields["input"], _ = json.Marshal(items)
+	}
 	fields["model"], _ = json.Marshal(route.Model)
 	body, _ = json.Marshal(fields)
 	response, err := g.callRuntime(r, body, path)
@@ -408,7 +456,157 @@ func (g *Gateway) forwardResponses(w http.ResponseWriter, r *http.Request, body 
 		return
 	}
 	defer response.Body.Close()
-	relayResponse(w, r, response)
+
+	shouldStore := path == "/responses" && (request.Store == nil || *request.Store) && response.StatusCode >= 200 && response.StatusCode < 300
+	if !shouldStore {
+		relayResponse(w, r, response)
+		return
+	}
+	observer := newForwardResponseObserver(response.Header.Get("Content-Type"))
+	relayResponseWithObserver(w, r, response, observer)
+	if result := observer.terminalResponse(); result != nil {
+		id, _ := result["id"].(string)
+		if id != "" {
+			full := make([]map[string]any, 0, len(items))
+			full = append(full, items...)
+			if output, ok := result["output"].([]any); ok {
+				for _, value := range output {
+					if item, ok := value.(map[string]any); ok {
+						full = append(full, item)
+					}
+				}
+			}
+			g.history.put(id, route.Alias, owner, full)
+		}
+	}
+}
+
+func hasOpaqueCompaction(items []map[string]any) bool {
+	for _, item := range items {
+		if kind, _ := item["type"].(string); kind == "compaction" {
+			encoded, _ := item["encrypted_content"].(string)
+			if _, ok := decodeCompactionSummary(encoded); !ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+type forwardResponseObserver struct {
+	sse       bool
+	pending   []byte
+	raw       bytes.Buffer
+	overflow  bool
+	terminal  map[string]any
+	maxBuffer int
+}
+
+func newForwardResponseObserver(contentType string) *forwardResponseObserver {
+	return &forwardResponseObserver{
+		sse:       strings.Contains(strings.ToLower(contentType), "text/event-stream"),
+		maxBuffer: bridgeResponseLimit,
+	}
+}
+
+func (o *forwardResponseObserver) Observe(chunk []byte) {
+	if o == nil || len(chunk) == 0 || o.terminal != nil {
+		return
+	}
+	if !o.sse {
+		if o.overflow {
+			return
+		}
+		if o.raw.Len()+len(chunk) > o.maxBuffer {
+			o.overflow = true
+			o.raw.Reset()
+			return
+		}
+		_, _ = o.raw.Write(chunk)
+		return
+	}
+	o.pending = append(o.pending, chunk...)
+	for {
+		idx := bytes.Index(o.pending, []byte("\n\n"))
+		sep := 2
+		if crlf := bytes.Index(o.pending, []byte("\r\n\r\n")); crlf >= 0 && (idx < 0 || crlf < idx) {
+			idx = crlf
+			sep = 4
+		}
+		if idx < 0 {
+			break
+		}
+		o.scanSSEFrame(o.pending[:idx])
+		o.pending = o.pending[idx+sep:]
+		if o.terminal != nil {
+			o.pending = nil
+			return
+		}
+	}
+	if len(o.pending) > o.maxBuffer {
+		o.pending = nil
+	}
+}
+
+func (o *forwardResponseObserver) scanSSEFrame(frame []byte) {
+	var data bytes.Buffer
+	for _, line := range bytes.Split(frame, []byte("\n")) {
+		line = bytes.TrimSuffix(line, []byte("\r"))
+		if value, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+			if data.Len() > 0 {
+				data.WriteByte('\n')
+			}
+			data.Write(bytes.TrimPrefix(value, []byte(" ")))
+		}
+	}
+	payload := bytes.TrimSpace(data.Bytes())
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return
+	}
+	var event map[string]any
+	if decodeBridgeJSON(payload, &event) != nil {
+		return
+	}
+	kind, _ := event["type"].(string)
+	if kind != "response.completed" && kind != "response.incomplete" {
+		return
+	}
+	resp, _ := event["response"].(map[string]any)
+	if isCacheableTerminalResponse(resp) {
+		o.terminal = resp
+	}
+}
+
+func (o *forwardResponseObserver) terminalResponse() map[string]any {
+	if o == nil {
+		return nil
+	}
+	if o.sse {
+		if o.terminal == nil && len(o.pending) > 0 {
+			o.scanSSEFrame(o.pending)
+			o.pending = nil
+		}
+		return o.terminal
+	}
+	if o.overflow || o.raw.Len() == 0 {
+		return nil
+	}
+	var resp map[string]any
+	if decodeBridgeJSON(o.raw.Bytes(), &resp) != nil {
+		return nil
+	}
+	if resp["object"] != "response" || !isCacheableTerminalResponse(resp) {
+		return nil
+	}
+	return resp
+}
+
+func isCacheableTerminalResponse(resp map[string]any) bool {
+	if resp == nil {
+		return false
+	}
+	status, _ := resp["status"].(string)
+	return status == "completed" || status == "incomplete"
 }
 
 func (g *Gateway) callRuntime(r *http.Request, body []byte, path string) (*http.Response, error) {
@@ -420,7 +618,7 @@ func (g *Gateway) callRuntime(r *http.Request, body []byte, path string) (*http.
 	request.Header.Set("Authorization", "Bearer "+runtime.APIKey())
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream, application/json")
-	for _, key := range []string{"Session_id", "Session-Id", "Thread-Id", "X-Codex-Turn-Metadata", "X-Codex-Session-Id"} {
+	for _, key := range []string{"Session_id", "Session-Id", "Thread-Id", "X-Codex-Turn-Metadata", "X-Codex-Session-Id", "X-Grok-Conv-Id", "X-Claude-Code-Session-Id"} {
 		if value := r.Header.Get(key); value != "" {
 			request.Header.Set(key, value)
 		}
@@ -489,6 +687,10 @@ func isRelayedGatewayHeader(key string) bool {
 }
 
 func relayResponse(w http.ResponseWriter, r *http.Request, response *http.Response) {
+	relayResponseWithObserver(w, r, response, nil)
+}
+
+func relayResponseWithObserver(w http.ResponseWriter, r *http.Request, response *http.Response, observer *forwardResponseObserver) {
 	for key, values := range response.Header {
 		if !isRelayedGatewayHeader(key) {
 			continue
@@ -506,6 +708,9 @@ func relayResponse(w http.ResponseWriter, r *http.Request, response *http.Respon
 	for {
 		n, err := response.Body.Read(buf)
 		if n > 0 {
+			if observer != nil {
+				observer.Observe(buf[:n])
+			}
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 				return
 			}
@@ -529,11 +734,19 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeError(w http.ResponseWriter, status int, kind, message, code string) {
+	writeErrorParam(w, status, kind, message, code, "")
+}
+
+func writeErrorParam(w http.ResponseWriter, status int, kind, message, code, param string) {
 	var codeValue any
 	if code != "" {
 		codeValue = code
 	}
-	writeJSON(w, status, map[string]any{"error": map[string]any{"type": kind, "message": message, "code": codeValue, "param": nil}})
+	var paramValue any
+	if param != "" {
+		paramValue = param
+	}
+	writeJSON(w, status, map[string]any{"error": map[string]any{"type": kind, "message": message, "code": codeValue, "param": paramValue}})
 }
 
 func historyOwner(r *http.Request) string {

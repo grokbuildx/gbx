@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
+	"unicode/utf8"
 )
 
 // OpenAI Responses is the single protocol every loopback runtime accepts. A
@@ -61,7 +63,10 @@ type responsesText struct {
 // items have been grouped by speaker.
 const (
 	partText       = "text"
+	partRefusal    = "refusal"
 	partImage      = "image"
+	partFile       = "file"
+	partAudio      = "audio"
 	partToolCall   = "tool_call"
 	partToolResult = "tool_result"
 	partReasoning  = "reasoning"
@@ -70,13 +75,17 @@ const (
 // conversationPart is one piece of a turn. Only the fields of its Kind are set.
 type conversationPart struct {
 	Kind string
-	// Text holds message text, or the readable summary of a reasoning part.
+	// Text holds message text, refusal text, or the readable summary of a reasoning part.
 	Text string
-	// MediaType and Data describe a base64 image; URL a remote one; Detail
-	// preserves Responses/Chat image detail ("original", "high", "low", "auto").
+	// MediaType and Data describe base64 media/files; URL a remote one; FileID
+	// an OpenAI Files API handle; Filename a document filename; Format an audio
+	// format (wav/mp3); Detail preserves Responses/Chat image detail.
 	MediaType string
 	Data      string
 	URL       string
+	FileID    string
+	Filename  string
+	Format    string
 	Detail    string
 	// CallID, Name and Arguments describe a tool call. Name is the flattened
 	// declaration name and Arguments a JSON object.
@@ -100,7 +109,7 @@ func (p conversationPart) imageURL() string {
 	}
 	mediaType := p.MediaType
 	if mediaType == "" {
-		mediaType = "application/octet-stream"
+		mediaType = "image/png"
 	}
 	return "data:" + mediaType + ";base64," + p.Data
 }
@@ -591,14 +600,19 @@ func EncodeCompactionSummary(summary string) string {
 	return CompactionSummaryPrefix + base64.StdEncoding.EncodeToString([]byte(summary))
 }
 
+const maxCompactionSummaryBytes = 4 << 20
+
 // DecodeCompactionSummary reads a compaction payload GBX produced.
 func DecodeCompactionSummary(encoded string) (string, bool) {
 	raw, ok := strings.CutPrefix(encoded, CompactionSummaryPrefix)
 	if !ok || raw == "" {
 		return "", false
 	}
+	if base64.StdEncoding.DecodedLen(len(raw)) > maxCompactionSummaryBytes+4 {
+		return "", false
+	}
 	decoded, err := base64.StdEncoding.DecodeString(raw)
-	if err != nil || len(decoded) == 0 {
+	if err != nil || len(decoded) == 0 || len(decoded) > maxCompactionSummaryBytes || !utf8.Valid(decoded) {
 		return "", false
 	}
 	return string(decoded), true
@@ -659,7 +673,7 @@ func responsesContentParts(value any) ([]conversationPart, error) {
 			}
 		case "refusal":
 			if text := responsesTextValue(p["refusal"]); text != "" {
-				result = append(result, conversationPart{Kind: partText, Text: text})
+				result = append(result, conversationPart{Kind: partRefusal, Text: text})
 			}
 		case "input_image", "image_url", "computer_screenshot", "image":
 			image, err := responsesImagePart(p)
@@ -667,6 +681,18 @@ func responsesContentParts(value any) ([]conversationPart, error) {
 				return nil, err
 			}
 			result = append(result, image)
+		case "input_file", "file":
+			filePart, err := responsesFilePart(p)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, filePart)
+		case "input_audio":
+			audioPart, err := responsesAudioPart(p)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, audioPart)
 		default:
 			return nil, fmt.Errorf("unsupported Responses content part %q", p["type"])
 		}
@@ -754,6 +780,7 @@ func normalizeImageDetail(raw string) string {
 func responsesImagePart(p map[string]any) (conversationPart, error) {
 	source, _ := p["image_url"].(string)
 	rawDetail, _ := p["detail"].(string)
+	fileID := strings.TrimSpace(stringValue(p["file_id"]))
 	if nested, ok := p["image_url"].(map[string]any); ok {
 		source, _ = nested["url"].(string)
 		if source == "" {
@@ -761,6 +788,9 @@ func responsesImagePart(p map[string]any) (conversationPart, error) {
 		}
 		if rawDetail == "" {
 			rawDetail, _ = nested["detail"].(string)
+		}
+		if fileID == "" {
+			fileID = strings.TrimSpace(stringValue(nested["file_id"]))
 		}
 	}
 	if source == "" {
@@ -782,6 +812,13 @@ func responsesImagePart(p map[string]any) (conversationPart, error) {
 			}
 		}
 	}
+	if strings.TrimSpace(source) == "" && fileID != "" {
+		return conversationPart{
+			Kind:   partImage,
+			FileID: fileID,
+			Detail: normalizeImageDetail(rawDetail),
+		}, nil
+	}
 	part, err := conversationImage(source)
 	if err != nil {
 		return conversationPart{}, err
@@ -790,15 +827,139 @@ func responsesImagePart(p map[string]any) (conversationPart, error) {
 	return part, nil
 }
 
+func responsesFilePart(p map[string]any) (conversationPart, error) {
+	src := p
+	if nested, ok := p["file"].(map[string]any); ok && nested != nil {
+		src = nested
+	}
+	fileID := strings.TrimSpace(firstNonEmptyString(stringValue(src["file_id"]), stringValue(p["file_id"])))
+	fileURL := strings.TrimSpace(firstNonEmptyString(stringValue(src["file_url"]), stringValue(p["file_url"]), stringValue(src["url"])))
+	rawData := strings.TrimSpace(firstNonEmptyString(stringValue(src["file_data"]), stringValue(p["file_data"]), stringValue(src["data"])))
+	filename := strings.TrimSpace(firstNonEmptyString(stringValue(src["filename"]), stringValue(p["filename"])))
+	mediaType := strings.ToLower(strings.TrimSpace(firstNonEmptyString(stringValue(src["media_type"]), stringValue(src["mime_type"]), stringValue(p["media_type"]), stringValue(p["mime_type"]))))
+
+	if rawData != "" {
+		if hasCaseInsensitivePrefix(rawData, "data:") {
+			meta, payload, found := strings.Cut(rawData[len("data:"):], ",")
+			if !found {
+				return conversationPart{}, fmt.Errorf("input_file file_data must use a valid base64 data URL")
+			}
+			segments := strings.Split(meta, ";")
+			if declared := strings.ToLower(strings.TrimSpace(segments[0])); declared != "" {
+				mediaType = declared
+			}
+			rawData = stripASCIIWhitespace(payload)
+		} else {
+			rawData = stripASCIIWhitespace(rawData)
+		}
+		if rawData == "" {
+			return conversationPart{}, fmt.Errorf("input_file file_data must not be empty")
+		}
+	}
+	if fileURL != "" {
+		if err := validateRemoteMediaURL(fileURL); err != nil {
+			return conversationPart{}, fmt.Errorf("invalid input_file URL: %w", err)
+		}
+	}
+	if fileID == "" && fileURL == "" && rawData == "" {
+		return conversationPart{}, fmt.Errorf("input_file requires file_id, file_url, or file_data")
+	}
+	if mediaType == "" && filename != "" {
+		mediaType = inferFileMediaType(filename)
+	}
+	return conversationPart{
+		Kind:      partFile,
+		FileID:    fileID,
+		URL:       fileURL,
+		Data:      rawData,
+		Filename:  filename,
+		MediaType: mediaType,
+	}, nil
+}
+
+func inferFileMediaType(filename string) string {
+	lower := strings.ToLower(strings.TrimSpace(filename))
+	switch {
+	case strings.HasSuffix(lower, ".pdf"):
+		return "application/pdf"
+	case strings.HasSuffix(lower, ".txt"), strings.HasSuffix(lower, ".md"), strings.HasSuffix(lower, ".csv"), strings.HasSuffix(lower, ".log"):
+		return "text/plain"
+	case strings.HasSuffix(lower, ".json"):
+		return "application/json"
+	case strings.HasSuffix(lower, ".xml"):
+		return "application/xml"
+	case strings.HasSuffix(lower, ".html"), strings.HasSuffix(lower, ".htm"):
+		return "text/html"
+	default:
+		return ""
+	}
+}
+
+func responsesAudioPart(p map[string]any) (conversationPart, error) {
+	src := p
+	if nested, ok := p["input_audio"].(map[string]any); ok && nested != nil {
+		src = nested
+	}
+	data := stripASCIIWhitespace(firstNonEmptyString(stringValue(src["data"]), stringValue(p["data"])))
+	format := strings.ToLower(strings.TrimSpace(firstNonEmptyString(stringValue(src["format"]), stringValue(p["format"]))))
+	if data == "" {
+		return conversationPart{}, fmt.Errorf("input_audio requires non-empty data")
+	}
+	if format == "" {
+		return conversationPart{}, fmt.Errorf("input_audio requires format")
+	}
+	return conversationPart{
+		Kind:   partAudio,
+		Data:   data,
+		Format: format,
+	}, nil
+}
+
+func hasCaseInsensitivePrefix(value, prefix string) bool {
+	return len(value) >= len(prefix) && strings.EqualFold(value[:len(prefix)], prefix)
+}
+
+func stripASCIIWhitespace(value string) string {
+	if !strings.ContainsAny(value, " \t\r\n") {
+		return value
+	}
+	var out strings.Builder
+	out.Grow(len(value))
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case ' ', '\t', '\r', '\n':
+			continue
+		default:
+			out.WriteByte(value[i])
+		}
+	}
+	return out.String()
+}
+
+func validateRemoteMediaURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("malformed URL")
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if (scheme != "http" && scheme != "https") || strings.TrimSpace(parsed.Host) == "" {
+		return fmt.Errorf("only http and https URLs are supported")
+	}
+	return nil
+}
+
 func conversationImage(source string) (conversationPart, error) {
 	source = strings.TrimSpace(source)
 	if source == "" {
 		return conversationPart{}, fmt.Errorf("image input requires image_url")
 	}
-	if !strings.HasPrefix(source, "data:") {
+	if !hasCaseInsensitivePrefix(source, "data:") {
+		if err := validateRemoteMediaURL(source); err != nil {
+			return conversationPart{}, fmt.Errorf("invalid image_url: %w", err)
+		}
 		return conversationPart{Kind: partImage, URL: source}, nil
 	}
-	meta, data, found := strings.Cut(strings.TrimPrefix(source, "data:"), ",")
+	meta, data, found := strings.Cut(source[len("data:"):], ",")
 	if !found {
 		return conversationPart{}, fmt.Errorf("image input must use a base64 data URL")
 	}
@@ -813,7 +974,10 @@ func conversationImage(source string) (conversationPart, error) {
 	if !hasBase64 {
 		return conversationPart{}, fmt.Errorf("image input must use a base64 data URL")
 	}
-	data = strings.TrimSpace(data)
+	data = stripASCIIWhitespace(data)
+	if data == "" {
+		return conversationPart{}, fmt.Errorf("image data URL must not be empty")
+	}
 	mediaType := strings.ToLower(strings.TrimSpace(segments[0]))
 	if mediaType == "image/jpg" {
 		mediaType = "image/jpeg"
@@ -821,19 +985,36 @@ func conversationImage(source string) (conversationPart, error) {
 	if mediaType == "" || mediaType == "application/octet-stream" || !strings.HasPrefix(mediaType, "image/") {
 		if sniffed := sniffBase64ImageMediaType(data); sniffed != "" {
 			mediaType = sniffed
+		} else if mediaType == "application/octet-stream" {
+			mediaType = ""
 		}
 	}
 	return conversationPart{Kind: partImage, MediaType: mediaType, Data: data}, nil
 }
 
 func sniffBase64ImageMediaType(encoded string) string {
-	sample := encoded
-	if len(sample) > 64 {
-		sample = sample[:64]
+	// Collect up to 16 non-whitespace base64 characters (12 raw bytes), which
+	// covers PNG (8B), JPEG (3B), GIF (6B), and WebP (12B) without decoding MBs.
+	var buf [16]byte
+	n := 0
+	for i := 0; i < len(encoded) && n < len(buf); i++ {
+		c := encoded[i]
+		if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+			continue
+		}
+		buf[n] = c
+		n++
 	}
+	if n < 4 {
+		return ""
+	}
+	// Trim to a valid 4-char quantum if possible, or let decodeBase64Flexible handle raw.
+	sample := string(buf[:n])
 	raw, err := decodeBase64Flexible(sample)
-	if err != nil && len(encoded) > len(sample) {
-		raw, err = decodeBase64Flexible(encoded)
+	if err != nil {
+		if rem := n % 4; rem != 0 && n-rem >= 4 {
+			raw, err = decodeBase64Flexible(string(buf[:n-rem]))
+		}
 	}
 	if err != nil {
 		return ""
@@ -968,9 +1149,9 @@ func estimateConversationTokens(r *conversationRequest) int {
 	for _, turn := range r.Turns {
 		for _, part := range turn.Parts {
 			switch part.Kind {
-			case partText, partReasoning:
+			case partText, partRefusal, partReasoning:
 				tokens += estimateApproxTokens(part.Text)
-			case partImage:
+			case partImage, partFile, partAudio:
 				tokens += approxTokensPerImage
 			case partToolCall:
 				tokens += estimateApproxTokens(part.Name) + estimateApproxTokensBytes(part.Arguments)
@@ -1272,9 +1453,7 @@ func (r *conversationRequest) readItems(items []map[string]any) error {
 			}
 		}
 	}
-	if len(unavailable) > 0 {
-		r.System += "\nOnly tools in the current tools list may be called. Historical tool records are conversation context, not tool definitions."
-	}
+	seenConversation := false
 	for _, item := range items {
 		kind, _ := item["type"].(string)
 		switch kind {
@@ -1289,18 +1468,34 @@ func (r *conversationRequest) readItems(items []map[string]any) error {
 					if part.Kind != partText {
 						return fmt.Errorf("system content must be text")
 					}
-					if r.System != "" {
-						r.System += "\n"
+				}
+				if !seenConversation {
+					for _, part := range content {
+						if r.System != "" {
+							r.System += "\n"
+						}
+						r.System += part.Text
 					}
-					r.System += part.Text
+					continue
+				}
+				if len(content) > 0 {
+					r.appendParts(role, content...)
 				}
 				continue
 			}
 			if role != "user" && role != "assistant" {
 				return fmt.Errorf("unsupported Responses message role")
 			}
+			seenConversation = true
+			if len(content) == 0 {
+				if role == "user" && (len(r.Turns) == 0 || r.Turns[len(r.Turns)-1].Role != "user") {
+					r.Turns = append(r.Turns, conversationTurn{Role: "user"})
+				}
+				continue
+			}
 			r.appendParts(role, content...)
 		case "function_call", "custom_tool_call", "tool_search_call":
+			seenConversation = true
 			id, _ := item["call_id"].(string)
 			name, _ := item["name"].(string)
 			namespace, _ := item["namespace"].(string)
@@ -1333,6 +1528,7 @@ func (r *conversationRequest) readItems(items []map[string]any) error {
 			}
 			r.appendParts("assistant", conversationPart{Kind: partToolCall, CallID: id, Name: toolWireName(namespace, name), Arguments: arguments})
 		case "computer_call", "shell_call", "local_shell_call", "apply_patch_call":
+			seenConversation = true
 			name := strings.TrimSuffix(kind, "_call")
 			id := builtinCallID(item)
 			if id == "" {
@@ -1345,6 +1541,7 @@ func (r *conversationRequest) readItems(items []map[string]any) error {
 			}
 			r.appendParts("assistant", conversationPart{Kind: partToolCall, CallID: id, Name: toolWireName("", name), Arguments: arguments})
 		case "tool_search_output":
+			seenConversation = true
 			id, _ := item["call_id"].(string)
 			if id == "" {
 				return fmt.Errorf("tool search output requires call_id")
@@ -1369,6 +1566,7 @@ func (r *conversationRequest) readItems(items []map[string]any) error {
 			}
 		case "function_call_output", "custom_tool_call_output",
 			"computer_call_output", "shell_call_output", "local_shell_call_output", "apply_patch_call_output":
+			seenConversation = true
 			id, _ := item["call_id"].(string)
 			output, err := responsesToolOutputParts(kind, item["output"])
 			if err != nil {
@@ -1398,6 +1596,7 @@ func (r *conversationRequest) readItems(items []map[string]any) error {
 			}
 			r.appendParts("user", conversationPart{Kind: partToolResult, CallID: id, Output: output})
 		case "reasoning":
+			seenConversation = true
 			id, _ := item["id"].(string)
 			if !strings.HasPrefix(id, gbxReasoningIDPrefix) {
 				// Native reasoning belongs to the provider that issued it. Keep the
@@ -1430,6 +1629,7 @@ func (r *conversationRequest) readItems(items []map[string]any) error {
 			}
 			r.appendParts("assistant", conversationPart{Kind: partReasoning, Text: combined, Signature: signature})
 		case "compaction":
+			seenConversation = true
 			encoded, _ := item["encrypted_content"].(string)
 			summary, ok := DecodeCompactionSummary(encoded)
 			if !ok {
@@ -1445,6 +1645,12 @@ func (r *conversationRequest) readItems(items []map[string]any) error {
 			}
 			return fmt.Errorf("unsupported Responses input item %q", kind)
 		}
+	}
+	if len(unavailable) > 0 {
+		if r.System != "" {
+			r.System += "\n"
+		}
+		r.System += "Only tools in the current tools list may be called. Historical tool records are conversation context, not tool definitions."
 	}
 	return nil
 }
@@ -1523,7 +1729,8 @@ func responsesToolOutputParts(kind string, raw any) ([]conversationPart, error) 
 func isResponsesContentPartType(partType string) bool {
 	switch partType {
 	case "input_text", "output_text", "text", "summary_text", "refusal",
-		"input_image", "image_url", "computer_screenshot", "image":
+		"input_image", "image_url", "computer_screenshot", "image",
+		"input_file", "file", "input_audio":
 		return true
 	default:
 		return false

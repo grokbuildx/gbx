@@ -202,7 +202,28 @@ func (r *mixedProtocolRouter) handler() http.Handler {
 }
 
 func (r *mixedProtocolRouter) handlerForContext(ctx context.Context) http.Handler {
-	return loopbackFrontMuxForContext(ctx, r.apiKey, r.handleModels, r.handleResponses)
+	return loopbackFrontMuxWithCompact(ctx, r.apiKey, r.handleModels, r.handleResponses, r.handleCompact)
+}
+
+func (r *mixedProtocolRouter) handleCompact(writer http.ResponseWriter, request *http.Request) {
+	if !inferenceRequestAllowed(writer, request, r.apiKey) {
+		return
+	}
+	body, err := readInboundBody(writer, request, mixedMaxBodyBytes)
+	if err != nil {
+		writeInboundBodyError(writer, err)
+		return
+	}
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	request.ContentLength = int64(len(body))
+	model := strings.TrimSpace(requestModelID(body))
+	lower := strings.ToLower(model)
+	baseLower := strings.ToLower(stripContextModelSuffix(model))
+	if r.codex != nil && !r.codex.isXaiBackend() && (r.responses[lower] || r.responses[baseLower]) {
+		r.codex.handleResponses(writer, request)
+		return
+	}
+	localCompactionHandler(r.apiKey, r.handleResponses)(writer, request)
 }
 
 func (r *mixedProtocolRouter) handleModels(writer http.ResponseWriter, request *http.Request) {

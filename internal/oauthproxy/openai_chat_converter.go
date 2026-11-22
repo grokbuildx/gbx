@@ -10,8 +10,9 @@ import (
 // Responses request destined for an OpenAI Chat Completions upstream.
 type chatCompletionsConvertedRequest struct {
 	adapterRequest
-	body  []byte
-	model string
+	body      []byte
+	model     string
+	sessionID string
 }
 
 // convertResponsesToChatCompletions translates a Responses request into an
@@ -28,7 +29,11 @@ func convertResponsesToChatCompletions(raw []byte) (*chatCompletionsConvertedReq
 		messages = append(messages, map[string]any{"role": "system", "content": request.System})
 	}
 	for _, turn := range request.Turns {
-		messages = append(messages, chatConvertTurn(turn)...)
+		convertedTurns, err := chatConvertTurn(turn)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, convertedTurns...)
 	}
 
 	body := map[string]any{
@@ -125,6 +130,7 @@ func convertResponsesToChatCompletions(raw []byte) (*chatCompletionsConvertedReq
 		adapterRequest: request.adapter(upstreamModel),
 		body:           encoded,
 		model:          upstreamModel,
+		sessionID:      firstNonEmptyString(request.CacheKey, request.SafetyIdentifier),
 	}, nil
 }
 
@@ -146,10 +152,25 @@ func chatUsesMaxCompletionTokens(model string) bool {
 // chatConvertTurn renders one conversation turn into zero or more OpenAI
 // messages. Tool results are emitted first (as role:"tool"), then the turn
 // body, so OpenAI's "tool must follow the assistant tool_calls" invariant holds.
-func chatConvertTurn(turn conversationTurn) []map[string]any {
+func chatConvertTurn(turn conversationTurn) ([]map[string]any, error) {
+	if turn.Role == "developer" || turn.Role == "system" {
+		var texts []string
+		for _, part := range turn.Parts {
+			if part.Kind == partText && part.Text != "" {
+				texts = append(texts, part.Text)
+			}
+		}
+		if len(texts) == 0 {
+			return nil, nil
+		}
+		return []map[string]any{{"role": turn.Role, "content": strings.Join(texts, "\n")}}, nil
+	}
+
 	assistant := turn.Role == "assistant"
 	var toolResults []map[string]any
 	var contentParts []any
+	var textParts []string
+	hasMedia := false
 	var reasoningParts []string
 	var toolCalls []map[string]any
 
@@ -173,8 +194,12 @@ func chatConvertTurn(turn conversationTurn) []map[string]any {
 			// Chat tool messages accept text only. Keep images in a user message
 			// after all tool replies and label their originating call.
 			if len(images) > 0 {
+				hasMedia = true
 				contentParts = append(contentParts, map[string]any{"type": "text", "text": "Images from tool result " + part.CallID + ":"})
 				for _, image := range images {
+					if image.FileID != "" && image.URL == "" && image.Data == "" {
+						return nil, fmt.Errorf("OpenAI Chat Completions does not support image file_id references")
+					}
 					contentParts = append(contentParts, map[string]any{"type": "image_url", "image_url": chatImageURLObject(image)})
 				}
 			}
@@ -184,10 +209,54 @@ func chatConvertTurn(turn conversationTurn) []map[string]any {
 			if assistant && part.Text != "" {
 				reasoningParts = append(reasoningParts, part.Text)
 			}
-		case partText:
-			contentParts = append(contentParts, map[string]any{"type": "text", "text": part.Text})
+		case partText, partRefusal:
+			if part.Text != "" {
+				textParts = append(textParts, part.Text)
+				contentParts = append(contentParts, map[string]any{"type": "text", "text": part.Text})
+			}
 		case partImage:
+			if assistant {
+				continue
+			}
+			if part.FileID != "" && part.URL == "" && part.Data == "" {
+				return nil, fmt.Errorf("OpenAI Chat Completions does not support image file_id references")
+			}
+			hasMedia = true
 			contentParts = append(contentParts, map[string]any{"type": "image_url", "image_url": chatImageURLObject(part)})
+		case partFile:
+			if assistant {
+				continue
+			}
+			hasMedia = true
+			fileObj := map[string]any{}
+			if part.FileID != "" {
+				fileObj["file_id"] = part.FileID
+			}
+			if part.Filename != "" {
+				fileObj["filename"] = part.Filename
+			}
+			if part.Data != "" {
+				mediaType := part.MediaType
+				if mediaType == "" {
+					mediaType = "application/octet-stream"
+				}
+				fileObj["file_data"] = "data:" + mediaType + ";base64," + part.Data
+			} else if part.URL != "" {
+				fileObj["file_url"] = part.URL
+			}
+			contentParts = append(contentParts, map[string]any{"type": "file", "file": fileObj})
+		case partAudio:
+			if assistant {
+				continue
+			}
+			hasMedia = true
+			contentParts = append(contentParts, map[string]any{
+				"type": "input_audio",
+				"input_audio": map[string]any{
+					"data":   part.Data,
+					"format": part.Format,
+				},
+			})
 		case partToolCall:
 			if assistant && part.CallID != "" {
 				toolCalls = append(toolCalls, map[string]any{
@@ -204,24 +273,30 @@ func chatConvertTurn(turn conversationTurn) []map[string]any {
 
 	out := toolResults
 	if assistant {
-		message := map[string]any{"role": "assistant"}
-		if len(contentParts) > 0 {
-			message["content"] = contentParts
-		} else {
-			message["content"] = ""
+		joined := strings.Join(textParts, "\n")
+		if joined == "" && len(reasoningParts) == 0 && len(toolCalls) == 0 {
+			return out, nil
 		}
+		message := map[string]any{"role": "assistant", "content": joined}
 		if len(reasoningParts) > 0 {
 			message["reasoning_content"] = strings.Join(reasoningParts, "")
 		}
 		if len(toolCalls) > 0 {
 			message["tool_calls"] = toolCalls
 		}
-		return append(out, message)
+		return append(out, message), nil
 	}
 	if len(contentParts) > 0 {
-		out = append(out, map[string]any{"role": "user", "content": contentParts})
+		if hasMedia {
+			out = append(out, map[string]any{"role": "user", "content": contentParts})
+		} else {
+			out = append(out, map[string]any{"role": "user", "content": strings.Join(textParts, "\n")})
+		}
+	} else if len(toolResults) == 0 {
+		// Preserve an explicit empty user turn boundary separating assistant turns.
+		out = append(out, map[string]any{"role": "user", "content": ""})
 	}
-	return out
+	return out, nil
 }
 
 // chatTool renders one flattened tool as an OpenAI function tool.

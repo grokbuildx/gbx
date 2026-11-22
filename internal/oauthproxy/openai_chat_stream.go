@@ -159,6 +159,13 @@ func (s *chatCompletionsStreamState) process(payload []byte) error {
 				return err
 			}
 		}
+		for _, rawAnn := range sliceValue(delta["annotations"]) {
+			if ann := mapValue(rawAnn); ann != nil {
+				if err := s.assembler.addAnnotation(ann); err != nil {
+					return err
+				}
+			}
+		}
 		for _, rawCall := range sliceValue(delta["tool_calls"]) {
 			if err := s.accumulateToolCall(mapValue(rawCall)); err != nil {
 				return err
@@ -452,6 +459,13 @@ func processChatCompletionsNonStream(body []byte, assembler *responseAssembler) 
 	}
 	if err := chatAddContent(assembler, message["content"]); err != nil {
 		return err
+	}
+	for _, rawAnn := range sliceValue(message["annotations"]) {
+		if ann := mapValue(rawAnn); ann != nil {
+			if err := assembler.addAnnotation(ann); err != nil {
+				return err
+			}
+		}
 	}
 	if refusal := stringValue(message["refusal"]); refusal != "" {
 		if assembler.stopReason == "" {

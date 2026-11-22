@@ -277,6 +277,7 @@ type cursorSession struct {
 	writer     cursorStreamWriter
 	cancel     context.CancelFunc
 	sessionKey string
+	systemHash string
 	token      string
 	initDone   chan struct{}
 
@@ -499,12 +500,12 @@ func (s *cursorService) handleResponses(writer http.ResponseWriter, request *htt
 		return
 	}
 	if converted.sessionKey == "" {
-		for _, name := range []string{"Session_id", "X-Grok-Conv-Id", "X-Session-Id"} {
-			if value := strings.TrimSpace(request.Header.Get(name)); value != "" && len(value) <= 256 {
-				converted.sessionKey = value
-				converted.conversationID = kiroConversationID(value)
-				break
-			}
+		if value := extractClientSessionID(request); value != "" {
+			converted.sessionKey = value
+			converted.conversationID = kiroConversationID(value)
+		} else if converted.anonSessionKey != "" {
+			converted.sessionKey = converted.anonSessionKey
+			converted.conversationID = kiroConversationID(converted.anonSessionKey)
 		}
 	}
 	var gate *cursorGateWriter
@@ -635,19 +636,23 @@ func cursorClientError(err error) (int, string) {
 // serve runs one Responses turn: resume the parked Cursor stream when the
 // client is answering a tool call it owns, otherwise start a fresh Run.
 func (s *cursorService) serve(ctx context.Context, converted *cursorConvertedRequest, assemblerWriter http.ResponseWriter, gate *cursorGateWriter) (*responseAssembler, error) {
-	// Cursor's ExecMcpResult protobuf frame carries text only. When a tool
-	// result (or follow-up user turn) attaches screenshots, close any parked
-	// stream for this conversation and start a fresh Run so SelectedImages reach
-	// Cursor alongside the full conversation history and TOOL_RESULT blocks.
-	if len(converted.images) > 0 {
+	// Cursor's ExecMcpResult protobuf frame carries tool text only. When the
+	// current turn attaches new screenshots, adds steering user text, or changes
+	// the system prompt, close any parked stream for this conversation and start
+	// a fresh Run so the full updated context reaches Cursor.
+	if converted.hasCurrentImages || converted.current != "" {
 		s.closeParkedForSession(converted.sessionKey)
 	} else if session := s.takeParked(converted.sessionKey, converted.resumeToolUseIDs()); session != nil {
-		// A resumed stream may emit another tool call and re-park itself.
-		// Release only if it is not parked again when continueTurn returns.
-		defer s.releaseOwned(session)
-		LogDebugEvent("cursor_resume", "call_count", len(converted.resume))
-		assembler := newResponseAssembler(&converted.adapterRequest, assemblerWriter)
-		return assembler, s.continueTurn(ctx, session, converted, assembler, gate, true)
+		if session.systemHash != "" && converted.systemHash != "" && session.systemHash != converted.systemHash {
+			session.close()
+		} else {
+			// A resumed stream may emit another tool call and re-park itself.
+			// Release only if it is not parked again when continueTurn returns.
+			defer s.releaseOwned(session)
+			LogDebugEvent("cursor_resume", "call_count", len(converted.resume))
+			assembler := newResponseAssembler(&converted.adapterRequest, assemblerWriter)
+			return assembler, s.continueTurn(ctx, session, converted, assembler, gate, true)
+		}
 	}
 	refreshed401 := false
 	fastRetryIdx := 0
@@ -892,6 +897,7 @@ func (s *cursorService) startRun(ctx context.Context, converted *cursorConverted
 			}
 		}
 		session.sessionKey = converted.sessionKey
+		session.systemHash = converted.systemHash
 		opened = session
 		return response, nil
 	}
@@ -1566,15 +1572,19 @@ func startCursorOAuth(parent context.Context, modelSpec, credentialFile string) 
 // tools the client declared, and any tool results that answer a parked stream.
 type cursorConvertedRequest struct {
 	adapterRequest
-	model          string
-	system         string
-	history        string
-	userText       string
-	images         []cursorImage
-	tools          []cursorMCPTool
-	resume         []cursorToolResult
-	sessionKey     string
-	conversationID string
+	model            string
+	system           string
+	systemHash       string
+	history          string
+	current          string
+	userText         string
+	images           []cursorImage
+	hasCurrentImages bool
+	tools            []cursorMCPTool
+	resume           []cursorToolResult
+	sessionKey       string
+	anonSessionKey   string
+	conversationID   string
 }
 
 func (c *cursorConvertedRequest) resumeToolUseIDs() []string {
@@ -1587,14 +1597,40 @@ func (c *cursorConvertedRequest) resumeToolUseIDs() []string {
 	return ids
 }
 
+func cursorLastTurnHasImages(turns []conversationTurn) bool {
+	if len(turns) == 0 {
+		return false
+	}
+	last := turns[len(turns)-1]
+	if strings.EqualFold(strings.TrimSpace(last.Role), "assistant") {
+		return false
+	}
+	for _, part := range last.Parts {
+		if part.Kind == partImage {
+			return true
+		}
+		if part.Kind == partToolResult && len(part.outputImages()) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func cursorAnonymousSessionKey(turns []conversationTurn) string {
+	for _, turn := range turns {
+		for _, part := range turn.Parts {
+			if part.Kind == partText && strings.TrimSpace(part.Text) != "" {
+				return fmt.Sprintf("anon:%x", sha256SumBytes([]byte(turn.Role + "\x00" + strings.TrimSpace(part.Text)))[:12])
+			}
+		}
+	}
+	return ""
+}
+
 func convertResponsesToCursor(raw []byte) (*cursorConvertedRequest, error) {
 	request, err := parseResponsesRequest(raw)
 	if err != nil {
 		return nil, err
-	}
-	last := request.Turns[len(request.Turns)-1]
-	if !strings.EqualFold(strings.TrimSpace(last.Role), "user") {
-		return nil, fmt.Errorf("messages must end with a user message")
 	}
 	history, current, images, resume, err := flattenCursorMessages(request.Turns)
 	if err != nil {
@@ -1618,37 +1654,46 @@ func convertResponsesToCursor(raw []byte) (*cursorConvertedRequest, error) {
 		system += instruction
 	}
 	converted := &cursorConvertedRequest{
-		adapterRequest: adapter,
-		model:          model,
-		system:         system,
-		history:        history,
-		images:         images,
-		tools:          tools,
-		resume:         resume,
-		sessionKey:     sessionKey,
-		conversationID: kiroConversationID(sessionKey),
+		adapterRequest:   adapter,
+		model:            model,
+		system:           system,
+		systemHash:       string(sha256SumBytes([]byte(system))),
+		history:          history,
+		current:          current,
+		images:           images,
+		hasCurrentImages: cursorLastTurnHasImages(request.Turns),
+		tools:            tools,
+		resume:           resume,
+		sessionKey:       sessionKey,
+		anonSessionKey:   cursorAnonymousSessionKey(request.Turns),
+		conversationID:   kiroConversationID(sessionKey),
 	}
 	converted.userText = cursorTurnUserText(history, current, resume)
 	return converted, nil
 }
 
 // cursorTurnUserText folds history and any tool results into the single user
-// text Cursor's Run request carries.
+// text Cursor's Run request carries. Tool results always precede follow-up user
+// text so they stay adjacent to the preceding ASSISTANT_TOOL_CALL.
 func cursorTurnUserText(history, current string, results []cursorToolResult) string {
-	text := cursorComposeUserText(history, current)
 	if len(results) == 0 {
-		return text
+		return cursorComposeUserText(history, current)
 	}
-	var builder strings.Builder
-	builder.WriteString(text)
+	var turn strings.Builder
 	for _, result := range results {
-		if builder.Len() > 0 {
-			builder.WriteString("\n\n")
+		if turn.Len() > 0 {
+			turn.WriteString("\n\n")
 		}
-		builder.WriteString("TOOL_RESULT:\n")
-		builder.WriteString(result.Text)
+		turn.WriteString("TOOL_RESULT:\n")
+		turn.WriteString(result.Text)
 	}
-	return builder.String()
+	if trimmed := strings.TrimSpace(current); trimmed != "" {
+		if turn.Len() > 0 {
+			turn.WriteString("\n\n")
+		}
+		turn.WriteString(trimmed)
+	}
+	return cursorComposeUserText(history, turn.String())
 }
 
 func cursorToolsFromResponses(tools []conversationTool) ([]cursorMCPTool, error) {

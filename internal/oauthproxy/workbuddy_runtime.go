@@ -322,6 +322,7 @@ func (g *workbuddyGateway) Stop() {
 
 func (g *workbuddyGateway) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	requestCtx, requestID := withRequestLogID(request.Context())
+	requestCtx = withClientSession(requestCtx, request)
 	started := time.Now()
 	if !keyMatches(strings.TrimSpace(strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")), g.key) {
 		LogWarnEvent("request_rejected", "component", "workbuddy", "request_id", requestID,
@@ -503,10 +504,12 @@ func sanitizeWorkBuddyPayload(body []byte) ([]byte, error) {
 	}
 
 	// 2. Sanitize messages: scrub billing headers, neutralize competitor identities,
-	// remap developer role to system, drop empty system prompts, flatten text-only parts,
-	// and remove reasoning_content from history.
+	// remap leading developer role to system and mid-conversation developer/system
+	// turns to user, drop empty system prompts, flatten text-only parts, and remove
+	// reasoning_content from history.
 	if rawMessages, ok := payload["messages"].([]any); ok {
 		sanitizedMessages := make([]any, 0, len(rawMessages))
+		seenConversation := false
 		for _, rawMsg := range rawMessages {
 			msg, ok := rawMsg.(map[string]any)
 			if !ok {
@@ -517,19 +520,22 @@ func sanitizeWorkBuddyPayload(body []byte) ([]byte, error) {
 			delete(msg, "reasoning_content")
 
 			role, _ := msg["role"].(string)
-			if strings.EqualFold(role, "developer") {
-				role = "system"
-				msg["role"] = "system"
-			}
-
-			if strings.EqualFold(role, "system") {
+			isSysOrDev := strings.EqualFold(role, "developer") || strings.EqualFold(role, "system")
+			if isSysOrDev {
 				text := extractMessageText(msg["content"])
 				sanitized := sanitizeWorkBuddySystemPrompt(text)
 				if strings.TrimSpace(sanitized) == "" {
 					continue
 				}
-				msg["content"] = sanitized
+				if !seenConversation {
+					msg["role"] = "system"
+					msg["content"] = sanitized
+				} else {
+					msg["role"] = "user"
+					msg["content"] = sanitized
+				}
 			} else {
+				seenConversation = true
 				if parts, isArray := msg["content"].([]any); isArray {
 					if text, ok := flattenTextParts(parts); ok {
 						msg["content"] = text
@@ -594,10 +600,11 @@ func (u *workbuddyUpstream) doOne(ctx context.Context, path, rawQuery string, he
 			request.Header.Add(name, value)
 		}
 	}
+	convID := firstNonEmptyString(clientSession(ctx), u.conversationID)
 	traceID := strings.ReplaceAll(uuid.NewString(), "-", "")
 	request.Header.Set("Accept", "application/json, text/event-stream")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Conversation-ID", u.conversationID)
+	request.Header.Set("X-Conversation-ID", convID)
 	request.Header.Set("X-Conversation-Request-ID", traceID)
 	request.Header.Set("X-Conversation-Message-ID", traceID)
 	request.Header.Set("X-Request-ID", traceID)
@@ -612,7 +619,7 @@ func (u *workbuddyUpstream) doOne(ctx context.Context, path, rawQuery string, he
 	request.Header.Set("x-codebuddy-request", "1")
 	model := requestModelID(body)
 	LogDebugEvent("upstream_request", "component", "workbuddy", "request_id", requestLogID(ctx),
-		"path", path, "model", model, "credential", credential.fileName, "conversation_id", u.conversationID)
+		"path", path, "model", model, "credential", credential.fileName, "conversation_id", convID)
 	if len(body) > 0 {
 		DebugHTTPBody(fmt.Sprintf("workbuddy request request_id=%s path=%s", requestLogID(ctx), path), body)
 	}

@@ -1152,45 +1152,117 @@ func sha256SumBytes(data []byte) []byte {
 	return sum[:]
 }
 
+const cursorMaxRetainedImages = 4
+
 func flattenCursorMessages(messages []conversationTurn) (history, current string, images []cursorImage, resume []cursorToolResult, err error) {
 	if len(messages) == 0 {
 		return "", "", nil, nil, fmt.Errorf("messages must not be empty")
 	}
-	last := messages[len(messages)-1]
-	lastContent := parseKiroContent(last, nil)
-	if strings.EqualFold(strings.TrimSpace(last.Role), "user") {
-		resume = cursorToolResultsFromContent(lastContent)
-		current = strings.TrimSpace(lastContent.text)
-		images = cursorImagesFromKiro(lastContent.images)
+	turns := append([]conversationTurn(nil), messages...)
+	// Preserve a trailing assistant turn inside history instead of rejecting it.
+	if strings.EqualFold(strings.TrimSpace(turns[len(turns)-1].Role), "assistant") {
+		turns = append(turns, conversationTurn{
+			Role:  "user",
+			Parts: []conversationPart{textPart("Continue.")},
+		})
 	}
-	if len(messages) == 1 && strings.EqualFold(strings.TrimSpace(last.Role), "user") && len(resume) == 0 {
-		return "", current, images, nil, nil
-	}
-	prior := messages
-	if strings.EqualFold(strings.TrimSpace(last.Role), "user") {
-		prior = messages[:len(messages)-1]
-	}
-	history, err = flattenCursorHistory(prior)
+	last := turns[len(turns)-1]
+	lastRole := strings.ToLower(strings.TrimSpace(last.Role))
+	lastContent, err := parseKiroContentChecked(last, nil)
 	if err != nil {
 		return "", "", nil, nil, err
 	}
+	var currentRawImages []any
+	if lastRole == "user" || lastRole == "developer" || lastRole == "system" {
+		resume = cursorToolResultsFromContent(lastContent)
+		current = strings.TrimSpace(lastContent.text)
+		if (lastRole == "developer" || lastRole == "system") && current != "" {
+			current = "[Developer instruction]\n" + current
+		}
+		currentRawImages = lastContent.images
+	}
+	if len(turns) == 1 && (lastRole == "user" || lastRole == "developer" || lastRole == "system") && len(resume) == 0 {
+		images = cursorImagesFromKiro(currentRawImages)
+		return "", current, images, nil, nil
+	}
+	prior := turns[:len(turns)-1]
+	// Budget historical user images behind current turn's images (up to cursorMaxRetainedImages total).
+	histBudget := max(0, cursorMaxRetainedImages-len(currentRawImages))
+	history, histRawImages, err := flattenCursorHistoryWithImages(prior, histBudget)
+	if err != nil {
+		return "", "", nil, nil, err
+	}
+	allRawImages := make([]any, 0, len(histRawImages)+len(currentRawImages))
+	allRawImages = append(allRawImages, histRawImages...)
+	allRawImages = append(allRawImages, currentRawImages...)
+	if len(allRawImages) > cursorMaxRetainedImages {
+		allRawImages = allRawImages[len(allRawImages)-cursorMaxRetainedImages:]
+	}
+	images = cursorImagesFromKiro(allRawImages)
 	return history, current, images, resume, nil
 }
 
 func flattenCursorHistory(messages []conversationTurn) (string, error) {
+	history, _, err := flattenCursorHistoryWithImages(messages, 0)
+	return history, err
+}
+
+func flattenCursorHistoryWithImages(messages []conversationTurn, imageBudget int) (string, []any, error) {
+	parsed := make([]kiroContent, len(messages))
+	totalHistImages := 0
+	for i, message := range messages {
+		content, err := parseKiroContentChecked(message, nil)
+		if err != nil {
+			return "", nil, err
+		}
+		parsed[i] = content
+		role := strings.ToLower(strings.TrimSpace(message.Role))
+		if role == "user" {
+			totalHistImages += len(content.images)
+		}
+	}
+	skipImages := max(0, totalHistImages-max(0, imageBudget))
+	retainedImages := make([]any, 0, min(totalHistImages, max(0, imageBudget)))
+
 	var builder strings.Builder
-	for _, message := range messages {
-		content := parseKiroContent(message, nil)
-		switch strings.ToLower(strings.TrimSpace(message.Role)) {
+	for i, message := range messages {
+		content := parsed[i]
+		role := strings.ToLower(strings.TrimSpace(message.Role))
+		switch role {
 		case "user":
-			if text := strings.TrimSpace(content.text); text != "" {
+			// Emit TOOL_RESULT before USER to match actual conversation order
+			// (tool results immediately follow the preceding ASSISTANT_TOOL_CALL).
+			for _, result := range cursorToolResultsFromContent(content) {
+				builder.WriteString("TOOL_RESULT:\n")
+				builder.WriteString(result.Text)
+				builder.WriteByte('\n')
+			}
+			omittedHere := false
+			for _, img := range content.images {
+				if skipImages > 0 {
+					skipImages--
+					omittedHere = true
+					continue
+				}
+				retainedImages = append(retainedImages, img)
+			}
+			text := strings.TrimSpace(content.text)
+			if omittedHere {
+				if text != "" {
+					text += "\n[earlier user image omitted]"
+				} else {
+					text = "[earlier user image omitted]"
+				}
+			}
+			if text != "" {
 				builder.WriteString("USER:\n")
 				builder.WriteString(text)
 				builder.WriteByte('\n')
 			}
-			for _, result := range cursorToolResultsFromContent(content) {
-				builder.WriteString("TOOL_RESULT:\n")
-				builder.WriteString(result.Text)
+		case "developer", "system":
+			if text := strings.TrimSpace(content.text); text != "" {
+				builder.WriteString("USER:\n[Developer instruction]\n")
+				builder.WriteString(text)
 				builder.WriteByte('\n')
 			}
 		case "assistant":
@@ -1209,7 +1281,7 @@ func flattenCursorHistory(messages []conversationTurn) (string, error) {
 			}
 		}
 	}
-	return strings.TrimSpace(builder.String()), nil
+	return strings.TrimSpace(builder.String()), retainedImages, nil
 }
 
 func cursorComposeUserText(history, current string) string {
@@ -1299,6 +1371,9 @@ func cursorImagesFromKiro(images []any) []cursorImage {
 		if block == nil {
 			continue
 		}
+		// Apply Kiro's 25MP decompression-bomb check, 1568px/400KB shrinking,
+		// and magic-byte MIME correction before sending raw image bytes to Cursor.
+		processKiroImage(block)
 		format := strings.TrimSpace(stringValue(block["format"]))
 		source, _ := block["source"].(map[string]any)
 		data := ""
