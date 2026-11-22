@@ -1033,3 +1033,86 @@ func TestWorkBuddyRuntimeSanitizesOutboundUpstreamRequest(t *testing.T) {
 		t.Fatalf("unexpected sanitized Grok prompt: %s", systemText)
 	}
 }
+
+func TestWorkBuddyRuntimeNonStreamAndCompactionAlwaysStreamsUpstream(t *testing.T) {
+	var nonStreamRejects, streamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v3/config":
+			writeTestJSON(writer, map[string]any{"code": 0, "data": map[string]any{"models": []map[string]any{{
+				"id": "wb-chat", "name": "WorkBuddy Chat", "supportsToolCall": true, "credits": "x0.20",
+			}}}})
+		case "/v2/chat/completions":
+			raw, _ := io.ReadAll(request.Body)
+			var parsed map[string]any
+			_ = json.Unmarshal(raw, &parsed)
+			isStream, _ := parsed["stream"].(bool)
+			if !isStream {
+				nonStreamRejects.Add(1)
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(writer, `{"code":11101,"msg":"Non-stream chat request is currently not supported","retry_policy":{"retry":false}}`)
+				return
+			}
+			streamHits.Add(1)
+			writer.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(writer, "data: {\"id\":\"chatcmpl-wb\",\"object\":\"chat.completion.chunk\",\"model\":\"wb-chat\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"wb-compact-summary\"},\"finish_reason\":null}]}\n\n")
+			_, _ = fmt.Fprint(writer, "data: {\"id\":\"chatcmpl-wb\",\"object\":\"chat.completion.chunk\",\"model\":\"wb-chat\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4}}\n\n")
+			_, _ = fmt.Fprint(writer, "data: [DONE]\n\n")
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+	restoreWorkBuddyTestGlobals(t, server.URL)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	authDir := filepath.Join(home, ".gbx", "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkBuddyTestCredential(t, authDir, "workbuddy-user-compact.json", "token-1", "refresh-1", time.Now().Add(time.Hour))
+
+	runtime, err := StartOAuth(context.Background(), ProviderWorkBuddy, "wb-chat", "workbuddy-user-compact.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Stop()
+
+	// 1. Direct non-stream /v1/responses must stream upstream on the first try.
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, runtime.Endpoint()+"/responses", strings.NewReader(`{"model":"wb-chat","stream":false,"input":[{"role":"user","content":"hello"}]}`))
+	req.Header.Set("Authorization", "Bearer "+runtime.APIKey())
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"object":"response"`) || !strings.Contains(string(body), "wb-compact-summary") {
+		t.Fatalf("non-stream responses status=%d body=%s", resp.StatusCode, body)
+	}
+
+	// 2. /v1/responses/compact must also stream upstream on the first try.
+	compactReq, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, runtime.Endpoint()+"/responses/compact", strings.NewReader(`{"model":"wb-chat","input":[{"type":"message","role":"user","content":"remember this"}]}`))
+	compactReq.Header.Set("Authorization", "Bearer "+runtime.APIKey())
+	compactReq.Header.Set("Content-Type", "application/json")
+	compactResp, err := http.DefaultClient.Do(compactReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compactBody, _ := io.ReadAll(compactResp.Body)
+	_ = compactResp.Body.Close()
+	if compactResp.StatusCode != http.StatusOK || !strings.Contains(string(compactBody), `"object":"response.compaction"`) || !strings.Contains(string(compactBody), "wb-compact-summary") {
+		t.Fatalf("compact status=%d body=%s", compactResp.StatusCode, compactBody)
+	}
+
+	if nonStreamRejects.Load() != 0 {
+		t.Fatalf("WorkBuddy received %d non-stream requests, want 0", nonStreamRejects.Load())
+	}
+	if streamHits.Load() != 2 {
+		t.Fatalf("streamHits = %d, want 2", streamHits.Load())
+	}
+}

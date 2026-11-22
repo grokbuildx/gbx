@@ -10,9 +10,10 @@ import (
 // Responses request destined for an OpenAI Chat Completions upstream.
 type chatCompletionsConvertedRequest struct {
 	adapterRequest
-	body      []byte
-	model     string
-	sessionID string
+	body           []byte
+	model          string
+	sessionID      string
+	upstreamStream bool
 }
 
 // convertResponsesToChatCompletions translates a Responses request into an
@@ -131,6 +132,7 @@ func convertResponsesToChatCompletions(raw []byte) (*chatCompletionsConvertedReq
 		body:           encoded,
 		model:          upstreamModel,
 		sessionID:      firstNonEmptyString(request.CacheKey, request.SafetyIdentifier),
+		upstreamStream: request.Stream,
 	}, nil
 }
 

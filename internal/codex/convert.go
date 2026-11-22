@@ -43,30 +43,102 @@ func hoistCompactionTrigger(items []map[string]any) ([]map[string]any, bool) {
 	return rest, triggered
 }
 
+const (
+	defaultBridgeCompactionToolMaxBytes    = 24 << 10
+	defaultBridgeCompactionMessageMaxBytes = 32 << 10
+	bridgeCompactionRetryMidBudgetBytes    = 96 << 10
+	bridgeCompactionRetryMidItemMaxBytes   = 8 << 10
+	bridgeCompactionRetryTightBudgetBytes  = 28 << 10
+	bridgeCompactionRetryTightItemMaxBytes = 3 << 10
+)
+
 // Summarization has no live tools. Preserve historical calls/results as text
-// so the summarization request cannot resume a tool loop, and omit inline
-// screenshot/image/file/audio payloads so compaction stays within model context limits.
+// so the summarization request cannot resume a tool loop, drop reasoning blocks,
+// decode prior GBX summaries, and omit/excerpt oversized payloads so compaction
+// stays within model context limits.
 func compactionItems(items []map[string]any) []map[string]any {
+	return compactionItemsBudgeted(items, 0, defaultBridgeCompactionToolMaxBytes, defaultBridgeCompactionMessageMaxBytes)
+}
+
+func compactionItemsBudgeted(items []map[string]any, maxTotalBytes, maxToolBytes, maxMsgBytes int) []map[string]any {
 	result := make([]map[string]any, 0, len(items)+1)
 	for _, item := range items {
 		kind, _ := item["type"].(string)
 		switch kind {
+		case "compaction_trigger", "reasoning":
+			continue
+		case "compaction":
+			if encoded, _ := item["encrypted_content"].(string); encoded != "" {
+				if summary, ok := decodeCompactionSummary(encoded); ok {
+					result = append(result, map[string]any{
+						"type":    "message",
+						"role":    "user",
+						"content": "Previous conversation summary:\n" + oauthproxy.ExcerptCompactionText(summary, maxMsgBytes),
+					})
+				}
+			}
 		case "function_call", "custom_tool_call", "tool_search_call", "computer_call", "shell_call", "local_shell_call", "apply_patch_call":
 			name, input := compactionToolCallSummary(kind, item)
-			result = append(result, map[string]any{"type": "message", "role": "assistant", "content": fmt.Sprintf("Previous tool call %s (%s):\n%s", name, textValue(item["call_id"]), compactionTextValue(input))})
+			result = append(result, map[string]any{"type": "message", "role": "assistant", "content": fmt.Sprintf("Previous tool call %s (%s):\n%s", name, textValue(item["call_id"]), oauthproxy.ExcerptCompactionText(compactionTextValue(input), maxToolBytes))})
 		case "function_call_output", "custom_tool_call_output", "tool_search_output", "computer_call_output", "shell_call_output", "local_shell_call_output", "apply_patch_call_output":
 			output := item["output"]
 			if kind == "tool_search_output" {
 				output = item["tools"]
 			}
-			result = append(result, map[string]any{"type": "message", "role": "user", "content": fmt.Sprintf("Previous tool result (%s):\n%s", textValue(item["call_id"]), compactionTextValue(output))})
+			result = append(result, map[string]any{"type": "message", "role": "user", "content": fmt.Sprintf("Previous tool result (%s):\n%s", textValue(item["call_id"]), oauthproxy.ExcerptCompactionText(compactionTextValue(output), maxToolBytes))})
 		case "", "message":
-			result = append(result, sanitizeCompactionMessage(item))
+			result = append(result, sanitizeCompactionMessage(item, maxMsgBytes))
 		default:
 			result = append(result, item)
 		}
 	}
+	if maxTotalBytes > 0 {
+		result = trimBridgeCompactionHistory(result, maxTotalBytes)
+	}
 	return append(result, map[string]any{"type": "message", "role": "user", "content": "Summarize the conversation above for another assistant to continue. Preserve the goals, constraints, decisions, tool results, changed files, and outstanding tasks. Return only the summary; do not continue the task or call tools."})
+}
+
+func trimBridgeCompactionHistory(items []map[string]any, maxTotalBytes int) []map[string]any {
+	if len(items) == 0 || maxTotalBytes <= 0 {
+		return items
+	}
+	sizes := make([]int, len(items))
+	total := 0
+	for i, item := range items {
+		if raw, err := json.Marshal(item); err == nil {
+			sizes[i] = len(raw)
+			total += len(raw)
+		}
+	}
+	if total <= maxTotalBytes {
+		return items
+	}
+	headBudget := maxTotalBytes / 4
+	tailBudget := maxTotalBytes - headBudget
+	headEnd := 0
+	headUsed := 0
+	for headEnd < len(items) && (headEnd == 0 || headUsed+sizes[headEnd] <= headBudget) {
+		headUsed += sizes[headEnd]
+		headEnd++
+	}
+	tailStart := len(items)
+	tailUsed := 0
+	for tailStart > headEnd && (tailStart == len(items) || tailUsed+sizes[tailStart-1] <= tailBudget) {
+		tailStart--
+		tailUsed += sizes[tailStart]
+	}
+	if tailStart <= headEnd {
+		return items
+	}
+	trimmed := make([]map[string]any, 0, headEnd+(len(items)-tailStart)+1)
+	trimmed = append(trimmed, items[:headEnd]...)
+	trimmed = append(trimmed, map[string]any{
+		"type":    "message",
+		"role":    "user",
+		"content": "[earlier turns omitted during compaction to fit context window]",
+	})
+	trimmed = append(trimmed, items[tailStart:]...)
+	return trimmed
 }
 
 func compactionToolCallSummary(kind string, item map[string]any) (string, any) {
@@ -95,17 +167,23 @@ func compactionToolCallSummary(kind string, item map[string]any) (string, any) {
 	}
 }
 
-func sanitizeCompactionMessage(item map[string]any) map[string]any {
+func sanitizeCompactionMessage(item map[string]any, maxMsgBytes int) map[string]any {
 	switch content := item["content"].(type) {
 	case string:
-		if !isInlineImageData(content) {
+		next := content
+		if isInlineImageData(next) {
+			next = "[image omitted]"
+		} else {
+			next = oauthproxy.ExcerptCompactionText(next, maxMsgBytes)
+		}
+		if next == content {
 			return item
 		}
 		cloned := make(map[string]any, len(item))
 		for k, v := range item {
 			cloned[k] = v
 		}
-		cloned["content"] = "[image omitted]"
+		cloned["content"] = next
 		return cloned
 	case []any:
 		changed := false
@@ -135,15 +213,23 @@ func sanitizeCompactionMessage(item map[string]any) map[string]any {
 				sanitized = append(sanitized, map[string]any{"type": partType, "text": "[audio omitted]"})
 				continue
 			}
-			if text, ok := part["text"].(string); ok && isInlineImageData(text) {
-				changed = true
-				clonedPart := make(map[string]any, len(part))
-				for k, v := range part {
-					clonedPart[k] = v
+			if text, ok := part["text"].(string); ok {
+				next := text
+				if isInlineImageData(next) {
+					next = "[image omitted]"
+				} else {
+					next = oauthproxy.ExcerptCompactionText(next, maxMsgBytes)
 				}
-				clonedPart["text"] = "[image omitted]"
-				sanitized = append(sanitized, clonedPart)
-				continue
+				if next != text {
+					changed = true
+					clonedPart := make(map[string]any, len(part))
+					for k, v := range part {
+						clonedPart[k] = v
+					}
+					clonedPart["text"] = next
+					sanitized = append(sanitized, clonedPart)
+					continue
+				}
 			}
 			sanitized = append(sanitized, raw)
 		}
@@ -347,33 +433,73 @@ func (g *Gateway) serveBridge(w http.ResponseWriter, r *http.Request, body []byt
 	}
 	_, pendingNotice := g.migrationNotices.get(noticeID, "migration-notice", owner)
 	items, triggered := hoistCompactionTrigger(items)
-	if compact || triggered {
+	summarizing := compact || triggered
+	if compact {
+		request.Stream = false
+	}
+	var response *http.Response
+	if summarizing {
 		// Codex remote compaction v2 appends compaction_trigger to an ordinary
 		// Responses request and expects exactly one compaction output item.
 		// /responses/compact uses the same summary.
 		request.Instructions = "Summarize the conversation for another coding assistant to continue. Retain the user's goals, constraints, decisions, tool results, changed files, and outstanding tasks. Do not perform the tasks or call tools.\n" + request.Instructions
-		items = compactionItems(items)
-	}
-	if compact {
-		request.Stream = false
-	}
-	// The runtime handles tool translation and Responses assembly. Send full
-	// history because the gateway owns its local previous_response_id cache.
-	upstreamBody, err := bridgeRequest(body, request, items, route, compact || triggered)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error(), "")
-		return
-	}
-	response, err := g.callRuntime(r, upstreamBody, "/responses")
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "api_error", "GBX provider connection failed", "")
-		return
+		plans := []struct {
+			maxTotalBytes int
+			maxToolBytes  int
+			maxMsgBytes   int
+		}{
+			{0, defaultBridgeCompactionToolMaxBytes, defaultBridgeCompactionMessageMaxBytes},
+			{bridgeCompactionRetryMidBudgetBytes, bridgeCompactionRetryMidItemMaxBytes, bridgeCompactionRetryMidItemMaxBytes},
+			{bridgeCompactionRetryTightBudgetBytes, bridgeCompactionRetryTightItemMaxBytes, bridgeCompactionRetryTightItemMaxBytes},
+		}
+		for i, plan := range plans {
+			compacted := compactionItemsBudgeted(items, plan.maxTotalBytes, plan.maxToolBytes, plan.maxMsgBytes)
+			upstreamBody, reqErr := bridgeRequest(body, request, compacted, route, true)
+			if reqErr != nil {
+				writeError(w, http.StatusBadRequest, "invalid_request_error", reqErr.Error(), "")
+				return
+			}
+			resp, callErr := g.callRuntime(r, upstreamBody, "/responses")
+			if callErr != nil {
+				writeError(w, http.StatusBadGateway, "api_error", "GBX provider connection failed", "")
+				return
+			}
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				response = resp
+				break
+			}
+			errBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			_ = resp.Body.Close()
+			if i+1 < len(plans) && oauthproxy.IsCompactionContextOverflow(resp.StatusCode, errBytes) {
+				oauthproxy.LogWarnEvent("codex_compaction_overflow_retry", "component", "codex",
+					"attempt", i+1, "next_budget_bytes", plans[i+1].maxTotalBytes)
+				continue
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(errBytes))
+			relayResponse(w, r, resp)
+			return
+		}
+	} else {
+		// The runtime handles tool translation and Responses assembly. Send full
+		// history because the gateway owns its local previous_response_id cache.
+		upstreamBody, reqErr := bridgeRequest(body, request, items, route, false)
+		if reqErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", reqErr.Error(), "")
+			return
+		}
+		var callErr error
+		response, callErr = g.callRuntime(r, upstreamBody, "/responses")
+		if callErr != nil {
+			writeError(w, http.StatusBadGateway, "api_error", "GBX provider connection failed", "")
+			return
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			defer response.Body.Close()
+			relayResponse(w, r, response)
+			return
+		}
 	}
 	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		relayResponse(w, r, response)
-		return
-	}
 
 	var notice string
 	if pendingNotice && !compactionRequest {
@@ -408,9 +534,10 @@ func (g *Gateway) serveBridge(w http.ResponseWriter, r *http.Request, body []byt
 		writeError(w, http.StatusBadGateway, "api_error", err.Error(), "")
 		return
 	}
-	if compact || triggered {
+	if summarizing {
 		summary := responseSummary(result)
-		if summary == "" || result["status"] != "completed" {
+		status, _ := result["status"].(string)
+		if summary == "" || (status != "completed" && status != "incomplete") {
 			writeError(w, http.StatusBadGateway, "api_error", "provider did not complete the compaction summary", "")
 			return
 		}
@@ -422,8 +549,12 @@ func (g *Gateway) serveBridge(w http.ResponseWriter, r *http.Request, body []byt
 			}
 			writeBridgeCompaction(w, request, id, summary, result["usage"])
 		} else {
+			id := randomID("cmp_")
 			summaryItem["content"] = []any{map[string]any{"type": "input_text", "text": summaryItem["content"]}}
-			writeJSON(w, http.StatusOK, map[string]any{"id": randomID("cmp_"), "object": "response.compaction",
+			if shouldStore {
+				g.history.put(id, route.Alias, owner, []map[string]any{summaryItem})
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"id": id, "object": "response.compaction",
 				"created_at": time.Now().Unix(), "output": []any{summaryItem}, "usage": result["usage"]})
 		}
 		return
@@ -451,6 +582,7 @@ func bridgeRequest(raw []byte, request responseRequest, items []map[string]any, 
 		delete(body, "tool_choice")
 		delete(body, "parallel_tool_calls")
 		delete(body, "text")
+		delete(body, "reasoning")
 	}
 	capacity := route.MaxOutputTokens
 	if capacity <= 0 {
@@ -478,11 +610,19 @@ func readBridgeJSON(body io.Reader, model string) (map[string]any, error) {
 		return nil, fmt.Errorf("provider response exceeds limit or was interrupted")
 	}
 	var result map[string]any
-	if err := decodeBridgeJSON(raw, &result); err != nil || result["object"] != "response" {
-		return nil, fmt.Errorf("invalid Responses payload from GBX runtime")
+	if err := decodeBridgeJSON(raw, &result); err == nil && result["object"] == "response" {
+		result["model"] = model
+		return result, nil
 	}
-	result["model"] = model
-	return result, nil
+	if bytes.Contains(raw, []byte("data:")) {
+		observer := newForwardResponseObserver("text/event-stream")
+		observer.Observe(raw)
+		if terminal := observer.terminalResponse(); terminal != nil && terminal["object"] == "response" {
+			terminal["model"] = model
+			return terminal, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid Responses payload from GBX runtime")
 }
 
 func decodeBridgeJSON(raw []byte, target any) error {

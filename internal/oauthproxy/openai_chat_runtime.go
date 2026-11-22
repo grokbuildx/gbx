@@ -76,11 +76,20 @@ type chatCompletionsService struct {
 	// roundTrip optionally replaces the default HTTP POST + 401 refresh inside
 	// one fast-retry attempt (used by single-hop WorkBuddy).
 	roundTrip func(context.Context, *chatCompletionsConvertedRequest) (*http.Response, error)
+	// streamOnly forces upstream requests to use stream=true even when the
+	// client asks for a non-streaming JSON response (such as Codex compaction),
+	// assembling the SSE response locally into JSON.
+	streamOnly bool
+	// omitStreamOptions prevents dynamic stream fallbacks from injecting
+	// stream_options on backends that strip or reject it (e.g. AutoClaw ZAI).
+	omitStreamOptions bool
 	// compatMu caches learned per-model upstream compatibility quirks so
-	// rejected stream_options or max_tokens keys do not fail repeatedly.
+	// rejected stream_options, max_tokens keys, or non-stream requests do not
+	// fail repeatedly.
 	compatMu        sync.Mutex
 	noStreamOptions map[string]bool
 	maxTokensKey    map[string]string
+	requireStream   map[string]bool
 }
 
 type chatCompletionsUpstreamError struct {
@@ -296,7 +305,7 @@ func (s *chatCompletionsService) handleResponses(writer http.ResponseWriter, req
 	response, err := s.call(requestCtx, converted)
 	if err != nil {
 		tried := map[string]bool{}
-		for attempt := 0; attempt < 4 && err != nil; attempt++ {
+		for attempt := 0; attempt < 5 && err != nil; attempt++ {
 			var upstreamErr *chatCompletionsUpstreamError
 			if !errors.As(err, &upstreamErr) {
 				break
@@ -365,26 +374,48 @@ func (s *chatCompletionsService) handleResponses(writer http.ResponseWriter, req
 		}
 		s.recordUsage(converted, assembler)
 	} else {
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, chatMaxResponseBytes+1))
-		if readErr != nil {
-			LogErrorEvent("response_read_failed", "component", "openai_chat", "request_id", requestID,
-				"model", converted.model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", readErr)
-			writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "server_error", "", readErr.Error())
-			return
-		}
-		if int64(len(body)) > chatMaxResponseBytes {
-			limitErr := fmt.Errorf("OpenAI Chat Completions response exceeds %s limit", requestLimitLabel(chatMaxResponseBytes))
-			LogErrorEvent("response_read_failed", "component", "openai_chat", "request_id", requestID,
-				"model", converted.model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", limitErr)
-			writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "server_error", "", limitErr.Error())
-			return
-		}
 		assembler := newResponseAssembler(&converted.adapterRequest, nil)
-		if err := processChatCompletionsNonStream(body, assembler); err != nil {
-			LogErrorEvent("stream_conversion_failed", "component", "openai_chat", "request_id", requestID,
-				"model", converted.model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", err)
-			writeStreamFailure(writer, assembler, false, "openai_chat", err)
-			return
+		isSSE := strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream")
+		if isSSE {
+			if err := processChatCompletionsStream(response.Body, assembler); err != nil {
+				if errors.Is(err, context.Canceled) || requestCtx.Err() != nil {
+					LogDebugEvent("stream_cancelled", "component", "openai_chat", "request_id", requestID,
+						"model", converted.model, "duration", logDuration(started))
+					return
+				}
+				LogErrorEvent("stream_conversion_failed", "component", "openai_chat", "request_id", requestID,
+					"model", converted.model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", err)
+				writeStreamFailure(writer, assembler, false, "openai_chat", err)
+				return
+			}
+		} else {
+			body, readErr := io.ReadAll(io.LimitReader(response.Body, chatMaxResponseBytes+1))
+			if readErr != nil {
+				LogErrorEvent("response_read_failed", "component", "openai_chat", "request_id", requestID,
+					"model", converted.model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", readErr)
+				writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "server_error", "", readErr.Error())
+				return
+			}
+			if int64(len(body)) > chatMaxResponseBytes {
+				limitErr := fmt.Errorf("OpenAI Chat Completions response exceeds %s limit", requestLimitLabel(chatMaxResponseBytes))
+				LogErrorEvent("response_read_failed", "component", "openai_chat", "request_id", requestID,
+					"model", converted.model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", limitErr)
+				writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "server_error", "", limitErr.Error())
+				return
+			}
+			trimmed := bytes.TrimSpace(body)
+			var parseErr error
+			if len(trimmed) > 0 && trimmed[0] != '{' && bytes.Contains(trimmed, []byte("data:")) {
+				parseErr = processChatCompletionsStream(bytes.NewReader(body), assembler)
+			} else {
+				parseErr = processChatCompletionsNonStream(body, assembler)
+			}
+			if parseErr != nil {
+				LogErrorEvent("stream_conversion_failed", "component", "openai_chat", "request_id", requestID,
+					"model", converted.model, "returned_status", http.StatusBadGateway, "duration", logDuration(started), "error", parseErr)
+				writeStreamFailure(writer, assembler, false, "openai_chat", parseErr)
+				return
+			}
 		}
 		s.recordUsage(converted, assembler)
 		writer.Header().Set("Content-Type", "application/json")
@@ -461,7 +492,7 @@ func (s *chatCompletionsService) callOnce(ctx context.Context, converted *chatCo
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", "application/json")
-	if converted.stream {
+	if converted.upstreamStream {
 		request.Header.Set("Accept", "text/event-stream")
 	}
 	if s.decorateHeader != nil {
@@ -470,7 +501,7 @@ func (s *chatCompletionsService) callOnce(ctx context.Context, converted *chatCo
 	applyOpenCodeSession(ctx, request)
 	LogDebugEvent("upstream_request", "component", "openai_chat", "request_id", requestLogID(ctx),
 		"method", http.MethodPost, "endpoint", SafeLogEndpoint(target),
-		"body_bytes", len(converted.body), "stream", converted.stream, "model", converted.model)
+		"body_bytes", len(converted.body), "stream", converted.stream, "upstream_stream", converted.upstreamStream, "model", converted.model)
 	started := time.Now()
 	response, err := doCredentialRequest(s.client, request)
 	if err != nil {
@@ -569,13 +600,20 @@ func (s *chatCompletionsService) compatModelKey(converted *chatCompletionsConver
 
 func (s *chatCompletionsService) applyChatCompatPreferences(converted *chatCompletionsConvertedRequest) error {
 	key := s.compatModelKey(converted)
-	if key == "" {
-		return nil
-	}
 	s.compatMu.Lock()
-	dropStreamOpts := s.noStreamOptions[key]
-	preferredMaxKey := s.maxTokensKey[key]
+	dropStreamOpts := key != "" && s.noStreamOptions[key]
+	preferredMaxKey := ""
+	needStream := s.streamOnly
+	if key != "" {
+		preferredMaxKey = s.maxTokensKey[key]
+		if s.requireStream[key] {
+			needStream = true
+		}
+	}
 	s.compatMu.Unlock()
+	if needStream && !converted.upstreamStream {
+		s.enableUpstreamStream(converted, !dropStreamOpts && !s.omitStreamOptions)
+	}
 	if dropStreamOpts && gjson.GetBytes(converted.body, "stream_options").Exists() {
 		if updated, err := sjson.DeleteBytes(converted.body, "stream_options"); err == nil {
 			converted.body = updated
@@ -587,6 +625,24 @@ func (s *chatCompletionsService) applyChatCompatPreferences(converted *chatCompl
 		}
 	}
 	return nil
+}
+
+func (s *chatCompletionsService) enableUpstreamStream(converted *chatCompletionsConvertedRequest, addStreamOptions bool) bool {
+	if converted == nil {
+		return false
+	}
+	updated, err := sjson.SetBytes(converted.body, "stream", true)
+	if err != nil {
+		return false
+	}
+	if addStreamOptions && !gjson.GetBytes(updated, "stream_options").Exists() {
+		if withOpts, err := sjson.SetBytes(updated, "stream_options", map[string]any{"include_usage": true}); err == nil {
+			updated = withOpts
+		}
+	}
+	converted.body = updated
+	converted.upstreamStream = true
+	return true
 }
 
 func (s *chatCompletionsService) clampChatMaxTokens(converted *chatCompletionsConvertedRequest) error {
@@ -625,10 +681,29 @@ func (s *chatCompletionsService) clampChatMaxTokens(converted *chatCompletionsCo
 }
 
 func (s *chatCompletionsService) applyChatCompatFallback(requestID string, converted *chatCompletionsConvertedRequest, upstreamErr *chatCompletionsUpstreamError, tried map[string]bool) (string, bool) {
+	modelKey := s.compatModelKey(converted)
+	// 0. Upgrade non-stream upstream requests to stream=true when the gateway
+	// only supports streaming chat completions (e.g. WorkBuddy HTTP 400 code 11101
+	// "Non-stream chat request is currently not supported", or stream-only relays).
+	if !tried["require_stream"] && !converted.upstreamStream && isRejectedNonStreamError(upstreamErr.status, upstreamErr.body) {
+		s.compatMu.Lock()
+		dropStreamOpts := keyLookupBool(s.noStreamOptions, modelKey)
+		if s.requireStream == nil {
+			s.requireStream = make(map[string]bool)
+		}
+		if modelKey != "" {
+			s.requireStream[modelKey] = true
+		}
+		s.compatMu.Unlock()
+		if s.enableUpstreamStream(converted, !dropStreamOpts && !s.omitStreamOptions) {
+			LogWarnEvent("chat_non_stream_rejected_fallback", "component", "openai_chat", "request_id", requestID,
+				"model", converted.model, "status", upstreamErr.status)
+			return "require_stream", true
+		}
+	}
 	if upstreamErr.status != http.StatusBadRequest && upstreamErr.status != http.StatusUnprocessableEntity {
 		return "", false
 	}
-	modelKey := s.compatModelKey(converted)
 	// 1. Rewrite max_tokens <-> max_completion_tokens when upstream rejects the key.
 	if !tried["max_tokens_key"] && isRejectedMaxTokensKeyError(upstreamErr.status, upstreamErr.body) {
 		targetKey := ""
@@ -921,6 +996,57 @@ func isRejectedOptionalChatFieldError(status int, body string) bool {
 		return false
 	}
 	for _, needle := range []string{"not supported", "unsupported", "unrecognized", "unknown", "extra_forbidden", "unexpected", "not allowed"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func keyLookupBool(m map[string]bool, key string) bool {
+	if key == "" || len(m) == 0 {
+		return false
+	}
+	return m[key]
+}
+
+func isRejectedNonStreamError(status int, body string) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity && status != http.StatusNotImplemented {
+		return false
+	}
+	lower := strings.ToLower(body)
+	if strings.Contains(lower, "non-stream") || strings.Contains(lower, "non stream") ||
+		strings.Contains(lower, "non_stream") || strings.Contains(lower, "nonstream") {
+		for _, needle := range []string{"not supported", "unsupported", "disabled", "not allowed", "invalid", "only"} {
+			if strings.Contains(lower, needle) {
+				return true
+			}
+		}
+	}
+	if !strings.Contains(lower, "stream") {
+		return false
+	}
+	for _, needle := range []string{
+		"must be true",
+		"must be set to true",
+		"stream=true",
+		"stream: true",
+		`"stream": true`,
+		`"stream":true`,
+		"only supports stream",
+		"only support stream",
+		"streaming is required",
+		"stream is required",
+		"streaming only",
+		"stream only",
+		"only streaming",
+		"requires streaming",
+		"require stream",
+		"does not support stream=false",
+		"stream=false is not supported",
+		"stream: false is not supported",
+		`"stream": false is not supported`,
+	} {
 		if strings.Contains(lower, needle) {
 			return true
 		}

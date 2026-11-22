@@ -352,10 +352,26 @@ func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	r = r.WithContext(context.WithValue(r.Context(), runtimeRequestKey{}, snapshot.runtimes[route.Alias]))
 	if route.NativeResponses {
+		if !route.CodexNativeTools && hasCompactionTriggerRaw(request.Input) {
+			g.serveBridge(w, r, body, request, route, false)
+			return
+		}
 		g.forwardResponses(w, r, nativeHistory(body), request, route, path)
 		return
 	}
 	g.serveBridge(w, r, body, request, route, path == "/responses/compact")
+}
+
+func hasCompactionTriggerRaw(raw json.RawMessage) bool {
+	if !bytes.Contains(raw, []byte("compaction_trigger")) {
+		return false
+	}
+	items, err := inputItems(raw)
+	if err != nil {
+		return false
+	}
+	_, triggered := hoistCompactionTrigger(items)
+	return triggered
 }
 
 type bodyReadError struct {

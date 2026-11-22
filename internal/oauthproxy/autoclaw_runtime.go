@@ -40,6 +40,7 @@ func startAutoClawOAuth(parent context.Context, _ string, modelSpec, credentialF
 				return normalizeAutoClawRequest(converted, contract)
 			}
 			service.decorateHeader = authorizer.decorateHeader
+			service.omitStreamOptions = true
 			// A managed-plan invocation may have been accepted before its broker
 			// returns an ambiguous 5xx (for example "parse response failed"). Do
 			// not replay billable POSTs invisibly; surface the first failure and let

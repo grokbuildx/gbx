@@ -962,6 +962,11 @@ func startWorkBuddyOAuth(parent context.Context, providerName, modelSpec, creden
 		service.normalizeBody = sanitizeWorkBuddyPayload
 		service.modelDetails = details
 		service.modelsDevProvider = "workbuddy"
+		// WorkBuddy /v2/chat/completions rejects non-stream requests with HTTP 400
+		// code 11101 ("Non-stream chat request is currently not supported"). Always
+		// stream upstream and assemble JSON locally for non-stream callers such as
+		// Codex compaction.
+		service.streamOnly = true
 		service.roundTrip = func(ctx context.Context, converted *chatCompletionsConvertedRequest) (*http.Response, error) {
 			return upstream.do(ctx, "/v2/chat/completions", "", nil, converted.body, true)
 		}

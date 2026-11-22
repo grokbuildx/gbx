@@ -1040,7 +1040,13 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 	}
 	normalizePassthroughResponsesImages(payload)
 	sanitizePassthroughResponsesInputScoped(payload, scope)
-	if !compact {
+	var compactFallbackBody []byte
+	if compact {
+		fallbackPayload := cloneMapShallow(payload)
+		fallbackPayload["model"] = model
+		compactFallbackBody, _ = json.Marshal(fallbackPayload)
+		sanitizeCompactRequestPayload(payload)
+	} else {
 		payload["stream"] = true
 		payload["store"] = false
 		// Strip non-Responses Chat-front parameters before forwarding.
@@ -1068,6 +1074,16 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 	}
 	response, err := s.callWithResponsesFallback(ctx, requestID, resolved, &body, sessionID, true)
 	if err != nil {
+		if compact && len(compactFallbackBody) > 0 && shouldFallbackFromUpstreamCompact(err) {
+			LogWarnEvent("responses_compact_local_fallback", "component", "codex_responses",
+				"request_id", requestID, "model", resolved, "error", err)
+			fallbackReq := request.Clone(request.Context())
+			fallbackReq.Body = io.NopCloser(bytes.NewReader(compactFallbackBody))
+			fallbackReq.ContentLength = int64(len(compactFallbackBody))
+			fallbackReq.URL.Path = "/v1/responses/compact"
+			localCompactionHandler(s.apiKey, s.handleResponses)(writer, fallbackReq)
+			return
+		}
 		s.writeUpstreamError(writer, requestID, resolved, started, err)
 		return
 	}
@@ -1201,6 +1217,46 @@ func sanitizePassthroughResponsesInput(payload map[string]any) {
 	sanitizePassthroughResponsesInputScoped(payload, "")
 }
 
+func sanitizeCompactRequestPayload(payload map[string]any) {
+	if payload == nil {
+		return
+	}
+	// OpenAI and ChatGPT Codex /responses/compact accept model, input,
+	// instructions, and previous_response_id; extra turn fields are rejected.
+	for _, key := range []string{
+		"stream", "store", "tools", "tool_choice", "parallel_tool_calls",
+		"max_output_tokens", "reasoning", "include", "prompt_cache_key",
+		"text", "temperature", "top_p", "truncation", "service_tier",
+		"metadata", "client_metadata", "stop", "seed", "presence_penalty",
+		"frequency_penalty", "logit_bias", "logprobs",
+	} {
+		delete(payload, key)
+	}
+}
+
+func shouldFallbackFromUpstreamCompact(err error) bool {
+	var upstreamErr *codexResponsesUpstreamError
+	if !errors.As(err, &upstreamErr) {
+		return false
+	}
+	switch upstreamErr.status {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return true
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		norm := normalizeUpstreamError("openai_responses", upstreamErr.status, upstreamErr.body, upstreamErr.Error())
+		if norm.Code == "context_length_exceeded" {
+			return true
+		}
+		lower := strings.ToLower(upstreamErr.body)
+		for _, needle := range []string{"not found", "unsupported", "unknown url", "invalid url", "not implemented", "does not support", "unknown endpoint", "unrecognized request url"} {
+			if strings.Contains(lower, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func sanitizePassthroughResponsesInputScoped(payload map[string]any, scope string) {
 	items, ok := payload["input"].([]any)
 	if !ok || len(items) == 0 {
@@ -1209,7 +1265,27 @@ func sanitizePassthroughResponsesInputScoped(payload map[string]any, scope strin
 	filtered := make([]any, 0, len(items))
 	for _, raw := range items {
 		item, isMap := raw.(map[string]any)
-		if !isMap || stringValue(item["type"]) != "reasoning" {
+		if !isMap {
+			filtered = append(filtered, raw)
+			continue
+		}
+		itemType := stringValue(item["type"])
+		if itemType == "compaction" {
+			if summary, ok := DecodeCompactionSummary(stringValue(item["encrypted_content"])); ok {
+				filtered = append(filtered, map[string]any{
+					"type": "message",
+					"role": "user",
+					"content": []any{map[string]any{
+						"type": "input_text",
+						"text": "Conversation summary:\n" + summary,
+					}},
+				})
+				continue
+			}
+			filtered = append(filtered, raw)
+			continue
+		}
+		if itemType != "reasoning" {
 			filtered = append(filtered, raw)
 			continue
 		}
