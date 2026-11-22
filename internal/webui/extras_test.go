@@ -2,6 +2,7 @@ package webui
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -86,6 +87,7 @@ func TestSchedulesSendWhenDueAndSurviveRestart(t *testing.T) {
 
 func testServerFrom(t *testing.T, server *Server) string {
 	t.Helper()
+	t.Cleanup(func() { _ = server.Close(context.Background()) })
 	httpServer := newHTTPTestServer(t, server.Handler())
 	return httpServer
 }

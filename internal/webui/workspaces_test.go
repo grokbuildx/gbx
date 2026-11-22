@@ -153,6 +153,7 @@ func TestConversationOfAnUnservedWorkspaceIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	session, err := store.Create(Meta{Title: "old", Workspace: gone})
 	if err != nil {
 		t.Fatal(err)

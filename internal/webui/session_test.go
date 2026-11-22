@@ -17,6 +17,7 @@ func newTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
+	t.Cleanup(store.Close)
 	return store
 }
 
@@ -45,6 +46,7 @@ func TestStoreCreateAppendAndReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
+	t.Cleanup(reopened.Close)
 	again, err := reopened.Open(session.ID())
 	if err != nil {
 		t.Fatalf("Open after restart: %v", err)
@@ -167,6 +169,7 @@ func TestSessionMetaPersistsAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(reopened.Close)
 	again, err := reopened.Open(session.ID())
 	if err != nil {
 		t.Fatal(err)
@@ -228,6 +231,7 @@ func TestStoreCountsTurnsOfOlderConversations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(reopened.Close)
 	metas, err := reopened.List()
 	if err != nil {
 		t.Fatal(err)

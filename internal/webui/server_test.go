@@ -151,6 +151,7 @@ func testServer(t *testing.T, cfg Config) *httptest.Server {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { _ = server.Close(context.Background()) })
 	return registerHTTPTestServer(t, server.Handler())
 }
 
