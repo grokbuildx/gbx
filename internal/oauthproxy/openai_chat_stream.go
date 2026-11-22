@@ -155,7 +155,7 @@ func (s *chatCompletionsStreamState) process(payload []byte) error {
 			}
 		}
 		if text := stringValue(delta["content"]); text != "" {
-			if err := s.assembler.addText(text); err != nil {
+			if err := s.assembler.addAssistantContent(text); err != nil {
 				return err
 			}
 		}
@@ -519,7 +519,7 @@ func chatAddContent(assembler *responseAssembler, content any) error {
 	switch typed := content.(type) {
 	case string:
 		if typed != "" {
-			return assembler.addText(typed)
+			return assembler.addAssistantContent(typed)
 		}
 	case []any:
 		for _, part := range typed {
@@ -537,7 +537,7 @@ func chatAddContent(assembler *responseAssembler, content any) error {
 				continue
 			}
 			if text := stringValue(block["text"]); text != "" {
-				if err := assembler.addText(text); err != nil {
+				if err := assembler.addAssistantContent(text); err != nil {
 					return err
 				}
 			}

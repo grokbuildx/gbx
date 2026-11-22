@@ -98,6 +98,12 @@ func convertResponsesToKiro(raw []byte) (*kiroConvertedRequest, error) {
 	thinkingEnabled := request.thinkingEnabled()
 	history := make([]any, 0, len(messages)+2)
 	systemText := strings.TrimSpace(request.System)
+	if instruction := structuredOutputPromptInstruction(request.Format); instruction != "" {
+		if systemText != "" {
+			systemText += "\n\n"
+		}
+		systemText += instruction
+	}
 	if thinkingEnabled {
 		prefix := kiroThinkingPrefix(request.Effort)
 		systemText = strings.TrimSpace(prefix + "\n" + systemText)
@@ -328,10 +334,28 @@ func kiroReasoningFields(request *conversationRequest, model string) map[string]
 	if !request.thinkingEnabled() {
 		return nil
 	}
-	if model != "claude-opus-4.6" && model != "claude-sonnet-4.6" {
+	if !isKiroAdaptiveClaudeModel(model) {
 		return nil
 	}
 	return map[string]any{"output_config": map[string]any{"effort": normalizeKiroEffort(request.Effort)}}
+}
+
+func isKiroAdaptiveClaudeModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	lower = strings.ReplaceAll(lower, "-", ".")
+	for _, prefix := range []string{
+		"claude.opus.4.6",
+		"claude.opus.4.7",
+		"claude.opus.4.8",
+		"claude.opus.5",
+		"claude.sonnet.4.6",
+		"claude.sonnet.5",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeKiroEffort(effort string) string {

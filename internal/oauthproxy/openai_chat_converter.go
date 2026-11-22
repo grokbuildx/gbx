@@ -37,11 +37,16 @@ func convertResponsesToChatCompletions(raw []byte) (*chatCompletionsConvertedReq
 		"stream":   request.Stream,
 	}
 	if request.MaxOutputTokens > 0 {
-		body["max_tokens"] = request.MaxOutputTokens
+		if chatUsesMaxCompletionTokens(upstreamModel) {
+			body["max_completion_tokens"] = request.MaxOutputTokens
+		} else {
+			body["max_tokens"] = request.MaxOutputTokens
+		}
 	}
 	if request.Temperature != nil {
 		body["temperature"] = *request.Temperature
-	} else if request.TopP != nil {
+	}
+	if request.TopP != nil {
 		body["top_p"] = *request.TopP
 	}
 	if len(request.Stop) > 0 {
@@ -50,7 +55,38 @@ func convertResponsesToChatCompletions(raw []byte) (*chatCompletionsConvertedReq
 	if request.User != "" {
 		body["user"] = request.User
 	}
-	if request.thinkingEnabled() {
+	if request.SafetyIdentifier != "" {
+		body["safety_identifier"] = request.SafetyIdentifier
+	}
+	switch request.ServiceTier {
+	case "auto", "default", "flex", "scale", "priority":
+		body["service_tier"] = request.ServiceTier
+	}
+	if request.CacheKey != "" {
+		body["prompt_cache_key"] = request.CacheKey
+	}
+	if request.PromptCacheRetention != "" {
+		body["prompt_cache_retention"] = request.PromptCacheRetention
+	}
+	if request.Seed != nil {
+		body["seed"] = *request.Seed
+	}
+	if request.PresencePenalty != nil {
+		body["presence_penalty"] = *request.PresencePenalty
+	}
+	if request.FrequencyPenalty != nil {
+		body["frequency_penalty"] = *request.FrequencyPenalty
+	}
+	if len(request.LogitBias) > 0 {
+		body["logit_bias"] = request.LogitBias
+	}
+	if request.Logprobs != nil {
+		body["logprobs"] = *request.Logprobs
+	}
+	if request.TopLogprobs != nil {
+		body["top_logprobs"] = *request.TopLogprobs
+	}
+	if request.Effort != "" {
 		body["reasoning_effort"] = request.Effort
 	}
 	if len(request.Tools) > 0 {
@@ -66,8 +102,12 @@ func convertResponsesToChatCompletions(raw []byte) (*chatCompletionsConvertedReq
 			body["parallel_tool_calls"] = *request.ParallelToolCalls
 		}
 	}
-	if format := structuredOutputSchema(request.Format); format != nil {
-		body["response_format"] = map[string]any{"type": "json_schema", "json_schema": format}
+	if request.Format != nil {
+		if request.Format.Type == "json_object" {
+			body["response_format"] = map[string]any{"type": "json_object"}
+		} else if format := structuredOutputSchema(request.Format); format != nil {
+			body["response_format"] = map[string]any{"type": "json_schema", "json_schema": format}
+		}
 	}
 	// Ask the upstream to include usage in the final streaming chunk so token
 	// statistics survive even when no dedicated usage event is emitted. Only
@@ -86,6 +126,21 @@ func convertResponsesToChatCompletions(raw []byte) (*chatCompletionsConvertedReq
 		body:           encoded,
 		model:          upstreamModel,
 	}, nil
+}
+
+// chatUsesMaxCompletionTokens reports whether an OpenAI Chat model requires
+// max_completion_tokens instead of the deprecated max_tokens field.
+func chatUsesMaxCompletionTokens(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(stripContextModelSuffix(model)))
+	if idx := strings.LastIndexByte(lower, '/'); idx >= 0 {
+		lower = lower[idx+1:]
+	}
+	for _, prefix := range []string{"o1", "o3", "o4", "gpt-5", "gpt-6"} {
+		if lower == prefix || strings.HasPrefix(lower, prefix+"-") || strings.HasPrefix(lower, prefix+".") {
+			return true
+		}
+	}
+	return false
 }
 
 // chatConvertTurn renders one conversation turn into zero or more OpenAI

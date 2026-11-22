@@ -112,6 +112,45 @@ func (m Model) Efforts() []string {
 	return efforts
 }
 
+// HasEffortOption reports whether the model advertises discrete effort tiers.
+func (m Model) HasEffortOption() bool {
+	if !m.Reasoning {
+		return false
+	}
+	for _, option := range m.ReasoningOptions {
+		if option.Type == "effort" && len(option.Values) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// SupportsBudgetTokens reports whether the model advertises token-budget thinking.
+func (m Model) SupportsBudgetTokens() bool {
+	if !m.Reasoning {
+		return false
+	}
+	for _, option := range m.ReasoningOptions {
+		if option.Type == "budget_tokens" {
+			return true
+		}
+	}
+	return false
+}
+
+// HasToggleOption reports whether the model advertises a binary thinking switch.
+func (m Model) HasToggleOption() bool {
+	if !m.Reasoning {
+		return false
+	}
+	for _, option := range m.ReasoningOptions {
+		if option.Type == "toggle" {
+			return true
+		}
+	}
+	return false
+}
+
 // ModelProvider carries a model-level npm and API base override. Absent means
 // the model inherits its provider's defaults. Mixed gateways use it to serve,
 // for example, Claude models from a separate Anthropic-compatible base URL.

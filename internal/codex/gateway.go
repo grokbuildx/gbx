@@ -466,6 +466,11 @@ func (g *Gateway) serveNative(w http.ResponseWriter, r *http.Request, body []byt
 		pr.Out.ContentLength = int64(len(body))
 		pr.Out.Header.Del("Content-Encoding")
 		pr.Out.Header.Del("Content-Length")
+	}, ModifyResponse: func(resp *http.Response) error {
+		if resp != nil && resp.Body != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			resp.Body = &nativeReasoningObserverReader{inner: resp.Body}
+		}
+		return nil
 	}, ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
 		writeError(w, http.StatusBadGateway, "api_error", "native OpenAI connection failed", "server_error")
 	}}

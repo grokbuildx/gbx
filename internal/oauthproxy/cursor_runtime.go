@@ -1592,10 +1592,6 @@ func convertResponsesToCursor(raw []byte) (*cursorConvertedRequest, error) {
 	if err != nil {
 		return nil, err
 	}
-	maxTokens := request.MaxOutputTokens
-	if maxTokens <= 0 {
-		maxTokens = 32_000
-	}
 	last := request.Turns[len(request.Turns)-1]
 	if !strings.EqualFold(strings.TrimSpace(last.Role), "user") {
 		return nil, fmt.Errorf("messages must end with a user message")
@@ -1613,12 +1609,18 @@ func convertResponsesToCursor(raw []byte) (*cursorConvertedRequest, error) {
 	}
 	model := stripContextModelSuffix(request.Model)
 	adapter := request.adapter(model)
-	adapter.maxTokens = maxTokens
-	sessionKey := firstNonEmptyString(request.CacheKey, request.User)
+	sessionKey := firstNonEmptyString(request.CacheKey, request.SafetyIdentifier, request.User)
+	system := strings.TrimSpace(request.System)
+	if instruction := structuredOutputPromptInstruction(request.Format); instruction != "" {
+		if system != "" {
+			system += "\n\n"
+		}
+		system += instruction
+	}
 	converted := &cursorConvertedRequest{
 		adapterRequest: adapter,
 		model:          model,
-		system:         strings.TrimSpace(request.System),
+		system:         system,
 		history:        history,
 		images:         images,
 		tools:          tools,

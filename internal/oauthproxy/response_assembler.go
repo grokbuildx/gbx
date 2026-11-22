@@ -108,6 +108,7 @@ type responseAssembler struct {
 	failed                  bool
 	nativeReasoning         bool
 	inlineState             string
+	inlineCloseTag          string
 	inlineBuffer            string
 }
 
@@ -326,46 +327,82 @@ func (a *responseAssembler) start() error {
 }
 
 func (a *responseAssembler) addAssistantContent(content string) error {
-	if !a.request.thinkingEnabled || a.nativeReasoning || a.inlineState == "done" {
+	if content == "" {
+		return nil
+	}
+	if a.nativeReasoning || a.inlineState == "done" {
 		return a.addText(content)
 	}
 	a.inlineBuffer += content
 	for {
 		switch a.inlineState {
 		case "thinking":
-			if index := strings.Index(a.inlineBuffer, "</thinking>"); index >= 0 {
+			closeTag := a.inlineCloseTag
+			if closeTag == "" {
+				closeTag = "</thinking>"
+			}
+			if index := strings.Index(a.inlineBuffer, closeTag); index >= 0 {
 				if err := a.addThinking(a.inlineBuffer[:index]); err != nil {
 					return err
 				}
-				a.inlineBuffer = a.inlineBuffer[index+len("</thinking>"):]
+				remaining := a.inlineBuffer[index+len(closeTag):]
+				a.inlineBuffer = ""
 				a.inlineState = "done"
-				if a.inlineBuffer != "" {
-					remaining := a.inlineBuffer
-					a.inlineBuffer = ""
+				a.inlineCloseTag = ""
+				if remaining != "" {
 					return a.addText(remaining)
 				}
 				return nil
 			}
-			keep := partialThinkingTagSuffix(a.inlineBuffer, "</thinking>")
+			keep := partialThinkingTagSuffix(a.inlineBuffer, closeTag)
 			safe := a.inlineBuffer[:len(a.inlineBuffer)-keep]
 			a.inlineBuffer = a.inlineBuffer[len(a.inlineBuffer)-keep:]
 			return a.addThinking(safe)
 		default:
-			if index := strings.Index(a.inlineBuffer, "<thinking>"); index >= 0 {
-				before := a.inlineBuffer[:index]
-				if strings.TrimSpace(before) != "" {
-					if err := a.addText(before); err != nil {
-						return err
-					}
+			// Only detect <think> / <thinking> at the very start of assistant
+			// output (after optional leading whitespace) so tags inside code
+			// blocks or mid-response explanations never hijack the stream.
+			wsEnd := 0
+			for wsEnd < len(a.inlineBuffer) {
+				switch a.inlineBuffer[wsEnd] {
+				case ' ', '\t', '\r', '\n':
+					wsEnd++
+				default:
+					goto checkedWS
 				}
-				a.inlineBuffer = a.inlineBuffer[index+len("<thinking>"):]
+			}
+		checkedWS:
+			trimmed := a.inlineBuffer[wsEnd:]
+			if trimmed == "" {
+				if len(a.inlineBuffer) > 4096 {
+					buf := a.inlineBuffer
+					a.inlineBuffer = ""
+					a.inlineState = "done"
+					return a.addText(buf)
+				}
+				return nil
+			}
+			if strings.HasPrefix(trimmed, "<thinking>") {
+				a.inlineBuffer = trimmed[len("<thinking>"):]
 				a.inlineState = "thinking"
+				a.inlineCloseTag = "</thinking>"
 				continue
 			}
-			keep := partialThinkingTagSuffix(a.inlineBuffer, "<thinking>")
-			safe := a.inlineBuffer[:len(a.inlineBuffer)-keep]
-			a.inlineBuffer = a.inlineBuffer[len(a.inlineBuffer)-keep:]
-			return a.addText(safe)
+			if strings.HasPrefix(trimmed, "<think>") {
+				a.inlineBuffer = trimmed[len("<think>"):]
+				a.inlineState = "thinking"
+				a.inlineCloseTag = "</think>"
+				continue
+			}
+			if strings.HasPrefix("<thinking>", trimmed) || strings.HasPrefix("<think>", trimmed) {
+				// Partial opening tag at the start of the stream; wait for more bytes.
+				return nil
+			}
+			// First non-whitespace token is regular text: lock text mode immediately.
+			buf := a.inlineBuffer
+			a.inlineBuffer = ""
+			a.inlineState = "done"
+			return a.addText(buf)
 		}
 	}
 }
@@ -377,12 +414,17 @@ func (a *responseAssembler) flushInlineContent() error {
 	buffer := a.inlineBuffer
 	a.inlineBuffer = ""
 	if a.inlineState == "thinking" {
-		if index := strings.Index(buffer, "</thinking>"); index >= 0 {
+		closeTag := a.inlineCloseTag
+		if closeTag == "" {
+			closeTag = "</thinking>"
+		}
+		if index := strings.Index(buffer, closeTag); index >= 0 {
 			if err := a.addThinking(buffer[:index]); err != nil {
 				return err
 			}
 			a.inlineState = "done"
-			return a.addText(buffer[index+len("</thinking>"):])
+			a.inlineCloseTag = ""
+			return a.addText(buffer[index+len(closeTag):])
 		}
 		return a.addThinking(buffer)
 	}

@@ -362,7 +362,11 @@ func (s *codexResponsesStreamState) processOutputItem(event map[string]any, term
 			s.reasoningDone = make(map[string]bool)
 		}
 		s.reasoningDone[key] = true
-		signature, err := codexReasoningSignature(item)
+		scope := ""
+		if s.assembler.request != nil {
+			scope = s.assembler.request.reasoningScope
+		}
+		signature, err := codexReasoningSignatureScoped(item, scope)
 		if err != nil {
 			return err
 		}

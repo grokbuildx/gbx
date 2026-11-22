@@ -14,7 +14,6 @@ import (
 	"github.com/grokbuildx/gbx/internal/modelsdev"
 	"github.com/grokbuildx/gbx/internal/protocol"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // anthropicMessagesUpstreamError is a non-2xx Messages response, relayed to
@@ -119,17 +118,41 @@ func (s *anthropicMessagesService) handleResponses(writer http.ResponseWriter, r
 		return s.callOnce(requestCtx, converted)
 	})
 	if err != nil {
-		var upstreamErr *anthropicMessagesUpstreamError
-		if errors.As(err, &upstreamErr) && converted.thinkingEnabled && gjson.GetBytes(converted.body, "thinking").Exists() && isRejectedThinkingError(upstreamErr.status, upstreamErr.body) {
-			if stripped, stripErr := sjson.DeleteBytes(converted.body, "thinking"); stripErr == nil {
-				LogWarnEvent("anthropic_thinking_rejected_fallback", "component", "anthropic_messages", "request_id", requestID,
-					"model", converted.model, "status", upstreamErr.status)
-				converted.body = stripped
-				converted.thinkingEnabled = false
-				response, err = retryUpstream(requestCtx, "anthropic_messages", func() (*http.Response, error) {
-					return s.callOnce(requestCtx, converted)
-				})
+		triedAdaptive := false
+		triedStripThinking := false
+		for attempt := 0; attempt < 2 && err != nil; attempt++ {
+			var upstreamErr *anthropicMessagesUpstreamError
+			if !errors.As(err, &upstreamErr) {
+				break
 			}
+			if !triedAdaptive && converted.thinkingEnabled &&
+				gjson.GetBytes(converted.body, "thinking.type").String() == "enabled" &&
+				isRejectedEnabledThinkingError(upstreamErr.status, upstreamErr.body) {
+				triedAdaptive = true
+				if updated, ok := switchAnthropicToAdaptiveThinking(converted); ok {
+					LogWarnEvent("anthropic_thinking_adaptive_fallback", "component", "anthropic_messages", "request_id", requestID,
+						"model", converted.model, "status", upstreamErr.status)
+					converted.body = updated
+					response, err = retryUpstream(requestCtx, "anthropic_messages", func() (*http.Response, error) {
+						return s.callOnce(requestCtx, converted)
+					})
+					continue
+				}
+			}
+			if !triedStripThinking && (isRejectedThinkingError(upstreamErr.status, upstreamErr.body) || isInvalidAnthropicSignatureError(upstreamErr.status, upstreamErr.body)) {
+				triedStripThinking = true
+				if updated, ok := stripAnthropicThinkingAndRestoreParams(converted); ok {
+					LogWarnEvent("anthropic_thinking_rejected_fallback", "component", "anthropic_messages", "request_id", requestID,
+						"model", converted.model, "status", upstreamErr.status)
+					converted.body = updated
+					converted.thinkingEnabled = false
+					response, err = retryUpstream(requestCtx, "anthropic_messages", func() (*http.Response, error) {
+						return s.callOnce(requestCtx, converted)
+					})
+					continue
+				}
+			}
+			break
 		}
 	}
 	if err != nil {
@@ -238,28 +261,74 @@ func (s *anthropicMessagesService) callOnce(ctx context.Context, converted *anth
 	return response, nil
 }
 
-// convertRequest converts one inbound request and applies alias routing.
+// convertRequest converts one inbound request and applies alias routing,
+// model output/thinking capabilities, and reasoning scope binding.
 func (s *anthropicMessagesService) convertRequest(raw []byte) (*anthropicConvertedRequest, error) {
-	converted, err := convertResponsesToAnthropicMessages(raw)
+	clientModel := strings.TrimSpace(gjson.GetBytes(raw, "model").String())
+	upstreamModel := stripContextModelSuffix(clientModel)
+	if route := s.modelRoute[strings.ToLower(clientModel)]; route != "" {
+		upstreamModel = stripContextModelSuffix(route)
+	}
+	opts := s.convertOptions(clientModel, upstreamModel)
+	converted, err := convertResponsesToAnthropicMessagesWithOptions(raw, opts)
 	if err != nil {
 		return nil, err
-	}
-	if route := s.modelRoute[strings.ToLower(converted.clientModel)]; route != "" {
-		route = stripContextModelSuffix(route)
-		converted.model, converted.upstreamModel = route, route
-		var body map[string]any
-		if err := decodeProtocolJSON(converted.body, &body); err != nil {
-			return nil, err
-		}
-		body["model"] = route
-		if converted.body, err = json.Marshal(body); err != nil {
-			return nil, err
-		}
 	}
 	if err := s.normalizeAnthropicThinking(converted); err != nil {
 		return nil, err
 	}
 	return converted, nil
+}
+
+func (s *anthropicMessagesService) reasoningScope(clientModel, upstreamModel string) string {
+	target := strings.ToLower(strings.TrimRight(strings.TrimSpace(s.messagesURL(clientModel)), "/"))
+	model := strings.ToLower(strings.TrimSpace(stripContextModelSuffix(firstNonEmptyString(upstreamModel, clientModel))))
+	if target == "" && model == "" {
+		return ""
+	}
+	return "anthropic:" + target + ":" + model
+}
+
+func (s *anthropicMessagesService) convertOptions(clientModel, upstreamModel string) anthropicConvertOptions {
+	opts := anthropicConvertOptions{
+		overrideModel: upstreamModel,
+		scope:         s.reasoningScope(clientModel, upstreamModel),
+	}
+	for _, candidate := range []string{clientModel, upstreamModel} {
+		if info, ok := lookupModelDetail(s.modelDetails, candidate); ok {
+			if info.MaxOutputTokens > 0 && opts.maxOutputTokens == 0 {
+				opts.maxOutputTokens = info.MaxOutputTokens
+			}
+			if info.ReasoningKnown && !opts.supportsThinkingKnown {
+				opts.supportsThinkingKnown = true
+				opts.supportsThinking = len(info.ReasoningLevels) > 0
+				for _, lvl := range info.ReasoningLevels {
+					opts.efforts = append(opts.efforts, lvl.Effort)
+				}
+			}
+		}
+	}
+	if index, _ := modelsdev.CachedIndex(); index != nil {
+		target := strings.TrimSpace(stripContextModelSuffix(firstNonEmptyString(upstreamModel, clientModel)))
+		if opts.maxOutputTokens == 0 {
+			if maxOut, ok := index.MaxOutputTokens(s.modelsDevProvider, target, clientModel); ok && maxOut > 0 {
+				opts.maxOutputTokens = maxOut
+			}
+		}
+		if supports, ok := index.SupportsThinking(s.modelsDevProvider, target, clientModel); ok {
+			opts.supportsThinkingKnown = true
+			opts.supportsThinking = supports
+		}
+		if adaptive, _, ok := index.ThinkingMode(s.modelsDevProvider, target, clientModel); ok && adaptive {
+			opts.adaptiveThinking = true
+		}
+		if len(opts.efforts) == 0 {
+			if efforts, ok := index.Efforts(s.modelsDevProvider, target, clientModel); ok && len(efforts) > 0 {
+				opts.efforts = efforts
+			}
+		}
+	}
+	return opts
 }
 
 func (s *anthropicMessagesService) normalizeAnthropicThinking(converted *anthropicConvertedRequest) error {
@@ -285,13 +354,116 @@ func (s *anthropicMessagesService) normalizeAnthropicThinking(converted *anthrop
 	if !disable {
 		return nil
 	}
-	stripped, err := sjson.DeleteBytes(converted.body, "thinking")
-	if err != nil {
-		return err
+	if updated, ok := stripAnthropicThinkingAndRestoreParams(converted); ok {
+		converted.body = updated
 	}
-	converted.body = stripped
 	converted.thinkingEnabled = false
 	return nil
+}
+
+func switchAnthropicToAdaptiveThinking(converted *anthropicConvertedRequest) ([]byte, bool) {
+	var body map[string]any
+	if decodeProtocolJSON(converted.body, &body) != nil || body == nil {
+		return nil, false
+	}
+	body["thinking"] = map[string]any{"type": "adaptive"}
+	body["output_config"] = map[string]any{"effort": clampAnthropicEffort(converted.requestedEffort, nil)}
+	if converted.originalMaxTokens > 0 {
+		body["max_tokens"] = converted.originalMaxTokens
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
+}
+
+func stripAnthropicThinkingAndRestoreParams(converted *anthropicConvertedRequest) ([]byte, bool) {
+	var body map[string]any
+	if decodeProtocolJSON(converted.body, &body) != nil || body == nil {
+		return nil, false
+	}
+	changed := false
+	if _, exists := body["thinking"]; exists {
+		delete(body, "thinking")
+		changed = true
+	}
+	if _, exists := body["output_config"]; exists {
+		delete(body, "output_config")
+		changed = true
+	}
+	if converted.originalMaxTokens > 0 {
+		body["max_tokens"] = converted.originalMaxTokens
+	}
+	if _, hasTemp := body["temperature"]; !hasTemp {
+		if _, hasTopP := body["top_p"]; !hasTopP {
+			applyAnthropicSampling(body, converted.originalTemperature, converted.originalTopP)
+		}
+	}
+	if stripAnthropicHistoryThinkingBlocks(body) {
+		changed = true
+	}
+	if !changed {
+		return nil, false
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
+}
+
+func stripAnthropicHistoryThinkingBlocks(body map[string]any) bool {
+	messages, _ := body["messages"].([]any)
+	if len(messages) == 0 {
+		return false
+	}
+	changed := false
+	for _, rawMsg := range messages {
+		msg, _ := rawMsg.(map[string]any)
+		if msg == nil || stringValue(msg["role"]) != "assistant" {
+			continue
+		}
+		blocks, ok := msg["content"].([]any)
+		if !ok || len(blocks) == 0 {
+			continue
+		}
+		filtered := make([]any, 0, len(blocks))
+		for _, rawBlock := range blocks {
+			block, _ := rawBlock.(map[string]any)
+			kind := stringValue(block["type"])
+			if kind == "thinking" || kind == "redacted_thinking" {
+				changed = true
+				continue
+			}
+			filtered = append(filtered, rawBlock)
+		}
+		if len(filtered) != len(blocks) {
+			if len(filtered) == 0 {
+				filtered = []any{map[string]any{"type": "text", "text": "..."}}
+			}
+			msg["content"] = filtered
+		}
+	}
+	return changed
+}
+
+func isRejectedEnabledThinkingError(status int, body string) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "adaptive") ||
+		(strings.Contains(lower, "budget_tokens") && (strings.Contains(lower, "not supported") || strings.Contains(lower, "unsupported") || strings.Contains(lower, "deprecated") || strings.Contains(lower, "invalid"))) ||
+		(strings.Contains(lower, "thinking") && strings.Contains(lower, "enabled") && (strings.Contains(lower, "not supported") || strings.Contains(lower, "unsupported") || strings.Contains(lower, "deprecated")))
+}
+
+func isInvalidAnthropicSignatureError(status int, body string) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "signature") && (strings.Contains(lower, "thinking") || strings.Contains(lower, "invalid"))
 }
 
 func isRejectedThinkingError(status int, body string) bool {
@@ -299,10 +471,10 @@ func isRejectedThinkingError(status int, body string) bool {
 		return false
 	}
 	lower := strings.ToLower(body)
-	if !strings.Contains(lower, "thinking") {
+	if !strings.Contains(lower, "thinking") && !strings.Contains(lower, "output_config") {
 		return false
 	}
-	for _, needle := range []string{"not supported", "unsupported", "unrecognized", "invalid", "not enabled", "cannot be used", "does not support", "unknown field", "extra_forbidden"} {
+	for _, needle := range []string{"not supported", "unsupported", "unrecognized", "invalid", "not enabled", "cannot be used", "does not support", "unknown field", "extra_forbidden", "must start with a thinking block"} {
 		if strings.Contains(lower, needle) {
 			return true
 		}

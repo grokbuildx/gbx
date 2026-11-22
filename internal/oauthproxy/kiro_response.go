@@ -73,7 +73,7 @@ func (a *responseAssembler) processEvent(eventType string, payload []byte) error
 			return err
 		}
 		if event.RedactedContent != "" {
-			if err := a.addOpaqueReasoning(event.RedactedContent); err != nil {
+			if err := a.addOpaqueReasoning("gbx-kiro-redacted:" + event.RedactedContent); err != nil {
 				return err
 			}
 		}
@@ -83,7 +83,7 @@ func (a *responseAssembler) processEvent(eventType string, payload []byte) error
 			}
 		}
 		if event.Signature != "" && a.activeType == blockThinking && a.activeIndex >= 0 {
-			a.blocks[a.activeIndex].Signature = event.Signature
+			a.blocks[a.activeIndex].Signature = "gbx-kiro:" + event.Signature
 		}
 	case "toolUseEvent":
 		var event struct {

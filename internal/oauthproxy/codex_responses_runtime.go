@@ -18,6 +18,7 @@ import (
 
 	"github.com/grokbuildx/gbx/internal/codexidentity"
 	"github.com/grokbuildx/gbx/internal/fsutil"
+	"github.com/grokbuildx/gbx/internal/modelsdev"
 	"github.com/grokbuildx/gbx/internal/protocol"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -350,26 +351,35 @@ func (s *codexResponsesService) serveConverted(writer http.ResponseWriter, reque
 	requestCtx, requestID := withRequestLogID(request.Context())
 	requestCtx = withClientSession(requestCtx, request)
 	started := time.Now()
-	converted, err := convertResponsesForUpstream(raw, s.requestSessionID(request))
+	clientModel := codexResponsesModel(raw)
+	route, ok := s.modelRoute[strings.ToLower(strings.TrimSpace(clientModel))]
+	if !ok && clientModel != "" {
+		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", "model is not in the provider catalog")
+		return
+	}
+	scope := s.reasoningScope(firstNonEmptyString(route, clientModel))
+	converted, err := convertResponsesForUpstreamWithScope(raw, s.requestSessionID(request), scope)
 	if err != nil {
 		LogWarnEvent("request_rejected", "component", "codex_responses", "request_id", requestID,
 			"status", http.StatusBadRequest, "reason", "request_conversion", "error", err)
 		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	route, ok := s.modelRoute[strings.ToLower(converted.clientModel)]
 	if !ok {
-		writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", "model is not in the provider catalog")
-		return
+		route, ok = s.modelRoute[strings.ToLower(strings.TrimSpace(converted.clientModel))]
+		if !ok {
+			writeProxyError(writer, http.StatusBadRequest, "invalid_request_error", "model is not in the provider catalog")
+			return
+		}
+		scope = s.reasoningScope(route)
+		converted.reasoningScope = scope
 	}
 	converted.model, converted.upstreamModel = route, route
 	var body map[string]any
 	if decodeProtocolJSON(converted.body, &body) == nil {
 		body["model"] = route
-		if s.xai {
-			converted.thinkingEnabled = s.normalizeXaiReasoning(route, body)
-		}
 		if s.isXaiBackend() {
+			converted.thinkingEnabled = s.normalizeXaiReasoning(route, body)
 			normalizeXaiImageDetail(body)
 		}
 		converted.body, _ = json.Marshal(body)
@@ -377,7 +387,7 @@ func (s *codexResponsesService) serveConverted(writer http.ResponseWriter, reque
 	LogDebugEvent("request_converted", "component", "codex_responses", "request_id", requestID,
 		"client_model", converted.clientModel, "upstream_model", converted.model,
 		"stream", converted.stream, "body_bytes", len(converted.body))
-	response, err := s.call(requestCtx, converted.body, converted.sessionID, true)
+	response, err := s.callWithResponsesFallback(requestCtx, requestID, converted.model, &converted.body, converted.sessionID, true)
 	if err != nil {
 		s.writeUpstreamError(writer, requestID, converted.model, started, err)
 		return
@@ -423,6 +433,17 @@ func (s *codexResponsesService) serveConverted(writer http.ResponseWriter, reque
 
 func (s *codexResponsesService) isXaiBackend() bool {
 	return s.xai || strings.EqualFold(strings.TrimSpace(s.modelsDevProvider), "xai")
+}
+
+func (s *codexResponsesService) reasoningScope(model string) string {
+	switch {
+	case s.isXaiBackend():
+		return "xai:" + strings.ToLower(strings.TrimSpace(stripContextModelSuffix(model)))
+	case s.authorizer != nil && s.authorizer.isOAuth():
+		return "codex-oauth:" + strings.ToLower(strings.TrimRight(strings.TrimSpace(s.endpoint), "/"))
+	default:
+		return "responses:" + strings.ToLower(strings.TrimRight(strings.TrimSpace(s.endpoint), "/")) + ":" + strings.ToLower(strings.TrimSpace(stripContextModelSuffix(model)))
+	}
 }
 
 func (s *codexResponsesService) writeUpstreamError(writer http.ResponseWriter, requestID, model string, started time.Time, err error) {
@@ -609,7 +630,7 @@ func codexResponsesModel(body []byte) string {
 }
 
 func (s *codexResponsesService) normalizeXaiReasoning(model string, payload map[string]any) bool {
-	if !s.xai || payload == nil {
+	if !s.isXaiBackend() || payload == nil {
 		return true
 	}
 	reasoning, ok := payload["reasoning"].(map[string]any)
@@ -620,22 +641,142 @@ func (s *codexResponsesService) normalizeXaiReasoning(model string, payload map[
 	if effort == "" {
 		return true
 	}
+	if effort == "none" {
+		// Never clamp an explicit "none" upward to "low".
+		delete(payload, "reasoning")
+		return false
+	}
 	if effort == "ultra" {
 		effort = "max"
 	}
+	var levels []protocol.ReasoningLevel
+	known := false
 	if info, hasInfo := lookupModelDetail(s.modelDetails, model); hasInfo && info.ReasoningKnown {
-		if len(info.ReasoningLevels) == 0 {
+		levels = info.ReasoningLevels
+		known = true
+	} else if index, _ := modelsdev.CachedIndex(); index != nil {
+		target := strings.TrimSpace(stripContextModelSuffix(model))
+		if efforts, found := index.Efforts("xai", target, model); found {
+			levels, _ = reasoningLevelsFromEfforts(efforts, "")
+			known = true
+		}
+	}
+	if known {
+		if len(levels) == 0 {
 			delete(payload, "reasoning")
 			return false
 		}
-		if clamped := protocol.ClampReasoningLevel(effort, info.ReasoningLevels); clamped != "" {
+		if clamped := protocol.ClampReasoningLevel(effort, levels); clamped != "" {
 			effort = clamped
 		} else {
-			effort = strings.ToLower(strings.TrimSpace(info.ReasoningLevels[0].Effort))
+			effort = strings.ToLower(strings.TrimSpace(levels[0].Effort))
 		}
 	}
 	reasoning["effort"] = effort
-	return effort != "none"
+	return true
+}
+
+func (s *codexResponsesService) callWithResponsesFallback(ctx context.Context, requestID, model string, body *[]byte, sessionID string, dumpPayload bool) (*http.Response, error) {
+	response, err := s.call(ctx, *body, sessionID, dumpPayload)
+	if err == nil {
+		return response, nil
+	}
+	triedEffort := false
+	triedReasoningInput := false
+	for attempt := 0; attempt < 2 && err != nil; attempt++ {
+		var upstreamErr *codexResponsesUpstreamError
+		if !errors.As(err, &upstreamErr) {
+			break
+		}
+		if !triedEffort && isRejectedResponsesEffortError(upstreamErr.status, upstreamErr.body) && gjson.GetBytes(*body, "reasoning.effort").Exists() {
+			triedEffort = true
+			updated, delErr := sjson.DeleteBytes(*body, "reasoning.effort")
+			if delErr == nil {
+				if len(gjson.GetBytes(updated, "reasoning").Map()) == 0 {
+					updated, _ = sjson.DeleteBytes(updated, "reasoning")
+				}
+				LogWarnEvent("responses_reasoning_effort_rejected_fallback", "component", "codex_responses",
+					"request_id", requestID, "model", model, "status", upstreamErr.status)
+				*body = updated
+				response, err = s.call(ctx, *body, sessionID, dumpPayload)
+				continue
+			}
+		}
+		if !triedReasoningInput && isRejectedResponsesReasoningItemError(upstreamErr.status, upstreamErr.body) {
+			triedReasoningInput = true
+			if stripped, changed := stripResponsesInputReasoningItems(*body); changed {
+				LogWarnEvent("responses_reasoning_input_rejected_fallback", "component", "codex_responses",
+					"request_id", requestID, "model", model, "status", upstreamErr.status)
+				*body = stripped
+				response, err = s.call(ctx, *body, sessionID, dumpPayload)
+				continue
+			}
+		}
+		break
+	}
+	return response, err
+}
+
+func isRejectedResponsesEffortError(status int, body string) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	lower := strings.ToLower(body)
+	if !strings.Contains(lower, "reasoning") || !strings.Contains(lower, "effort") {
+		return false
+	}
+	for _, needle := range []string{"not supported", "unsupported", "invalid", "unrecognized", "unknown", "not allowed", "does not support"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRejectedResponsesReasoningItemError(status int, body string) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	lower := strings.ToLower(body)
+	if !strings.Contains(lower, "encrypted_content") && !strings.Contains(lower, "reasoning") {
+		return false
+	}
+	for _, needle := range []string{"decrypt", "signature", "invalid encrypted", "cannot be decrypted", "not found", "unrecognized reasoning", "corrupt"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripResponsesInputReasoningItems(raw []byte) ([]byte, bool) {
+	var payload map[string]any
+	if decodeProtocolJSON(raw, &payload) != nil || payload == nil {
+		return raw, false
+	}
+	items, ok := payload["input"].([]any)
+	if !ok || len(items) == 0 {
+		return raw, false
+	}
+	filtered := make([]any, 0, len(items))
+	changed := false
+	for _, entry := range items {
+		item, isMap := entry.(map[string]any)
+		if isMap && stringValue(item["type"]) == "reasoning" {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	if !changed {
+		return raw, false
+	}
+	payload["input"] = filtered
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return raw, false
+	}
+	return encoded, true
 }
 
 // normalizeXaiImageDetail maps OpenAI Responses' "original" image detail value
@@ -738,23 +879,27 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 		return
 	}
 	payload["model"] = resolved
+	scope := s.reasoningScope(resolved)
 	wantsStream, _ := payload["stream"].(bool)
 	if !compact {
 		payload["stream"] = true
 		payload["store"] = false
-		if payload["include"] == nil {
-			payload["include"] = []string{"reasoning.encrypted_content"}
-		}
-		if s.xai {
-			s.normalizeXaiReasoning(resolved, payload)
-		}
+		// Strip non-Responses Chat-front parameters before forwarding.
+		delete(payload, "stop")
+		delete(payload, "seed")
+		delete(payload, "presence_penalty")
+		delete(payload, "frequency_penalty")
+		delete(payload, "logit_bias")
+		delete(payload, "logprobs")
+		payload["include"] = mergePassthroughInclude(payload["include"], "reasoning.encrypted_content")
 		if s.isXaiBackend() {
+			s.normalizeXaiReasoning(resolved, payload)
 			normalizeXaiImageDetail(payload)
 		}
-		sanitizePassthroughResponsesInput(payload)
+		sanitizePassthroughResponsesInputScoped(payload, scope)
 	}
 	sessionID := s.requestSessionID(request)
-	if !compact && payload["prompt_cache_key"] == nil {
+	if !compact && strings.TrimSpace(stringValue(payload["prompt_cache_key"])) == "" {
 		payload["prompt_cache_key"] = sessionID
 	}
 	body, _ := json.Marshal(payload)
@@ -763,7 +908,7 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 	if compact {
 		ctx = context.WithValue(ctx, codexCompactRequest{}, true)
 	}
-	response, err := s.call(ctx, body, sessionID, true)
+	response, err := s.callWithResponsesFallback(ctx, requestID, resolved, &body, sessionID, true)
 	if err != nil {
 		s.writeUpstreamError(writer, requestID, resolved, started, err)
 		return
@@ -812,7 +957,7 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 			writeProxyErrorDetail(writer, http.StatusBadGateway, "api_error", "upstream_stream_error", "", "upstream Responses stream did not complete")
 			return
 		}
-		observer := &responsesUsageObserver{}
+		observer := &responsesUsageObserver{reasoningScope: scope}
 		observer.event(completed)
 		s.recordObservedUsage(model, observer)
 		writer.Header().Set("Content-Type", "application/json")
@@ -822,7 +967,7 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 	}
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.WriteHeader(response.StatusCode)
-	observer := &responsesUsageObserver{}
+	observer := &responsesUsageObserver{reasoningScope: scope}
 	defer func() {
 		observer.finish()
 		s.recordObservedUsage(model, observer)
@@ -867,6 +1012,21 @@ func (s *codexResponsesService) servePassthrough(writer http.ResponseWriter, req
 	}
 }
 
+func mergePassthroughInclude(raw any, required string) []string {
+	var existing []string
+	switch v := raw.(type) {
+	case []string:
+		existing = v
+	case []any:
+		for _, elem := range v {
+			if s, ok := elem.(string); ok {
+				existing = append(existing, s)
+			}
+		}
+	}
+	return mergeResponsesInclude(existing, required)
+}
+
 func (s *codexResponsesService) recordObservedUsage(clientModel string, observer *responsesUsageObserver) {
 	if s.usage == nil || !observer.seen {
 		return
@@ -877,8 +1037,13 @@ func (s *codexResponsesService) recordObservedUsage(clientModel string, observer
 
 // sanitizePassthroughResponsesInput filters input reasoning items before
 // forwarding with store=false. Stateless Responses upstreams reject reasoning
-// items that lack provider-encrypted content or carry GBX synthetic IDs.
+// items that lack provider-encrypted content, carry GBX synthetic IDs, or were
+// encrypted by a different backend/model scope.
 func sanitizePassthroughResponsesInput(payload map[string]any) {
+	sanitizePassthroughResponsesInputScoped(payload, "")
+}
+
+func sanitizePassthroughResponsesInputScoped(payload map[string]any, scope string) {
 	items, ok := payload["input"].([]any)
 	if !ok || len(items) == 0 {
 		return
@@ -894,7 +1059,7 @@ func sanitizePassthroughResponsesInput(payload map[string]any) {
 		enc := strings.TrimSpace(stringValue(item["encrypted_content"]))
 		if strings.HasPrefix(id, gbxReasoningIDPrefix) {
 			if strings.HasPrefix(enc, codexReasoningSignaturePrefix) {
-				if unwrapped, err := codexReasoningFromSignature(enc); err == nil {
+				if unwrapped, matched, err := codexReasoningFromSignatureScoped(enc, scope); err == nil && matched {
 					var unwrappedMap map[string]any
 					switch typed := unwrapped.(type) {
 					case map[string]any:
@@ -909,7 +1074,10 @@ func sanitizePassthroughResponsesInput(payload map[string]any) {
 			}
 			continue
 		}
-		if enc == "" {
+		if enc == "" || protocol.IsGBXManagedSignature(enc) {
+			continue
+		}
+		if scope != "" && !protocol.ReasoningScopeMatches(enc, scope) {
 			continue
 		}
 		filtered = append(filtered, raw)
@@ -917,15 +1085,15 @@ func sanitizePassthroughResponsesInput(payload map[string]any) {
 	payload["input"] = filtered
 }
 
-// responsesUsageObserver reads token usage and terminal event presence off a
-// relayed Responses stream (or JSON body) without altering it. It keeps only
-// the bytes of the event in progress, and gives up on an event too large to be
-// a usage report.
+// responsesUsageObserver reads token usage, terminal event presence, and
+// encrypted reasoning payloads off a relayed Responses stream (or JSON body)
+// without altering it.
 type responsesUsageObserver struct {
 	pending                           []byte
 	input, output, cached, cacheWrite int
 	seen                              bool
 	terminalSeen                      bool
+	reasoningScope                    string
 }
 
 const responsesUsageObserverMaxEvent = 8 << 20
@@ -962,6 +1130,9 @@ func (o *responsesUsageObserver) event(raw []byte) {
 	if len(data) == 0 {
 		data = bytes.TrimSpace(raw)
 	}
+	if o.reasoningScope != "" && bytes.Contains(data, []byte(`"encrypted_content"`)) {
+		recordObservedReasoningScope(data, o.reasoningScope)
+	}
 	switch gjson.GetBytes(data, "type").String() {
 	case "response.completed", "response.incomplete", "response.failed", "error":
 		o.terminalSeen = true
@@ -983,6 +1154,27 @@ func (o *responsesUsageObserver) event(raw []byte) {
 	o.cacheWrite = int(usage.Get("input_tokens_details.cache_write_tokens").Int())
 	if o.cacheWrite == 0 {
 		o.cacheWrite = int(usage.Get("cache_write_tokens").Int())
+	}
+}
+
+func recordObservedReasoningScope(data []byte, scope string) {
+	if item := gjson.GetBytes(data, "item"); item.IsObject() && item.Get("type").String() == "reasoning" {
+		if enc := strings.TrimSpace(item.Get("encrypted_content").String()); enc != "" {
+			protocol.RecordReasoningScope(enc, scope)
+		}
+	}
+	outputs := gjson.GetBytes(data, "response.output")
+	if !outputs.IsArray() {
+		outputs = gjson.GetBytes(data, "output")
+	}
+	if outputs.IsArray() {
+		for _, item := range outputs.Array() {
+			if item.Get("type").String() == "reasoning" {
+				if enc := strings.TrimSpace(item.Get("encrypted_content").String()); enc != "" {
+					protocol.RecordReasoningScope(enc, scope)
+				}
+			}
+		}
 	}
 }
 

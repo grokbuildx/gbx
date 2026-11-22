@@ -98,8 +98,12 @@ func convertResponsesToQoder(raw []byte, catalog []qoderModel) (*qoderConvertedR
 	if request.ParallelToolCalls != nil {
 		parameters["parallel_tool_calls"] = *request.ParallelToolCalls
 	}
-	if format := structuredOutputSchema(request.Format); format != nil {
-		parameters["response_format"] = map[string]any{"type": "json_schema", "json_schema": format}
+	if request.Format != nil {
+		if request.Format.Type == "json_object" {
+			parameters["response_format"] = map[string]any{"type": "json_object"}
+		} else if format := structuredOutputSchema(request.Format); format != nil {
+			parameters["response_format"] = map[string]any{"type": "json_schema", "json_schema": format}
+		}
 	}
 	if len(tools) > 0 {
 		switch request.ToolChoice.Mode {
@@ -109,15 +113,21 @@ func convertResponsesToQoder(raw []byte, catalog []qoderModel) (*qoderConvertedR
 			parameters["tool_choice"] = toolChoiceRequired
 		}
 	}
+	thinkingOff := strings.EqualFold(request.Effort, "none")
 	if levels, _ := qoderReasoningLevels(model.Config); len(levels) > 0 {
-		thinkingOff := strings.EqualFold(request.Effort, "none")
-		if matched := qoderMatchEffort(levels, request.Effort); matched != "" && !thinkingOff {
+		if thinkingOff {
+			parameters["enable_thinking"] = false
+		} else if matched := qoderMatchEffort(levels, request.Effort); matched != "" {
 			parameters["enable_thinking"] = true
 			parameters["reasoning_effort"] = matched
+			delete(parameters, "temperature")
+			delete(parameters, "top_p")
 		}
+	} else if thinkingOff && model.Reasoning {
+		parameters["enable_thinking"] = false
 	}
 	recordID := qoderStableID("qoder-record", request.Model, string(raw), fmt.Sprintf("mt=%d", maxTokens))
-	sessionSeed := firstNonEmptyString(strings.TrimSpace(request.CacheKey), strings.TrimSpace(request.User), uuid.NewString())
+	sessionSeed := firstNonEmptyString(strings.TrimSpace(request.CacheKey), strings.TrimSpace(request.SafetyIdentifier), strings.TrimSpace(request.User), uuid.NewString())
 	sessionID := qoderStableID("qoder-session", model.ID, sessionSeed) + "-" + sessionSeed
 	body := map[string]any{
 		"request_id":       uuid.NewString(),
@@ -164,7 +174,6 @@ func convertResponsesToQoder(raw []byte, catalog []qoderModel) (*qoderConvertedR
 		},
 	}
 	adapter := request.adapter(model.ID)
-	adapter.maxTokens = maxTokens
 	adapter.toolNameMap = map[string]string{}
 	return &qoderConvertedRequest{
 		clientModel: request.Model,

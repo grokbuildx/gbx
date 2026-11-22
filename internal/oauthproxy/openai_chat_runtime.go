@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/grokbuildx/gbx/internal/modelsdev"
@@ -75,6 +76,11 @@ type chatCompletionsService struct {
 	// roundTrip optionally replaces the default HTTP POST + 401 refresh inside
 	// one fast-retry attempt (used by single-hop WorkBuddy).
 	roundTrip func(context.Context, *chatCompletionsConvertedRequest) (*http.Response, error)
+	// compatMu caches learned per-model upstream compatibility quirks so
+	// rejected stream_options or max_tokens keys do not fail repeatedly.
+	compatMu        sync.Mutex
+	noStreamOptions map[string]bool
+	maxTokensKey    map[string]string
 }
 
 type chatCompletionsUpstreamError struct {
@@ -283,15 +289,18 @@ func (s *chatCompletionsService) handleResponses(writer http.ResponseWriter, req
 		"content_structure", chatContentStructure(converted.body))
 	response, err := s.call(requestCtx, converted)
 	if err != nil {
-		var upstreamErr *chatCompletionsUpstreamError
-		if errors.As(err, &upstreamErr) && gjson.GetBytes(converted.body, "reasoning_effort").Exists() && isRejectedReasoningEffortError(upstreamErr.status, upstreamErr.body) {
-			if stripped, stripErr := sjson.DeleteBytes(converted.body, "reasoning_effort"); stripErr == nil {
-				LogWarnEvent("reasoning_effort_rejected_fallback", "component", "openai_chat", "request_id", requestID,
-					"model", converted.model, "status", upstreamErr.status)
-				converted.body = stripped
-				converted.thinkingEnabled = false
-				response, err = s.call(requestCtx, converted)
+		tried := map[string]bool{}
+		for attempt := 0; attempt < 4 && err != nil; attempt++ {
+			var upstreamErr *chatCompletionsUpstreamError
+			if !errors.As(err, &upstreamErr) {
+				break
 			}
+			action, ok := s.applyChatCompatFallback(requestID, converted, upstreamErr, tried)
+			if !ok {
+				break
+			}
+			tried[action] = true
+			response, err = s.call(requestCtx, converted)
 		}
 	}
 	if err != nil {
@@ -498,10 +507,22 @@ func (s *chatCompletionsService) convertRequest(raw []byte) (*chatCompletionsCon
 			return nil, err
 		}
 		body["model"] = route
+		if chatUsesMaxCompletionTokens(route) {
+			if v, ok := body["max_tokens"]; ok {
+				delete(body, "max_tokens")
+				body["max_completion_tokens"] = v
+			}
+		}
 		converted.body, err = json.Marshal(body)
 		if err != nil {
 			return nil, err
 		}
+	}
+	if err := s.applyChatCompatPreferences(converted); err != nil {
+		return nil, err
+	}
+	if err := s.clampChatMaxTokens(converted); err != nil {
+		return nil, err
 	}
 	if err := s.normalizeChatReasoning(converted); err != nil {
 		return nil, err
@@ -518,6 +539,199 @@ func (s *chatCompletionsService) convertRequest(raw []byte) (*chatCompletionsCon
 		}
 	}
 	return converted, nil
+}
+
+func (s *chatCompletionsService) compatModelKey(converted *chatCompletionsConvertedRequest) string {
+	return strings.ToLower(strings.TrimSpace(firstNonEmptyString(converted.model, converted.clientModel)))
+}
+
+func (s *chatCompletionsService) applyChatCompatPreferences(converted *chatCompletionsConvertedRequest) error {
+	key := s.compatModelKey(converted)
+	if key == "" {
+		return nil
+	}
+	s.compatMu.Lock()
+	dropStreamOpts := s.noStreamOptions[key]
+	preferredMaxKey := s.maxTokensKey[key]
+	s.compatMu.Unlock()
+	if dropStreamOpts && gjson.GetBytes(converted.body, "stream_options").Exists() {
+		if updated, err := sjson.DeleteBytes(converted.body, "stream_options"); err == nil {
+			converted.body = updated
+		}
+	}
+	if preferredMaxKey != "" {
+		if updated, ok := swapChatMaxTokensKey(converted.body, preferredMaxKey); ok {
+			converted.body = updated
+		}
+	}
+	return nil
+}
+
+func (s *chatCompletionsService) clampChatMaxTokens(converted *chatCompletionsConvertedRequest) error {
+	maxOut := 0
+	for _, candidate := range []string{converted.clientModel, converted.model} {
+		if info, ok := lookupModelDetail(s.modelDetails, candidate); ok && info.MaxOutputTokens > 0 {
+			maxOut = info.MaxOutputTokens
+			break
+		}
+	}
+	if maxOut <= 0 {
+		if index, _ := modelsdev.CachedIndex(); index != nil {
+			target := strings.TrimSpace(stripContextModelSuffix(converted.model))
+			if target == "" {
+				target = strings.TrimSpace(stripContextModelSuffix(converted.clientModel))
+			}
+			if limit, ok := index.MaxOutputTokens(s.modelsDevProvider, target, converted.clientModel); ok && limit > 0 {
+				maxOut = limit
+			}
+		}
+	}
+	if maxOut <= 0 {
+		return nil
+	}
+	for _, field := range []string{"max_tokens", "max_completion_tokens"} {
+		val := gjson.GetBytes(converted.body, field)
+		if val.Exists() && val.Int() > int64(maxOut) {
+			updated, err := sjson.SetBytes(converted.body, field, maxOut)
+			if err != nil {
+				return err
+			}
+			converted.body = updated
+		}
+	}
+	return nil
+}
+
+func (s *chatCompletionsService) applyChatCompatFallback(requestID string, converted *chatCompletionsConvertedRequest, upstreamErr *chatCompletionsUpstreamError, tried map[string]bool) (string, bool) {
+	if upstreamErr.status != http.StatusBadRequest && upstreamErr.status != http.StatusUnprocessableEntity {
+		return "", false
+	}
+	modelKey := s.compatModelKey(converted)
+	// 1. Rewrite max_tokens <-> max_completion_tokens when upstream rejects the key.
+	if !tried["max_tokens_key"] && isRejectedMaxTokensKeyError(upstreamErr.status, upstreamErr.body) {
+		targetKey := ""
+		if gjson.GetBytes(converted.body, "max_tokens").Exists() {
+			targetKey = "max_completion_tokens"
+		} else if gjson.GetBytes(converted.body, "max_completion_tokens").Exists() {
+			targetKey = "max_tokens"
+		}
+		if targetKey != "" {
+			if updated, ok := swapChatMaxTokensKey(converted.body, targetKey); ok {
+				s.compatMu.Lock()
+				if s.maxTokensKey == nil {
+					s.maxTokensKey = make(map[string]string)
+				}
+				s.maxTokensKey[modelKey] = targetKey
+				s.compatMu.Unlock()
+				LogWarnEvent("chat_max_tokens_key_fallback", "component", "openai_chat", "request_id", requestID,
+					"model", converted.model, "status", upstreamErr.status, "target_key", targetKey)
+				converted.body = updated
+				return "max_tokens_key", true
+			}
+		}
+	}
+	// 2. Strip stream_options when upstream rejects it.
+	if !tried["stream_options"] && gjson.GetBytes(converted.body, "stream_options").Exists() && isRejectedStreamOptionsError(upstreamErr.status, upstreamErr.body) {
+		if stripped, err := sjson.DeleteBytes(converted.body, "stream_options"); err == nil {
+			s.compatMu.Lock()
+			if s.noStreamOptions == nil {
+				s.noStreamOptions = make(map[string]bool)
+			}
+			s.noStreamOptions[modelKey] = true
+			s.compatMu.Unlock()
+			LogWarnEvent("chat_stream_options_rejected_fallback", "component", "openai_chat", "request_id", requestID,
+				"model", converted.model, "status", upstreamErr.status)
+			converted.body = stripped
+			return "stream_options", true
+		}
+	}
+	// 3. Strip reasoning_effort when upstream rejects it.
+	if !tried["reasoning_effort"] && gjson.GetBytes(converted.body, "reasoning_effort").Exists() && isRejectedReasoningEffortError(upstreamErr.status, upstreamErr.body) {
+		if stripped, err := sjson.DeleteBytes(converted.body, "reasoning_effort"); err == nil {
+			LogWarnEvent("reasoning_effort_rejected_fallback", "component", "openai_chat", "request_id", requestID,
+				"model", converted.model, "status", upstreamErr.status)
+			converted.body = stripped
+			converted.thinkingEnabled = false
+			return "reasoning_effort", true
+		}
+	}
+	// 4. Strip historical messages[].reasoning_content when strict gateways reject it.
+	if !tried["reasoning_content"] && isRejectedReasoningContentError(upstreamErr.status, upstreamErr.body) {
+		if stripped, changed := stripChatHistoryReasoningContent(converted.body); changed {
+			LogWarnEvent("chat_reasoning_content_rejected_fallback", "component", "openai_chat", "request_id", requestID,
+				"model", converted.model, "status", upstreamErr.status)
+			converted.body = stripped
+			return "reasoning_content", true
+		}
+	}
+	// 5. Strip optional newer Chat fields rejected as unknown/extra by strict gateways.
+	if !tried["optional_fields"] && isRejectedOptionalChatFieldError(upstreamErr.status, upstreamErr.body) {
+		body := converted.body
+		changed := false
+		lower := strings.ToLower(upstreamErr.body)
+		for _, field := range []string{"service_tier", "safety_identifier", "prompt_cache_key", "prompt_cache_retention"} {
+			if gjson.GetBytes(body, field).Exists() && strings.Contains(lower, field) {
+				if updated, err := sjson.DeleteBytes(body, field); err == nil {
+					body = updated
+					changed = true
+				}
+			}
+		}
+		if changed {
+			LogWarnEvent("chat_optional_field_rejected_fallback", "component", "openai_chat", "request_id", requestID,
+				"model", converted.model, "status", upstreamErr.status)
+			converted.body = body
+			return "optional_fields", true
+		}
+	}
+	return "", false
+}
+
+func swapChatMaxTokensKey(body []byte, targetKey string) ([]byte, bool) {
+	fromKey := "max_tokens"
+	if targetKey == "max_tokens" {
+		fromKey = "max_completion_tokens"
+	}
+	val := gjson.GetBytes(body, fromKey)
+	if !val.Exists() {
+		return body, false
+	}
+	updated, err := sjson.DeleteBytes(body, fromKey)
+	if err != nil {
+		return body, false
+	}
+	updated, err = sjson.SetRawBytes(updated, targetKey, []byte(val.Raw))
+	if err != nil {
+		return body, false
+	}
+	return updated, true
+}
+
+func stripChatHistoryReasoningContent(raw []byte) ([]byte, bool) {
+	var body map[string]any
+	if decodeProtocolJSON(raw, &body) != nil || body == nil {
+		return raw, false
+	}
+	messages, _ := body["messages"].([]any)
+	changed := false
+	for _, entry := range messages {
+		msg, _ := entry.(map[string]any)
+		if msg == nil {
+			continue
+		}
+		if _, exists := msg["reasoning_content"]; exists {
+			delete(msg, "reasoning_content")
+			changed = true
+		}
+	}
+	if !changed {
+		return raw, false
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return raw, false
+	}
+	return encoded, true
 }
 
 func (s *chatCompletionsService) normalizeChatReasoning(converted *chatCompletionsConvertedRequest) error {
@@ -542,6 +756,12 @@ func (s *chatCompletionsService) normalizeChatReasoning(converted *chatCompletio
 			return err
 		}
 		converted.body = stripped
+		converted.thinkingEnabled = false
+		return nil
+	}
+	if effort == "none" {
+		// Preserve explicit effort="none" so thinking-capable models disable reasoning
+		// rather than being clamped upward to "low".
 		converted.thinkingEnabled = false
 		return nil
 	}
@@ -583,6 +803,15 @@ func (s *chatCompletionsService) knownChatReasoningLevels(clientModel, upstreamM
 			target = strings.TrimSpace(stripContextModelSuffix(clientModel))
 		}
 		if efforts, found := index.Efforts(s.modelsDevProvider, target, clientModel); found {
+			if len(efforts) == 0 {
+				// Toggle-only or budget_tokens-only reasoning models have no
+				// discrete effort ladder in models.dev, yet many OpenAI-compatible
+				// gateways still accept reasoning_effort for them. Only treat the
+				// model as non-reasoning when SupportsThinking is explicitly false.
+				if supports, knownThinking := index.SupportsThinking(s.modelsDevProvider, target, clientModel); knownThinking && supports {
+					return nil, false
+				}
+			}
 			levels, _ := reasoningLevelsFromEfforts(efforts, "")
 			return levels, true
 		}
@@ -599,6 +828,77 @@ func isRejectedReasoningEffortError(status int, body string) bool {
 		return false
 	}
 	for _, needle := range []string{"not supported", "unsupported", "unrecognized", "invalid", "unknown", "does not support", "extra_forbidden", "cannot be used", "not allowed"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRejectedMaxTokensKeyError(status int, body string) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	lower := strings.ToLower(body)
+	if !strings.Contains(lower, "max_tokens") && !strings.Contains(lower, "max_completion_tokens") {
+		return false
+	}
+	for _, needle := range []string{"use 'max_completion_tokens'", "use \"max_completion_tokens\"", "max_completion_tokens", "unsupported parameter", "unsupported_parameter", "unknown", "unrecognized", "extra_forbidden", "not supported"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRejectedStreamOptionsError(status int, body string) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	lower := strings.ToLower(body)
+	if !strings.Contains(lower, "stream_options") && !strings.Contains(lower, "include_usage") {
+		return false
+	}
+	for _, needle := range []string{"not supported", "unsupported", "unrecognized", "unknown", "invalid", "extra_forbidden", "unexpected", "not allowed"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRejectedReasoningContentError(status int, body string) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	lower := strings.ToLower(body)
+	if !strings.Contains(lower, "reasoning_content") {
+		return false
+	}
+	for _, needle := range []string{"not supported", "unsupported", "unrecognized", "unknown", "invalid", "extra_forbidden", "unexpected", "not allowed"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRejectedOptionalChatFieldError(status int, body string) bool {
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	lower := strings.ToLower(body)
+	mentionsField := false
+	for _, field := range []string{"service_tier", "safety_identifier", "prompt_cache_key", "prompt_cache_retention"} {
+		if strings.Contains(lower, field) {
+			mentionsField = true
+			break
+		}
+	}
+	if !mentionsField {
+		return false
+	}
+	for _, needle := range []string{"not supported", "unsupported", "unrecognized", "unknown", "extra_forbidden", "unexpected", "not allowed"} {
 		if strings.Contains(lower, needle) {
 			return true
 		}

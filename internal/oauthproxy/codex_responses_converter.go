@@ -106,6 +106,10 @@ func responsesImagePartNeedsNormalization(part map[string]any) bool {
 // convertResponsesForUpstream re-renders a Responses request with plain
 // function tools.
 func convertResponsesForUpstream(raw []byte, sessionID string) (*codexResponsesConvertedRequest, error) {
+	return convertResponsesForUpstreamWithScope(raw, sessionID, "")
+}
+
+func convertResponsesForUpstreamWithScope(raw []byte, sessionID, scope string) (*codexResponsesConvertedRequest, error) {
 	request, err := parseResponsesRequest(raw)
 	if err != nil {
 		return nil, err
@@ -113,7 +117,7 @@ func convertResponsesForUpstream(raw []byte, sessionID string) (*codexResponsesC
 	upstreamModel := stripContextModelSuffix(request.Model)
 	input := make([]any, 0, len(request.Turns))
 	for _, turn := range request.Turns {
-		items, err := codexTurnItems(turn)
+		items, err := codexTurnItemsScoped(turn, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -123,16 +127,24 @@ func convertResponsesForUpstream(raw []byte, sessionID string) (*codexResponsesC
 	if request.Effort != "" {
 		reasoning["effort"] = request.Effort
 	}
-	if request.thinkingEnabled() {
-		reasoning["summary"] = "auto"
+	switch request.ReasoningSummary {
+	case "none":
+		// Caller explicitly suppressed reasoning summaries.
+	case "auto", "concise", "detailed":
+		reasoning["summary"] = request.ReasoningSummary
+	default:
+		if request.thinkingEnabled() {
+			reasoning["summary"] = "auto"
+		}
 	}
+	include := mergeResponsesInclude(request.Include, "reasoning.encrypted_content")
 	body := map[string]any{
 		"model":        upstreamModel,
 		"instructions": request.System,
 		"input":        input,
 		"stream":       true,
 		"store":        false,
-		"include":      []string{"reasoning.encrypted_content"},
+		"include":      include,
 	}
 	if len(reasoning) > 0 {
 		body["reasoning"] = reasoning
@@ -152,12 +164,35 @@ func convertResponsesForUpstream(raw []byte, sessionID string) (*codexResponsesC
 	if request.User != "" {
 		body["user"] = request.User
 	}
-	if format := structuredOutputSchema(request.Format); format != nil {
-		format["type"] = "json_schema"
-		body["text"] = map[string]any{"format": format}
+	if request.SafetyIdentifier != "" {
+		body["safety_identifier"] = request.SafetyIdentifier
+	}
+	if len(request.Metadata) > 0 {
+		body["metadata"] = request.Metadata
+	}
+	if request.TopLogprobs != nil {
+		body["top_logprobs"] = *request.TopLogprobs
+	}
+	if request.PromptCacheRetention != "" {
+		body["prompt_cache_retention"] = request.PromptCacheRetention
+	}
+	textObj := map[string]any{}
+	if request.Format != nil {
+		if request.Format.Type == "json_object" {
+			textObj["format"] = map[string]any{"type": "json_object"}
+		} else if format := structuredOutputSchema(request.Format); format != nil {
+			format["type"] = "json_schema"
+			textObj["format"] = format
+		}
+	}
+	if request.TextVerbosity != "" {
+		textObj["verbosity"] = request.TextVerbosity
+	}
+	if len(textObj) > 0 {
+		body["text"] = textObj
 	}
 	switch request.ServiceTier {
-	case "priority", "flex", "default", "auto":
+	case "priority", "flex", "default", "auto", "scale":
 		body["service_tier"] = request.ServiceTier
 	}
 	switch request.Truncation {
@@ -204,14 +239,37 @@ func convertResponsesForUpstream(raw []byte, sessionID string) (*codexResponsesC
 	if err != nil {
 		return nil, fmt.Errorf("encode Responses request: %w", err)
 	}
+	adapter := request.adapter(upstreamModel)
+	adapter.reasoningScope = scope
 	return &codexResponsesConvertedRequest{
-		adapterRequest: request.adapter(upstreamModel),
+		adapterRequest: adapter,
 		body:           encoded, model: upstreamModel, sessionID: sessionID,
 	}, nil
 }
 
+func mergeResponsesInclude(existing []string, required string) []string {
+	out := make([]string, 0, len(existing)+1)
+	seen := make(map[string]bool, len(existing)+1)
+	for _, entry := range existing {
+		trimmed := strings.TrimSpace(entry)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		out = append(out, trimmed)
+	}
+	if required != "" && !seen[required] {
+		out = append(out, required)
+	}
+	return out
+}
+
 // codexTurnItems renders one conversation turn as Responses input items.
 func codexTurnItems(turn conversationTurn) ([]any, error) {
+	return codexTurnItemsScoped(turn, "")
+}
+
+func codexTurnItemsScoped(turn conversationTurn, scope string) ([]any, error) {
 	textType := "input_text"
 	if turn.Role == "assistant" {
 		textType = "output_text"
@@ -235,9 +293,12 @@ func codexTurnItems(turn conversationTurn) ([]any, error) {
 			if turn.Role != "assistant" || !strings.HasPrefix(part.Signature, codexReasoningSignaturePrefix) {
 				continue
 			}
-			item, err := codexReasoningFromSignature(part.Signature)
+			item, ok, err := codexReasoningFromSignatureScoped(part.Signature, scope)
 			if err != nil {
 				return nil, err
+			}
+			if !ok {
+				continue
 			}
 			flush()
 			result = append(result, item)
@@ -281,21 +342,67 @@ func responsesInputImagePart(part conversationPart) map[string]any {
 const codexReasoningSignaturePrefix = "gbx-responses-reasoning-v1:"
 
 func codexReasoningSignature(item map[string]any) (string, error) {
+	return codexReasoningSignatureScoped(item, "")
+}
+
+func codexReasoningSignatureScoped(item map[string]any, scope string) (string, error) {
 	raw, err := json.Marshal(item)
 	if err != nil {
 		return "", err
 	}
-	return codexReasoningSignaturePrefix + base64.StdEncoding.EncodeToString(raw), nil
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	if tag := shortReasoningScopeTag(scope); tag != "" {
+		return codexReasoningSignaturePrefix + tag + "." + encoded, nil
+	}
+	return codexReasoningSignaturePrefix + encoded, nil
+}
+
+func shortReasoningScopeTag(scope string) string {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return ""
+	}
+	sum := sha256SumBytes([]byte(scope))
+	return fmt.Sprintf("%x", sum[:6])
 }
 
 func codexReasoningFromSignature(signature string) (any, error) {
-	encoded, _ := strings.CutPrefix(signature, codexReasoningSignaturePrefix)
+	item, ok, err := codexReasoningFromSignatureScoped(signature, "")
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("invalid GBX Responses reasoning payload")
+	}
+	return item, nil
+}
+
+func codexReasoningFromSignatureScoped(signature, expectedScope string) (any, bool, error) {
+	encoded, hasPrefix := strings.CutPrefix(signature, codexReasoningSignaturePrefix)
+	if !hasPrefix {
+		return nil, false, nil
+	}
+	if dot := strings.IndexByte(encoded, '.'); dot > 0 {
+		tag := encoded[:dot]
+		encoded = encoded[dot+1:]
+		if expectedTag := shortReasoningScopeTag(expectedScope); expectedTag != "" && tag != expectedTag {
+			// Cross-backend or cross-model reasoning: drop cleanly instead of
+			// failing the turn or causing an upstream decryption 400.
+			return nil, false, nil
+		}
+	}
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	var item map[string]json.RawMessage
 	if err != nil || json.Unmarshal(raw, &item) != nil || string(item["type"]) != `"reasoning"` {
-		return nil, fmt.Errorf("invalid GBX Responses reasoning payload")
+		return nil, false, fmt.Errorf("invalid GBX Responses reasoning payload")
 	}
-	return json.RawMessage(raw), nil
+	var encrypted string
+	if rawEnc, exists := item["encrypted_content"]; !exists || json.Unmarshal(rawEnc, &encrypted) != nil || strings.TrimSpace(encrypted) == "" {
+		// Under store=false, replaying a summary-only reasoning item without
+		// encrypted_content causes upstream 400; drop it cleanly.
+		return nil, false, nil
+	}
+	return json.RawMessage(raw), true, nil
 }
 
 func stringValue(value any) string {

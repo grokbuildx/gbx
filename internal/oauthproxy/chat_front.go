@@ -20,23 +20,33 @@ import (
 const chatFrontMaxBodyBytes = int64(128 << 20)
 
 type chatFrontRequest struct {
-	Model               string           `json:"model"`
-	Messages            []map[string]any `json:"messages"`
-	Tools               []map[string]any `json:"tools"`
-	ToolChoice          any              `json:"tool_choice"`
-	ParallelToolCalls   *bool            `json:"parallel_tool_calls"`
-	Stream              bool             `json:"stream"`
-	StreamOptions       map[string]any   `json:"stream_options"`
-	MaxTokens           int              `json:"max_tokens"`
-	MaxCompletionTokens int              `json:"max_completion_tokens"`
-	ReasoningEffort     string           `json:"reasoning_effort"`
-	ResponseFormat      map[string]any   `json:"response_format"`
-	Temperature         *float64         `json:"temperature"`
-	TopP                *float64         `json:"top_p"`
-	Stop                any              `json:"stop"`
-	User                string           `json:"user"`
-	ServiceTier         string           `json:"service_tier"`
-	PromptCacheKey      string           `json:"prompt_cache_key"`
+	Model                string             `json:"model"`
+	Messages             []map[string]any   `json:"messages"`
+	Tools                []map[string]any   `json:"tools"`
+	ToolChoice           any                `json:"tool_choice"`
+	ParallelToolCalls    *bool              `json:"parallel_tool_calls"`
+	Stream               bool               `json:"stream"`
+	StreamOptions        map[string]any     `json:"stream_options"`
+	MaxTokens            int                `json:"max_tokens"`
+	MaxCompletionTokens  int                `json:"max_completion_tokens"`
+	ReasoningEffort      string             `json:"reasoning_effort"`
+	ResponseFormat       map[string]any     `json:"response_format"`
+	Temperature          *float64           `json:"temperature"`
+	TopP                 *float64           `json:"top_p"`
+	Stop                 any                `json:"stop"`
+	User                 string             `json:"user"`
+	SafetyIdentifier     string             `json:"safety_identifier"`
+	ServiceTier          string             `json:"service_tier"`
+	PromptCacheKey       string             `json:"prompt_cache_key"`
+	PromptCacheRetention string             `json:"prompt_cache_retention"`
+	Metadata             map[string]any     `json:"metadata"`
+	Verbosity            string             `json:"verbosity"`
+	Seed                 *int64             `json:"seed"`
+	PresencePenalty      *float64           `json:"presence_penalty"`
+	FrequencyPenalty     *float64           `json:"frequency_penalty"`
+	LogitBias            map[string]float64 `json:"logit_bias"`
+	Logprobs             *bool              `json:"logprobs"`
+	TopLogprobs          *int               `json:"top_logprobs"`
 }
 
 // chatToResponsesRequest rewrites a Chat Completions body as a Responses body.
@@ -64,7 +74,11 @@ func chatToResponsesRequest(raw []byte) ([]byte, *chatFrontRequest, error) {
 				input = append(input, map[string]any{"type": "message", "role": role, "content": content})
 			}
 		case "assistant":
-			if reasoning, _ := message["reasoning_content"].(string); reasoning != "" {
+			reasoning, _ := message["reasoning_content"].(string)
+			if reasoning == "" {
+				reasoning, _ = message["reasoning"].(string)
+			}
+			if reasoning != "" {
 				input = append(input, map[string]any{
 					"type": "reasoning", "id": assemblerItemID(gbxReasoningIDPrefix),
 					"summary": []any{map[string]any{"type": "summary_text", "text": reasoning}},
@@ -159,13 +173,21 @@ func chatToResponsesRequest(raw []byte) ([]byte, *chatFrontRequest, error) {
 	if request.ParallelToolCalls != nil {
 		body["parallel_tool_calls"] = *request.ParallelToolCalls
 	}
-	if limit := max(request.MaxCompletionTokens, request.MaxTokens); limit > 0 {
+	limit := request.MaxTokens
+	if request.MaxCompletionTokens > 0 {
+		limit = request.MaxCompletionTokens
+	}
+	if limit > 0 {
 		body["max_output_tokens"] = limit
 	}
 	if effort := strings.TrimSpace(request.ReasoningEffort); effort != "" {
 		body["reasoning"] = map[string]any{"effort": effort}
 	}
-	if request.ResponseFormat["type"] == "json_schema" {
+	textField := map[string]any{}
+	switch stringValue(request.ResponseFormat["type"]) {
+	case "json_object":
+		textField["format"] = map[string]any{"type": "json_object"}
+	case "json_schema":
 		schema, _ := request.ResponseFormat["json_schema"].(map[string]any)
 		format := map[string]any{"type": "json_schema"}
 		for _, key := range []string{"name", "description", "schema", "strict"} {
@@ -173,7 +195,18 @@ func chatToResponsesRequest(raw []byte) ([]byte, *chatFrontRequest, error) {
 				format[key] = value
 			}
 		}
-		body["text"] = map[string]any{"format": format}
+		// Chat Completions defaults json_schema.strict to false, whereas
+		// Responses defaults it to true; preserve the Chat default explicitly.
+		if _, hasStrict := format["strict"]; !hasStrict {
+			format["strict"] = false
+		}
+		textField["format"] = format
+	}
+	if verbosity := strings.TrimSpace(request.Verbosity); verbosity != "" {
+		textField["verbosity"] = verbosity
+	}
+	if len(textField) > 0 {
+		body["text"] = textField
 	}
 	if request.Temperature != nil {
 		body["temperature"] = *request.Temperature
@@ -184,10 +217,37 @@ func chatToResponsesRequest(raw []byte) ([]byte, *chatFrontRequest, error) {
 	if request.Stop != nil {
 		body["stop"] = request.Stop
 	}
-	for key, value := range map[string]string{"user": request.User, "service_tier": request.ServiceTier, "prompt_cache_key": request.PromptCacheKey} {
+	for key, value := range map[string]string{
+		"user":                   request.User,
+		"safety_identifier":      request.SafetyIdentifier,
+		"service_tier":           request.ServiceTier,
+		"prompt_cache_key":       request.PromptCacheKey,
+		"prompt_cache_retention": request.PromptCacheRetention,
+	} {
 		if value != "" {
 			body[key] = value
 		}
+	}
+	if len(request.Metadata) > 0 {
+		body["metadata"] = request.Metadata
+	}
+	if request.Seed != nil {
+		body["seed"] = *request.Seed
+	}
+	if request.PresencePenalty != nil {
+		body["presence_penalty"] = *request.PresencePenalty
+	}
+	if request.FrequencyPenalty != nil {
+		body["frequency_penalty"] = *request.FrequencyPenalty
+	}
+	if len(request.LogitBias) > 0 {
+		body["logit_bias"] = request.LogitBias
+	}
+	if request.Logprobs != nil {
+		body["logprobs"] = *request.Logprobs
+	}
+	if request.TopLogprobs != nil {
+		body["top_logprobs"] = *request.TopLogprobs
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {

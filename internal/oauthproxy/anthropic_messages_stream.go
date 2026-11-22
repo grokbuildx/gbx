@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/grokbuildx/gbx/internal/protocol"
 )
 
 const anthropicMaxActiveBlocks = 256
@@ -152,7 +154,11 @@ func (s *anthropicStreamState) process(payload []byte) error {
 			if strings.TrimSpace(block.Data) == "" {
 				return nil
 			}
-			return a.addOpaqueReasoning(anthropicRedactedPrefix + block.Data)
+			prefixed := anthropicRedactedPrefix + block.Data
+			if a.request != nil && a.request.reasoningScope != "" {
+				protocol.RecordReasoningScope(prefixed, a.request.reasoningScope)
+			}
+			return a.addOpaqueReasoning(prefixed)
 		case "text":
 			return a.addText(block.Text)
 		}
@@ -217,8 +223,12 @@ func (s *anthropicStreamState) process(payload []byte) error {
 			if sig == "" {
 				return nil
 			}
+			prefixed := anthropicSignaturePrefix + sig
+			if a.request != nil && a.request.reasoningScope != "" {
+				protocol.RecordReasoningScope(prefixed, a.request.reasoningScope)
+			}
 			if state.thinking && a.activeType == blockThinking && a.activeIndex >= 0 {
-				a.blocks[a.activeIndex].Signature = anthropicSignaturePrefix + sig
+				a.blocks[a.activeIndex].Signature = prefixed
 				return a.closeActive()
 			}
 			// Signature bytes were already retained on signature_delta; credit
@@ -227,7 +237,7 @@ func (s *anthropicStreamState) process(payload []byte) error {
 				a.retainedBytes -= n
 			}
 			// Thinking with no visible text still has to be replayed.
-			return a.addOpaqueReasoning(anthropicSignaturePrefix + sig)
+			return a.addOpaqueReasoning(prefixed)
 		}
 	case "message_delta":
 		var delta struct {

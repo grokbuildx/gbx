@@ -765,7 +765,7 @@ func TestKiroMessagesStreamingConversion(t *testing.T) {
 		"event: response.created",
 		`"type":"response.reasoning_summary_text.delta"`,
 		`"delta":"think"`,
-		`"encrypted_content":"sig"`,
+		`"encrypted_content":"gbx-kiro:sig"`,
 		`"type":"response.output_text.delta"`,
 		`"delta":"hello"`,
 		`"type":"function_call"`,

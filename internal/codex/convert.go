@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/grokbuildx/gbx/internal/modelsdev"
 	"github.com/grokbuildx/gbx/internal/oauthproxy"
 )
 
@@ -377,12 +378,22 @@ func bridgeRequest(raw []byte, request responseRequest, items []map[string]any, 
 		delete(body, "parallel_tool_calls")
 		delete(body, "text")
 	}
+	capacity := route.MaxOutputTokens
+	if capacity <= 0 {
+		if index, _ := modelsdev.CachedIndex(); index != nil {
+			if maxOut, ok := index.MaxOutputTokens("", route.Model, ""); ok && maxOut > 0 {
+				capacity = maxOut
+			}
+		}
+	}
 	if request.MaxOutputTokens <= 0 {
-		budget := route.MaxOutputTokens
+		budget := capacity
 		if budget <= 0 {
 			budget = 32768
 		}
 		body["max_output_tokens"], _ = json.Marshal(budget)
+	} else if capacity > 0 && request.MaxOutputTokens > capacity {
+		body["max_output_tokens"], _ = json.Marshal(capacity)
 	}
 	return json.Marshal(body)
 }

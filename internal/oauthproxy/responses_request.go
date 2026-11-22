@@ -17,23 +17,34 @@ import (
 
 // responsesWireRequest is the subset of a Responses request body GBX reads.
 type responsesWireRequest struct {
-	Model             string              `json:"model"`
-	Instructions      json.RawMessage     `json:"instructions"`
-	Input             json.RawMessage     `json:"input"`
-	Tools             []map[string]any    `json:"tools"`
-	ToolChoice        any                 `json:"tool_choice"`
-	ParallelToolCalls *bool               `json:"parallel_tool_calls"`
-	Stream            bool                `json:"stream"`
-	MaxOutputTokens   int                 `json:"max_output_tokens"`
-	Reasoning         *responsesReasoning `json:"reasoning"`
-	Text              *responsesText      `json:"text"`
-	Temperature       *float64            `json:"temperature"`
-	TopP              *float64            `json:"top_p"`
-	ServiceTier       string              `json:"service_tier"`
-	Truncation        string              `json:"truncation"`
-	PromptCacheKey    string              `json:"prompt_cache_key"`
-	User              string              `json:"user"`
-	Stop              json.RawMessage     `json:"stop"`
+	Model                string              `json:"model"`
+	Instructions         json.RawMessage     `json:"instructions"`
+	Input                json.RawMessage     `json:"input"`
+	Tools                []map[string]any    `json:"tools"`
+	ToolChoice           any                 `json:"tool_choice"`
+	ParallelToolCalls    *bool               `json:"parallel_tool_calls"`
+	Stream               bool                `json:"stream"`
+	MaxOutputTokens      int                 `json:"max_output_tokens"`
+	Reasoning            *responsesReasoning `json:"reasoning"`
+	Text                 *responsesText      `json:"text"`
+	Temperature          *float64            `json:"temperature"`
+	TopP                 *float64            `json:"top_p"`
+	ServiceTier          string              `json:"service_tier"`
+	Truncation           string              `json:"truncation"`
+	PromptCacheKey       string              `json:"prompt_cache_key"`
+	PromptCacheRetention string              `json:"prompt_cache_retention"`
+	SafetyIdentifier     string              `json:"safety_identifier"`
+	Metadata             map[string]any      `json:"metadata"`
+	Include              []string            `json:"include"`
+	TopLogprobs          *int                `json:"top_logprobs"`
+	User                 string              `json:"user"`
+	Stop                 json.RawMessage     `json:"stop"`
+	// Optional Chat-front parameters preserved for OpenAI Chat backends.
+	Seed             *int64             `json:"seed"`
+	PresencePenalty  *float64           `json:"presence_penalty"`
+	FrequencyPenalty *float64           `json:"frequency_penalty"`
+	LogitBias        map[string]float64 `json:"logit_bias"`
+	Logprobs         *bool              `json:"logprobs"`
 }
 
 type responsesReasoning struct {
@@ -145,8 +156,9 @@ type conversationToolChoice struct {
 	Name string
 }
 
-// conversationFormat is a requested json_schema structured output.
+// conversationFormat is a requested structured output (json_schema or json_object).
 type conversationFormat struct {
+	Type        string
 	Name        string
 	Description string
 	Strict      *bool
@@ -169,20 +181,32 @@ type conversationRequest struct {
 	ParallelToolCalls *bool
 	// Effort is the lower-case reasoning effort, or "" when the client left the
 	// upstream default in place. "none" asks for reasoning to be turned off.
-	Effort          string
-	MaxOutputTokens int
-	Stream          bool
-	Format          *conversationFormat
-	Temperature     *float64
-	TopP            *float64
-	Stop            []string
-	ServiceTier     string
-	Truncation      string
-	CacheKey        string
-	User            string
-	registry        toolRegistry
-	rawBytes        int
-	rawTokens       int
+	Effort               string
+	ReasoningSummary     string
+	MaxOutputTokens      int
+	Stream               bool
+	Format               *conversationFormat
+	TextVerbosity        string
+	Temperature          *float64
+	TopP                 *float64
+	Stop                 []string
+	ServiceTier          string
+	Truncation           string
+	CacheKey             string
+	PromptCacheRetention string
+	SafetyIdentifier     string
+	Metadata             map[string]any
+	Include              []string
+	TopLogprobs          *int
+	Seed                 *int64
+	PresencePenalty      *float64
+	FrequencyPenalty     *float64
+	LogitBias            map[string]float64
+	Logprobs             *bool
+	User                 string
+	registry             toolRegistry
+	rawBytes             int
+	rawTokens            int
 }
 
 // thinkingEnabled reports whether the client asked for reasoning output.
@@ -219,6 +243,7 @@ type adapterRequest struct {
 	maxTokens         int
 	inputTokens       int
 	contextWindow     int
+	reasoningScope    string
 	parallelToolCalls *bool
 	// toolNameMap maps a name a backend had to rewrite for its upstream back to
 	// the flattened declaration name.
@@ -837,6 +862,9 @@ func parseResponsesRequest(raw []byte) (*conversationRequest, error) {
 	if model == "" {
 		return nil, fmt.Errorf("model is required")
 	}
+	if wire.MaxOutputTokens < 0 {
+		return nil, fmt.Errorf("max_output_tokens must be non-negative")
+	}
 	items, err := responsesInputItems(wire.Input)
 	if err != nil {
 		return nil, err
@@ -851,12 +879,26 @@ func parseResponsesRequest(raw []byte) (*conversationRequest, error) {
 	}
 	request := &conversationRequest{
 		Model: model, Tools: tools, registry: registry,
-		ParallelToolCalls: wire.ParallelToolCalls, MaxOutputTokens: wire.MaxOutputTokens,
-		Stream: wire.Stream, Temperature: wire.Temperature, TopP: wire.TopP,
-		ServiceTier: strings.TrimSpace(wire.ServiceTier),
-		Truncation:  strings.ToLower(strings.TrimSpace(wire.Truncation)),
-		CacheKey:    strings.TrimSpace(wire.PromptCacheKey),
-		User:        strings.TrimSpace(wire.User), rawBytes: len(raw),
+		ParallelToolCalls:    wire.ParallelToolCalls,
+		MaxOutputTokens:      wire.MaxOutputTokens,
+		Stream:               wire.Stream,
+		Temperature:          wire.Temperature,
+		TopP:                 wire.TopP,
+		ServiceTier:          strings.ToLower(strings.TrimSpace(wire.ServiceTier)),
+		Truncation:           strings.ToLower(strings.TrimSpace(wire.Truncation)),
+		CacheKey:             strings.TrimSpace(wire.PromptCacheKey),
+		PromptCacheRetention: strings.TrimSpace(wire.PromptCacheRetention),
+		SafetyIdentifier:     strings.TrimSpace(wire.SafetyIdentifier),
+		Metadata:             wire.Metadata,
+		Include:              wire.Include,
+		TopLogprobs:          wire.TopLogprobs,
+		Seed:                 wire.Seed,
+		PresencePenalty:      wire.PresencePenalty,
+		FrequencyPenalty:     wire.FrequencyPenalty,
+		LogitBias:            wire.LogitBias,
+		Logprobs:             wire.Logprobs,
+		User:                 strings.TrimSpace(wire.User),
+		rawBytes:             len(raw),
 	}
 	if len(wire.Instructions) > 0 && string(wire.Instructions) != "null" {
 		var instructions string
@@ -867,6 +909,7 @@ func parseResponsesRequest(raw []byte) (*conversationRequest, error) {
 	}
 	if wire.Reasoning != nil {
 		request.Effort = strings.ToLower(strings.TrimSpace(wire.Reasoning.Effort))
+		request.ReasoningSummary = strings.ToLower(strings.TrimSpace(wire.Reasoning.Summary))
 	}
 	if len(wire.Stop) > 0 && string(wire.Stop) != "null" {
 		var one string
@@ -874,8 +917,16 @@ func parseResponsesRequest(raw []byte) (*conversationRequest, error) {
 			if one != "" {
 				request.Stop = []string{one}
 			}
-		} else if json.Unmarshal(wire.Stop, &request.Stop) != nil {
-			return nil, fmt.Errorf("stop must be a string or an array of strings")
+		} else {
+			var many []string
+			if json.Unmarshal(wire.Stop, &many) != nil {
+				return nil, fmt.Errorf("stop must be a string or an array of strings")
+			}
+			for _, s := range many {
+				if s != "" {
+					request.Stop = append(request.Stop, s)
+				}
+			}
 		}
 	}
 	if wire.Text != nil {
@@ -884,6 +935,7 @@ func parseResponsesRequest(raw []byte) (*conversationRequest, error) {
 			return nil, err
 		}
 		request.Format = format
+		request.TextVerbosity = strings.ToLower(strings.TrimSpace(wire.Text.Verbosity))
 	}
 	if err := request.readItems(items); err != nil {
 		return nil, err
@@ -1086,6 +1138,8 @@ func responsesStructuredFormat(raw json.RawMessage) (*conversationFormat, error)
 	switch format.Type {
 	case "", "text":
 		return nil, nil
+	case "json_object":
+		return &conversationFormat{Type: "json_object"}, nil
 	case "json_schema":
 	default:
 		return nil, fmt.Errorf("text.format type %q is not supported by this GBX provider", format.Type)
@@ -1094,10 +1148,32 @@ func responsesStructuredFormat(raw json.RawMessage) (*conversationFormat, error)
 	if decodeProtocolJSON(format.Schema, &schema) != nil || schema == nil {
 		return nil, fmt.Errorf("text.format requires an object schema")
 	}
+	format.Name = strings.TrimSpace(format.Name)
 	if format.Name == "" {
 		format.Name = "gbx_structured_output"
+	} else if !isValidStructuredOutputName(format.Name) {
+		return nil, fmt.Errorf("text.format.name must contain only letters, digits, underscores, or hyphens (1-64 chars)")
 	}
-	return &conversationFormat{Name: format.Name, Description: format.Description, Strict: format.Strict, Schema: format.Schema}, nil
+	return &conversationFormat{
+		Type:        "json_schema",
+		Name:        format.Name,
+		Description: format.Description,
+		Strict:      format.Strict,
+		Schema:      format.Schema,
+	}, nil
+}
+
+func isValidStructuredOutputName(name string) bool {
+	if len(name) == 0 || len(name) > 64 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func responsesToolChoice(value any, registry toolRegistry) (conversationToolChoice, error) {
@@ -1328,19 +1404,31 @@ func (r *conversationRequest) readItems(items []map[string]any) error {
 				// messages and tool history when a conversation changes backend.
 				continue
 			}
-			var summary strings.Builder
+			var texts []string
 			if parts, ok := item["summary"].([]any); ok {
 				for _, part := range parts {
 					if p, ok := part.(map[string]any); ok {
-						summary.WriteString(responsesTextValue(p["text"]))
+						if t := responsesTextValue(p["text"]); t != "" {
+							texts = append(texts, t)
+						}
+					}
+				}
+			}
+			if parts, ok := item["content"].([]any); ok {
+				for _, part := range parts {
+					if p, ok := part.(map[string]any); ok {
+						if t := responsesTextValue(p["text"]); t != "" {
+							texts = append(texts, t)
+						}
 					}
 				}
 			}
 			signature, _ := item["encrypted_content"].(string)
-			if summary.Len() == 0 && signature == "" {
+			combined := strings.Join(texts, "\n\n")
+			if combined == "" && signature == "" {
 				continue
 			}
-			r.appendParts("assistant", conversationPart{Kind: partReasoning, Text: summary.String(), Signature: signature})
+			r.appendParts("assistant", conversationPart{Kind: partReasoning, Text: combined, Signature: signature})
 		case "compaction":
 			encoded, _ := item["encrypted_content"].(string)
 			summary, ok := DecodeCompactionSummary(encoded)

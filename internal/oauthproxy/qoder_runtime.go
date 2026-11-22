@@ -679,7 +679,7 @@ func qoderMatchEffort(levels []protocol.ReasoningLevel, asked string) string {
 	}
 	allowed := make(map[string]bool, len(levels))
 	for _, level := range levels {
-		allowed[level.Effort] = true
+		allowed[strings.ToLower(strings.TrimSpace(level.Effort))] = true
 	}
 	if allowed[asked] {
 		return asked
@@ -687,6 +687,8 @@ func qoderMatchEffort(levels []protocol.ReasoningLevel, asked string) string {
 	aliases := map[string][]string{
 		"minimal": {"low"},
 		"min":     {"low"},
+		"low":     {"minimal", "medium", "high"},
+		"medium":  {"low", "high"},
 		"high":    {"xhigh", "max", "medium"},
 		"max":     {"xhigh", "high"},
 		"xhigh":   {"max", "high"},
@@ -805,6 +807,8 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 	activeSlot := make(map[int]string)
 	nextSlot := 0
 	retainedArgs := 0
+	var reasoningStripper qoderThinkingTagStripper
+	var contentStripper qoderThinkingTagStripper
 	terminalSeen := false
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64<<10), min(int(qoderMaxBodyBytes), qoderMaxSSELineBytes))
@@ -899,7 +903,7 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 		}
 		for _, choice := range event.Choices {
 			delta := choice.Delta
-			if reasoning := qoderStripThinkingTags(delta.ReasoningContent); reasoning != "" {
+			if reasoning := reasoningStripper.push(delta.ReasoningContent); reasoning != "" {
 				if err := assembler.start(); err != nil {
 					return err
 				}
@@ -926,12 +930,21 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 				if err := assembler.start(); err != nil {
 					return err
 				}
-				content := delta.Content
 				if assembler.nativeReasoning {
-					content = qoderStripThinkingTags(content)
-				}
-				if err := assembler.addAssistantContent(content); err != nil {
-					return err
+					if tail := reasoningStripper.flush(); tail != "" {
+						if err := assembler.addThinking(tail); err != nil {
+							return err
+						}
+					}
+					if stripped := contentStripper.push(delta.Content); stripped != "" {
+						if err := assembler.addText(stripped); err != nil {
+							return err
+						}
+					}
+				} else {
+					if err := assembler.addAssistantContent(delta.Content); err != nil {
+						return err
+					}
 				}
 			}
 			for _, toolCall := range delta.ToolCalls {
@@ -1033,6 +1046,16 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 	}
 	if err := assembler.start(); err != nil {
 		return usage, err
+	}
+	if tail := reasoningStripper.flush(); tail != "" {
+		if err := assembler.addThinking(tail); err != nil {
+			return usage, err
+		}
+	}
+	if tail := contentStripper.flush(); tail != "" {
+		if err := assembler.addText(tail); err != nil {
+			return usage, err
+		}
 	}
 	if err := assembler.flushInlineContent(); err != nil {
 		return usage, err
@@ -1240,10 +1263,47 @@ func qoderQueueFromValue(value any, depth int) *qoderQueueInfo {
 	return nil
 }
 
+var qoderStrippedThinkingTags = []string{"<thinking>", "</thinking>", "<think>", "</think>"}
+
+// qoderThinkingTagStripper strips stray <think>/<thinking> wrapper tags across
+// arbitrary chunk boundaries without leaking partial tags into output.
+type qoderThinkingTagStripper struct {
+	pending string
+}
+
+func (s *qoderThinkingTagStripper) push(chunk string) string {
+	if chunk == "" {
+		return ""
+	}
+	combined := s.pending + chunk
+	for _, tag := range qoderStrippedThinkingTags {
+		combined = strings.ReplaceAll(combined, tag, "")
+	}
+	keep := 0
+	for _, tag := range qoderStrippedThinkingTags {
+		if n := partialThinkingTagSuffix(combined, tag); n > keep {
+			keep = n
+		}
+	}
+	s.pending = combined[len(combined)-keep:]
+	return combined[:len(combined)-keep]
+}
+
+func (s *qoderThinkingTagStripper) flush() string {
+	if s.pending == "" {
+		return ""
+	}
+	rest := s.pending
+	s.pending = ""
+	for _, tag := range qoderStrippedThinkingTags {
+		rest = strings.ReplaceAll(rest, tag, "")
+	}
+	return rest
+}
+
 func qoderStripThinkingTags(value string) string {
-	value = strings.ReplaceAll(value, "<thinking>", "")
-	value = strings.ReplaceAll(value, "</thinking>", "")
-	return value
+	var s qoderThinkingTagStripper
+	return s.push(value) + s.flush()
 }
 
 func closeQoderResponse(response *http.Response) {

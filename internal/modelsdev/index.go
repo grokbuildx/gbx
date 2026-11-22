@@ -19,8 +19,11 @@ type reasoningEntry struct {
 	maxOutput           int
 	priority            int
 	thinking            bool
+	hasEffort           bool
+	hasBudget           bool
 	ambiguous           bool
 	thinkingAmbiguous   bool
+	modeAmbiguous       bool
 	modalitiesAmbiguous bool
 	outputAmbiguous     bool
 }
@@ -49,6 +52,8 @@ func newIndexFromProviders(providers map[string]Provider) (*Index, error) {
 			modalities := model.InputModalities()
 			maxOutput := model.Limit.Output
 			thinking := model.Reasoning
+			hasEffort := model.HasEffortOption()
+			hasBudget := model.SupportsBudgetTokens()
 			// Prefer the canonical model owner's entry. OpenCode's two
 			// catalogs are references when the owner has no matching row.
 			priority := 3
@@ -65,15 +70,15 @@ func newIndexFromProviders(providers map[string]Provider) (*Index, error) {
 				if strings.TrimSpace(alias) == "" {
 					continue
 				}
-				addModelAlias(local, alias, efforts, modalities, maxOutput, thinking, 0)
-				addModelAlias(index.aliases, alias, efforts, modalities, maxOutput, thinking, priority*2)
-				addModelAlias(index.aliases, providerID+"/"+alias, efforts, modalities, maxOutput, thinking, priority*2)
+				addModelAlias(local, alias, efforts, modalities, maxOutput, thinking, hasEffort, hasBudget, 0)
+				addModelAlias(index.aliases, alias, efforts, modalities, maxOutput, thinking, hasEffort, hasBudget, priority*2)
+				addModelAlias(index.aliases, providerID+"/"+alias, efforts, modalities, maxOutput, thinking, hasEffort, hasBudget, priority*2)
 			}
 			if _, bare, ok := strings.Cut(model.CanonicalID, "/"); ok {
-				addModelAlias(index.aliases, bare, efforts, modalities, maxOutput, thinking, priority*2)
+				addModelAlias(index.aliases, bare, efforts, modalities, maxOutput, thinking, hasEffort, hasBudget, priority*2)
 			}
-			addModelAlias(local, model.Name, efforts, modalities, maxOutput, thinking, 1)
-			addModelAlias(index.aliases, model.Name, efforts, modalities, maxOutput, thinking, priority*2+1)
+			addModelAlias(local, model.Name, efforts, modalities, maxOutput, thinking, hasEffort, hasBudget, 1)
+			addModelAlias(index.aliases, model.Name, efforts, modalities, maxOutput, thinking, hasEffort, hasBudget, priority*2+1)
 		}
 	}
 	if len(index.aliases) == 0 {
@@ -82,7 +87,7 @@ func newIndexFromProviders(providers map[string]Provider) (*Index, error) {
 	return index, nil
 }
 
-func addModelAlias(index map[string]reasoningEntry, alias string, efforts, modalities []string, maxOutput int, thinking bool, priority int) {
+func addModelAlias(index map[string]reasoningEntry, alias string, efforts, modalities []string, maxOutput int, thinking, hasEffort, hasBudget bool, priority int) {
 	alias = normalizeAlias(alias)
 	if alias == "" {
 		return
@@ -94,6 +99,8 @@ func addModelAlias(index map[string]reasoningEntry, alias string, efforts, modal
 			modalities: modalities,
 			maxOutput:  maxOutput,
 			thinking:   thinking,
+			hasEffort:  hasEffort,
+			hasBudget:  hasBudget,
 			priority:   priority,
 		}
 		return
@@ -104,6 +111,9 @@ func addModelAlias(index map[string]reasoningEntry, alias string, efforts, modal
 		}
 		if previous.thinking != thinking {
 			previous.thinkingAmbiguous = true
+		}
+		if previous.hasEffort != hasEffort || previous.hasBudget != hasBudget {
+			previous.modeAmbiguous = true
 		}
 		if len(modalities) > 0 {
 			if len(previous.modalities) == 0 {
@@ -142,6 +152,17 @@ func (index *Index) SupportsThinking(providerID, modelID, displayName string) (b
 		return entry.thinking, true
 	}
 	return false, false
+}
+
+// ThinkingMode reports whether a reasoning-capable model is adaptive/effort-only
+// (has effort tiers without budget_tokens) and whether it accepts budget_tokens.
+func (index *Index) ThinkingMode(providerID, modelID, displayName string) (adaptive bool, supportsBudget bool, found bool) {
+	if entry, ok := index.lookup(providerID, modelID, displayName, func(e reasoningEntry) bool {
+		return !e.thinkingAmbiguous && !e.modeAmbiguous && e.thinking
+	}); ok {
+		return entry.hasEffort && !entry.hasBudget, entry.hasBudget, true
+	}
+	return false, false, false
 }
 
 // InputModalities resolves advertised input modalities (["text"] or ["text", "image"])
