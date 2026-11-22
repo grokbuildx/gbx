@@ -1,3 +1,6 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
 /* Embed only latin woff2 subsets to keep the Go binary slim. */
 @font-face {
   font-family: "Fraunces Variable";
@@ -29,8 +32,6 @@
   font-weight: 500;
   src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2") format("woff2");
 }
-@import "tailwindcss";
-@plugin "@tailwindcss/typography";
 
 /* Dark mode is the html data-theme attribute: the page sets it from the
    user's choice, or from the system preference when there is none. */

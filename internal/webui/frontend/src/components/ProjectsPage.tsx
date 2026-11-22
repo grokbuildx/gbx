@@ -234,14 +234,14 @@ export function ProjectDetail(props: Common & {
             <ProjectSessions sessions={sessions} onSelect={props.onSelect} onPatchMany={props.onPatchMany} onDeleteMany={props.onDeleteMany} />
             <div className="flex min-w-0 flex-col gap-4 max-lg:order-first">
               <DefaultsCard
-                key={props.workspace.id}
+                key={`defaults:${props.workspace.id}`}
                 providers={props.providers}
                 defaultProvider={props.defaultProvider}
                 defaultEffortLevels={props.defaultEffortLevels}
                 defaults={props.defaults}
                 onSave={props.onSaveDefaults}
               />
-              <MemoryEditor key={props.workspace.id} title={t("projectInstructions")} sources={sources} registerLeaveGuard={props.registerLeaveGuard} />
+              <MemoryEditor key={`memory:${props.workspace.id}`} title={t("projectInstructions")} sources={sources} registerLeaveGuard={props.registerLeaveGuard} />
             </div>
           </div>
         </div>

@@ -1172,7 +1172,7 @@ export function App() {
               )}
               {viewed && <AgentBanner tool={viewed} onBack={() => setAgentView(null)} />}
               <Thread
-                key={viewed ? `${!currentId || adopted.current === currentId ? "new" : currentId}:${viewed.key}` : !currentId || adopted.current === currentId ? "new" : currentId}
+                key={viewed ? `thread:${!currentId || adopted.current === currentId ? "new" : currentId}:${viewed.key}` : `thread:${!currentId || adopted.current === currentId ? "new" : currentId}`}
                 items={shownItems}
                 running={viewed ? toolActive(viewed) : conversation.running}
                 loading={conversation.loading}
@@ -1183,7 +1183,7 @@ export function App() {
                 onOnboard={config && !providers.length && !currentId ? () => { setSettingsOpen("providers"); loadConfig(); } : undefined}
               />
               <Composer
-                key={!currentId || adopted.current === currentId ? "new" : currentId}
+                key={`composer:${!currentId || adopted.current === currentId ? "new" : currentId}`}
                 draftKey={!currentId || adopted.current === currentId ? "new" : currentId}
                 running={conversation.running}
                 workspace={workspace}
