@@ -188,18 +188,37 @@ func chatTool(tool conversationTool) map[string]any {
 }
 
 // ensureObjectSchema guarantees a parameter schema is an object with a
-// properties field, which the OpenAI function-calling contract requires.
+// properties field and without meta-schema keys that strict gateways reject.
 func ensureObjectSchema(schema json.RawMessage) json.RawMessage {
 	var value map[string]any
 	if decodeProtocolJSON(schema, &value) != nil || value == nil {
 		return json.RawMessage(`{"type":"object","properties":{}}`)
 	}
-	if _, ok := value["properties"]; !ok {
+	delete(value, "$schema")
+	if _, hasProperties := value["properties"]; !hasProperties {
+		for _, key := range []string{"oneOf", "anyOf", "allOf"} {
+			variants, _ := value[key].([]any)
+			for _, variant := range variants {
+				candidate, _ := variant.(map[string]any)
+				if candidate["type"] != "object" {
+					continue
+				}
+				for _, field := range []string{"properties", "required", "additionalProperties"} {
+					if v, exists := candidate[field]; exists {
+						value[field] = v
+					}
+				}
+				break
+			}
+			if _, hasProperties := value["properties"]; hasProperties {
+				break
+			}
+		}
+	}
+	if _, ok := value["properties"].(map[string]any); !ok {
 		value["properties"] = map[string]any{}
 	}
-	if _, ok := value["type"]; !ok {
-		value["type"] = "object"
-	}
+	value["type"] = "object"
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return json.RawMessage(`{"type":"object","properties":{}}`)

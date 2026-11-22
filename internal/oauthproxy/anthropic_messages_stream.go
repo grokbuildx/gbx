@@ -19,9 +19,17 @@ type anthropicStreamBlock struct {
 	thinking  bool // whether thinking text reached the assembler
 }
 
+type anthropicPendingTool struct {
+	id    string
+	name  string
+	input string
+}
+
 type anthropicStreamState struct {
 	assembler    *responseAssembler
 	blocks       map[int]*anthropicStreamBlock
+	pendingTools []anthropicPendingTool
+	finalUsage   map[string]any
 	terminalSeen bool
 }
 
@@ -42,7 +50,39 @@ func processAnthropicMessagesStream(reader io.Reader, assembler *responseAssembl
 			return err
 		}
 	}
+	if err := state.flushPendingTools(assembler.stopReason == stopMaxTokens); err != nil {
+		return err
+	}
+	// Apply authoritative upstream usage after deferred tool emission so local
+	// tool-argument token estimates do not inflate reported output_tokens.
+	anthropicApplyUsage(assembler, state.finalUsage)
 	return assembler.finish()
+}
+
+func (s *anthropicStreamState) flushPendingTools(allowTruncated bool) error {
+	if len(s.pendingTools) == 0 {
+		return nil
+	}
+	pending := s.pendingTools
+	s.pendingTools = nil
+	if !allowTruncated {
+		for _, tool := range pending {
+			if err := s.assembler.validateToolUseName(tool.name); err != nil {
+				return err
+			}
+		}
+	}
+	for _, tool := range pending {
+		if allowTruncated {
+			if _, _, _, err := s.assembler.validateToolUse(tool.name, tool.input); err != nil {
+				continue
+			}
+		}
+		if err := s.assembler.addToolUse(tool.id, tool.name, tool.input); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *anthropicStreamState) process(payload []byte) error {
@@ -88,6 +128,11 @@ func (s *anthropicStreamState) process(payload []byte) error {
 		}
 		if _, exists := s.blocks[event.Index]; !exists && len(s.blocks) >= anthropicMaxActiveBlocks {
 			return fmt.Errorf("Anthropic Messages stream exceeds %d active content blocks", anthropicMaxActiveBlocks)
+		}
+		if block.Type != "tool_use" && len(s.pendingTools) > 0 {
+			if err := s.flushPendingTools(false); err != nil {
+				return err
+			}
 		}
 		state := &anthropicStreamBlock{kind: block.Type, id: block.ID, name: block.Name}
 		s.blocks[event.Index] = state
@@ -147,10 +192,18 @@ func (s *anthropicStreamState) process(payload []byte) error {
 		case "tool_use":
 			// Tool JSON bytes were already retained on input_json_delta; credit back
 			// before addToolUse retains the final payload so the cap is not halved.
+			// Defer emission until message_stop so message_delta(max_tokens) can
+			// cleanly drop a truncated tool call instead of failing the stream.
 			if n := state.input.Len(); n > 0 && a.retainedBytes >= n {
 				a.retainedBytes -= n
 			}
-			return a.addToolUse(state.id, state.name, state.input.String())
+			if len(s.pendingTools) >= assemblerMaxToolCalls {
+				return fmt.Errorf("Anthropic Messages stream exceeds %d concurrent tool calls", assemblerMaxToolCalls)
+			}
+			s.pendingTools = append(s.pendingTools, anthropicPendingTool{
+				id: state.id, name: state.name, input: state.input.String(),
+			})
+			return nil
 		case "thinking":
 			sig := state.signature.String()
 			if sig == "" {
@@ -176,7 +229,8 @@ func (s *anthropicStreamState) process(payload []byte) error {
 			a.stopReason = anthropicStopReason(delta.StopReason)
 		}
 		var usage map[string]any
-		if err := json.Unmarshal(event.Usage, &usage); err == nil {
+		if err := json.Unmarshal(event.Usage, &usage); err == nil && usage != nil {
+			s.finalUsage = usage
 			anthropicApplyUsage(a, usage)
 		}
 	case "message_stop":

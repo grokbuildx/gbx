@@ -203,6 +203,7 @@ func (r *conversationRequest) adapter(upstreamModel string) adapterRequest {
 		thinkingEnabled:   r.thinkingEnabled(),
 		maxTokens:         r.MaxOutputTokens,
 		inputTokens:       r.rawTokens,
+		parallelToolCalls: r.ParallelToolCalls,
 		declaredToolNames: declared,
 		tools:             r.registry,
 	}
@@ -211,12 +212,13 @@ func (r *conversationRequest) adapter(upstreamModel string) adapterRequest {
 // adapterRequest is the client-facing state shared by converted backends.
 // Upstream-specific converted requests embed it.
 type adapterRequest struct {
-	upstreamModel   string
-	clientModel     string
-	stream          bool
-	thinkingEnabled bool
-	maxTokens       int
-	inputTokens     int
+	upstreamModel     string
+	clientModel       string
+	stream            bool
+	thinkingEnabled   bool
+	maxTokens         int
+	inputTokens       int
+	parallelToolCalls *bool
 	// toolNameMap maps a name a backend had to rewrite for its upstream back to
 	// the flattened declaration name.
 	toolNameMap map[string]string
@@ -888,6 +890,7 @@ func parseResponsesRequest(raw []byte) (*conversationRequest, error) {
 	if len(request.Turns) == 0 {
 		return nil, fmt.Errorf("Responses input has no conversation messages")
 	}
+	request.normalizeToolCallPairing()
 	request.pruneHistoricalToolScreenshots()
 	request.System += toolCallingInstructions(tools, registry)
 	choice, err := responsesToolChoice(wire.ToolChoice, registry)
@@ -896,6 +899,103 @@ func parseResponsesRequest(raw []byte) (*conversationRequest, error) {
 	}
 	request.ToolChoice = choice
 	return request, nil
+}
+
+// normalizeToolCallPairing repairs historical turns where a tool call was
+// interrupted before its output arrived, or where an orphan/duplicate tool
+// result has no matching tool call in the immediately preceding assistant turn.
+// OpenAI Chat, Anthropic Messages, Qoder and Kiro all reject unpaired tool
+// history with HTTP 400; demoting unpaired records to labeled history text
+// preserves user context and images without deadlocking the session.
+func (r *conversationRequest) normalizeToolCallPairing() {
+	if len(r.Turns) == 0 {
+		return
+	}
+	// Step 1: Demote unpaired/duplicate assistant tool calls when a subsequent
+	// turn already exists. Leave a trailing assistant turn untouched so
+	// single-turn prefill/replay callers retain their tool calls.
+	activeCalls := make([]map[string]bool, len(r.Turns))
+	for i := 0; i < len(r.Turns); i++ {
+		if r.Turns[i].Role != "assistant" {
+			continue
+		}
+		if i == len(r.Turns)-1 {
+			ids := make(map[string]bool)
+			for _, part := range r.Turns[i].Parts {
+				if part.Kind == partToolCall && part.CallID != "" {
+					ids[part.CallID] = true
+				}
+			}
+			activeCalls[i] = ids
+			continue
+		}
+		answered := make(map[string]bool)
+		if r.Turns[i+1].Role == "user" {
+			for _, part := range r.Turns[i+1].Parts {
+				if part.Kind == partToolResult && part.CallID != "" {
+					answered[part.CallID] = true
+				}
+			}
+		}
+		kept := make(map[string]bool)
+		var rebuilt []conversationPart
+		changed := false
+		for _, part := range r.Turns[i].Parts {
+			if part.Kind != partToolCall {
+				rebuilt = append(rebuilt, part)
+				continue
+			}
+			if part.CallID == "" || !answered[part.CallID] || kept[part.CallID] {
+				changed = true
+				rebuilt = append(rebuilt, textPart(fmt.Sprintf("Interrupted tool call %s (%s):\n%s", part.Name, part.CallID, string(part.Arguments))))
+				continue
+			}
+			kept[part.CallID] = true
+			rebuilt = append(rebuilt, part)
+		}
+		if changed {
+			r.Turns[i].Parts = rebuilt
+		}
+		activeCalls[i] = kept
+	}
+
+	// Step 2: Demote orphan or duplicate user tool results that do not match an
+	// active tool call in the immediately preceding assistant turn, keeping any
+	// attached text and images intact.
+	for i := 0; i < len(r.Turns); i++ {
+		if r.Turns[i].Role != "user" {
+			continue
+		}
+		var preceding map[string]bool
+		if i > 0 && r.Turns[i-1].Role == "assistant" {
+			preceding = activeCalls[i-1]
+		}
+		seenResult := make(map[string]bool)
+		var rebuilt []conversationPart
+		changed := false
+		for _, part := range r.Turns[i].Parts {
+			if part.Kind != partToolResult {
+				rebuilt = append(rebuilt, part)
+				continue
+			}
+			if part.CallID != "" && preceding[part.CallID] && !seenResult[part.CallID] {
+				seenResult[part.CallID] = true
+				rebuilt = append(rebuilt, part)
+				continue
+			}
+			changed = true
+			if text := part.outputText(); text != "" {
+				rebuilt = append(rebuilt, textPart(fmt.Sprintf("Historical tool result (%s):\n%s", part.CallID, text)))
+			}
+			rebuilt = append(rebuilt, part.outputImages()...)
+		}
+		if changed {
+			if len(rebuilt) == 0 {
+				rebuilt = []conversationPart{textPart("Historical tool result: (empty)")}
+			}
+			r.Turns[i].Parts = rebuilt
+		}
+	}
 }
 
 const maxHistoricalToolScreenshots = 4

@@ -21,6 +21,7 @@ type codexFunctionCall struct {
 type codexResponsesStreamState struct {
 	assembler          *responseAssembler
 	functions          map[string]*codexFunctionCall
+	functionCount      int
 	retained           int
 	textPartsSeen      map[string]bool
 	outputAliases      map[string]string
@@ -185,22 +186,22 @@ func (s *codexResponsesStreamState) process(payload []byte) error {
 		}
 		return s.assembler.addText(stringValue(event["delta"]))
 	case "response.function_call_arguments.delta":
-		call := s.functionForEvent(event)
+		call, err := s.resolveFunction(event, nil)
+		if err != nil {
+			return err
+		}
 		if delta := stringValue(event["delta"]); delta != "" {
-			if len(s.functions) > assemblerMaxToolCalls {
-				return fmt.Errorf("Codex Responses function call stream exceeds %d concurrent calls", assemblerMaxToolCalls)
-			}
 			if err := s.retainArguments(len(delta)); err != nil {
 				return err
 			}
 			call.arguments.WriteString(delta)
 		}
 	case "response.function_call_arguments.done":
-		call := s.functionForEvent(event)
+		call, err := s.resolveFunction(event, nil)
+		if err != nil {
+			return err
+		}
 		if arguments := stringValue(event["arguments"]); arguments != "" {
-			if len(s.functions) > assemblerMaxToolCalls {
-				return fmt.Errorf("Codex Responses function call stream exceeds %d concurrent calls", assemblerMaxToolCalls)
-			}
 			if err := s.retainArguments(len(arguments)); err != nil {
 				return err
 			}
@@ -216,7 +217,7 @@ func (s *codexResponsesStreamState) process(payload []byte) error {
 			}
 		}
 	case "response.output_item.done":
-		return s.processOutputItem(event)
+		return s.processOutputItem(event, false)
 	case "response.completed", "response.incomplete", "response.failed":
 		return s.processTerminal(eventType, mapValue(event["response"]))
 	case "error":
@@ -225,7 +226,7 @@ func (s *codexResponsesStreamState) process(payload []byte) error {
 	return nil
 }
 
-func (s *codexResponsesStreamState) processOutputItem(event map[string]any) error {
+func (s *codexResponsesStreamState) processOutputItem(event map[string]any, terminal bool) error {
 	item := mapValue(event["item"])
 	switch stringValue(item["type"]) {
 	case "message":
@@ -278,6 +279,11 @@ func (s *codexResponsesStreamState) processOutputItem(event map[string]any) erro
 		call, err := s.updateFunction(event, item)
 		if err != nil {
 			return err
+		}
+		// Defer an incomplete function_call item until the terminal event tells
+		// us whether max_output_tokens truncated its JSON arguments.
+		if !terminal && stringValue(item["status"]) == "incomplete" {
+			return nil
 		}
 		return s.emitFunction(call)
 	}
@@ -356,12 +362,25 @@ func (s *codexResponsesStreamState) processTerminal(eventType string, response m
 		}
 		return fmt.Errorf("Codex Responses failed")
 	}
+	// Resolve incomplete stop_reason BEFORE emitting terminal output items so
+	// truncated function calls on max_output_tokens are skipped cleanly.
+	if eventType == "response.incomplete" {
+		details := mapValue(response["incomplete_details"])
+		switch stringValue(details["reason"]) {
+		case "max_output_tokens", "max_tokens":
+			s.assembler.stopReason = "max_tokens"
+		case "content_filter":
+			s.assembler.stopReason = "refusal"
+		default:
+			s.assembler.stopReason = "end_turn"
+		}
+	}
 	// Some compatible gateways omit output_item.done. Recover any terminal text,
 	// reasoning signature, or function call exactly once from response.output.
 	for index, rawItem := range sliceValue(response["output"]) {
 		item := mapValue(rawItem)
 		event := map[string]any{"output_index": float64(index), "item": item}
-		if err := s.processOutputItem(event); err != nil {
+		if err := s.processOutputItem(event, true); err != nil {
 			return err
 		}
 	}
@@ -384,17 +403,6 @@ func (s *codexResponsesStreamState) processTerminal(eventType string, response m
 		s.assembler.inputUsageKnown = true
 		s.assembler.contextTokens = max(0, in-s.assembler.cacheReadTokens-s.assembler.cacheWriteTokens)
 	}
-	if eventType == "response.incomplete" {
-		details := mapValue(response["incomplete_details"])
-		switch stringValue(details["reason"]) {
-		case "max_output_tokens", "max_tokens":
-			s.assembler.stopReason = "max_tokens"
-		case "content_filter":
-			s.assembler.stopReason = "refusal"
-		default:
-			s.assembler.stopReason = "end_turn"
-		}
-	}
 	s.terminalSeen = true
 	return s.assembler.finish()
 }
@@ -407,29 +415,32 @@ func (s *codexResponsesStreamState) retainArguments(size int) error {
 	return nil
 }
 
-func (s *codexResponsesStreamState) functionForEvent(event map[string]any) *codexFunctionCall {
-	key := codexFunctionKey(event, nil)
-	if call := s.functions[key]; call != nil {
-		return call
+func (s *codexResponsesStreamState) resolveFunction(event, item map[string]any) (*codexFunctionCall, error) {
+	keys := codexFunctionKeys(event, item)
+	var call *codexFunctionCall
+	for _, key := range keys {
+		if existing := s.functions[key]; existing != nil {
+			call = existing
+			break
+		}
 	}
-	call := &codexFunctionCall{}
-	s.functions[key] = call
-	return call
+	if call == nil {
+		if s.functionCount >= assemblerMaxToolCalls {
+			return nil, fmt.Errorf("Codex Responses function call stream exceeds %d concurrent calls", assemblerMaxToolCalls)
+		}
+		call = &codexFunctionCall{}
+		s.functionCount++
+	}
+	for _, key := range keys {
+		s.functions[key] = call
+	}
+	return call, nil
 }
 
 func (s *codexResponsesStreamState) updateFunction(event, item map[string]any) (*codexFunctionCall, error) {
-	key := codexFunctionKey(event, item)
-	call := s.functions[key]
-	if call == nil {
-		call = s.functionForEvent(event)
-		if existingKey := codexFunctionKey(event, nil); existingKey != key {
-			// Keep the output-index alias: argument delta events commonly carry
-			// only output_index after output_item.added introduced the item ID.
-			s.functions[key] = call
-		}
-	}
-	if len(s.functions) > assemblerMaxToolCalls {
-		return nil, fmt.Errorf("Codex Responses function call stream exceeds %d concurrent calls", assemblerMaxToolCalls)
+	call, err := s.resolveFunction(event, item)
+	if err != nil {
+		return nil, err
 	}
 	if value := stringValue(item["call_id"]); value != "" {
 		call.callID = value
@@ -459,21 +470,46 @@ func (s *codexResponsesStreamState) emitFunction(call *codexFunctionCall) error 
 	if strings.TrimSpace(arguments) == "" {
 		arguments = "{}"
 	}
+	if s.assembler.stopReason == stopMaxTokens {
+		if _, _, _, err := s.assembler.validateToolUse(call.name, arguments); err != nil {
+			return nil
+		}
+	}
 	return s.assembler.addToolUse(call.callID, call.name, arguments)
 }
 
-func codexFunctionKey(event, item map[string]any) string {
-	if item != nil {
-		for _, key := range []string{"id", "call_id"} {
-			if value := stringValue(item[key]); value != "" {
-				return key + ":" + value
+func codexFunctionKeys(event, item map[string]any) []string {
+	keys := make([]string, 0, 4)
+	add := func(key string) {
+		for _, existing := range keys {
+			if existing == key {
+				return
 			}
+		}
+		keys = append(keys, key)
+	}
+	if item != nil {
+		if value := stringValue(item["id"]); value != "" {
+			add("id:" + value)
+		}
+		if value := stringValue(item["call_id"]); value != "" {
+			add("call_id:" + value)
 		}
 	}
 	if value := stringValue(event["item_id"]); value != "" {
-		return "id:" + value
+		add("id:" + value)
 	}
-	return fmt.Sprintf("index:%d", intValue(event["output_index"]))
+	if _, ok := event["output_index"]; ok {
+		add(fmt.Sprintf("index:%d", intValue(event["output_index"])))
+	}
+	if len(keys) == 0 {
+		add("index:0")
+	}
+	return keys
+}
+
+func codexFunctionKey(event, item map[string]any) string {
+	return codexFunctionKeys(event, item)[0]
 }
 
 func codexEventErrorMessage(value map[string]any) string {

@@ -909,8 +909,19 @@ func (s *cursorService) continueTurn(ctx context.Context, session *cursorSession
 			}
 			break
 		}
+		events := decodeCursorASM(payload)
+		// Validate every exec_mcp tool call in the frame before emitting even
+		// the first call or opening the HTTP 200 SSE gate.
+		for _, event := range events {
+			if event.Kind != "exec_mcp" {
+				continue
+			}
+			if _, _, _, err := assembler.validateToolUse(event.MCPName, cursorMCPArgsJSON(event.MCPArgs)); err != nil {
+				return err
+			}
+		}
 		sawExecMCP := false
-		for _, event := range decodeCursorASM(payload) {
+		for _, event := range events {
 			switch event.Kind {
 			case "text":
 				if err := assembler.addText(event.Text); err != nil {
@@ -939,11 +950,11 @@ func (s *cursorService) continueTurn(ctx context.Context, session *cursorSession
 				s.storeBlob(sha256SumBytes(event.BlobData), event.BlobData)
 			case "exec_mcp":
 				callID := firstNonEmptyString(event.MCPCallID, event.ExecID, uuidString())
-				session.addPending(callID, cursorPendingCall{msgID: event.ExecMsgID, execID: event.ExecID})
-				gate.open()
 				if err := assembler.addToolUse(callID, event.MCPName, cursorMCPArgsJSON(event.MCPArgs)); err != nil {
 					return err
 				}
+				session.addPending(callID, cursorPendingCall{msgID: event.ExecMsgID, execID: event.ExecID})
+				gate.open()
 				sawExecMCP = true
 			case "exec_context":
 				if err := session.send(cursorFrameConnect(encodeCursorRequestContext(event.ExecMsgID, event.ExecID, converted.tools), 0)); err != nil {

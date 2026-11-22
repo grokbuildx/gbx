@@ -303,13 +303,38 @@ func anthropicTool(tool conversationTool) map[string]any {
 	if len(schema) == 0 {
 		schema = json.RawMessage(`{"type":"object","properties":{}}`)
 	} else {
-		schema = ensureObjectSchema(schema)
+		schema = ensureAnthropicInputSchema(schema)
 	}
 	out := map[string]any{"name": tool.Name, "input_schema": schema}
 	if tool.Description != "" {
 		out["description"] = tool.Description
 	}
 	return out
+}
+
+// ensureAnthropicInputSchema builds a strict object input_schema for Anthropic
+// Messages, which rejects top-level $schema and root oneOf/anyOf/allOf.
+func ensureAnthropicInputSchema(raw json.RawMessage) json.RawMessage {
+	normalized := ensureObjectSchema(raw)
+	var value map[string]any
+	if decodeProtocolJSON(normalized, &value) != nil || value == nil {
+		return json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+	removed := false
+	for _, key := range []string{"oneOf", "anyOf", "allOf"} {
+		if _, exists := value[key]; exists {
+			delete(value, key)
+			removed = true
+		}
+	}
+	if !removed {
+		return normalized
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return normalized
+	}
+	return encoded
 }
 
 // anthropicToolChoice maps a tool choice onto Messages' tool_choice. The

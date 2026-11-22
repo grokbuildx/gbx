@@ -99,6 +99,8 @@ func chatToResponsesRequest(raw []byte) ([]byte, *chatFrontRequest, error) {
 			}
 			var output any = ""
 			switch content := message["content"].(type) {
+			case nil:
+				output = ""
 			case string:
 				output = content
 			case []any:
@@ -107,6 +109,8 @@ func chatToResponsesRequest(raw []byte) ([]byte, *chatFrontRequest, error) {
 					return nil, nil, err
 				}
 				output = parts
+			default:
+				output = responsesTextValue(content)
 			}
 			input = append(input, map[string]any{"type": "function_call_output", "call_id": id, "output": output})
 		default:
@@ -135,8 +139,22 @@ func chatToResponsesRequest(raw []byte) ([]byte, *chatFrontRequest, error) {
 	case string:
 		body["tool_choice"] = choice
 	case map[string]any:
-		function, _ := choice["function"].(map[string]any)
-		body["tool_choice"] = map[string]any{"type": "function", "name": function["name"]}
+		choiceType, _ := choice["type"].(string)
+		name, _ := choice["name"].(string)
+		if function, ok := choice["function"].(map[string]any); ok && name == "" {
+			name, _ = function["name"].(string)
+		}
+		if strings.TrimSpace(name) == "" && (choiceType == "" || choiceType == "function") {
+			return nil, nil, fmt.Errorf("tool_choice function requires name")
+		}
+		if choiceType == "" {
+			choiceType = "function"
+		}
+		mapped := map[string]any{"type": choiceType}
+		if strings.TrimSpace(name) != "" {
+			mapped["name"] = strings.TrimSpace(name)
+		}
+		body["tool_choice"] = mapped
 	}
 	if request.ParallelToolCalls != nil {
 		body["parallel_tool_calls"] = *request.ParallelToolCalls
@@ -206,10 +224,18 @@ func chatFrontContent(value any, textType string) ([]any, error) {
 				}
 			case "image_url":
 				url, _ := part["image_url"].(string)
+				detail, _ := part["detail"].(string)
 				if nested, ok := part["image_url"].(map[string]any); ok {
 					url, _ = nested["url"].(string)
+					if detail == "" {
+						detail, _ = nested["detail"].(string)
+					}
 				}
-				parts = append(parts, map[string]any{"type": "input_image", "image_url": url})
+				imgPart := map[string]any{"type": "input_image", "image_url": url}
+				if norm := normalizeImageDetail(detail); norm != "" {
+					imgPart["detail"] = norm
+				}
+				parts = append(parts, imgPart)
 			default:
 				return nil, fmt.Errorf("unsupported Chat Completions content part %q", part["type"])
 			}
@@ -263,6 +289,7 @@ type chatFrontWriter struct {
 	pending      bytes.Buffer
 	body         bytes.Buffer
 	toolIndexes  map[int]int
+	toolArgsSeen map[int]bool
 	sawToolCall  bool
 	sentRole     bool
 	done         bool
@@ -272,7 +299,7 @@ func newChatFrontWriter(target http.ResponseWriter, model string, includeUsage b
 	return &chatFrontWriter{
 		target: target, header: make(http.Header), status: http.StatusOK, model: model,
 		id: "chatcmpl-" + strings.ReplaceAll(uuid.NewString(), "-", ""), created: time.Now().Unix(),
-		includeUsage: includeUsage, toolIndexes: make(map[int]int),
+		includeUsage: includeUsage, toolIndexes: make(map[int]int), toolArgsSeen: make(map[int]bool),
 	}
 }
 
@@ -395,29 +422,104 @@ func (w *chatFrontWriter) streamEvent(raw []byte) error {
 		if err := w.ensureRole(); err != nil {
 			return err
 		}
+		outIdx := chatFrontInt(event["output_index"])
 		index := len(w.toolIndexes)
-		w.toolIndexes[chatFrontInt(event["output_index"])] = index
+		w.toolIndexes[outIdx] = index
 		w.sawToolCall = true
+		initialArgs := ""
+		if item["type"] == "function_call" {
+			if args := stringValue(item["arguments"]); args != "" {
+				initialArgs = args
+				w.toolArgsSeen[outIdx] = true
+			}
+		}
 		return w.chunk(map[string]any{"tool_calls": []any{map[string]any{
 			"index": index, "id": item["call_id"], "type": "function",
-			"function": map[string]any{"name": item["name"], "arguments": ""},
+			"function": map[string]any{"name": item["name"], "arguments": initialArgs},
 		}}}, nil, nil)
 	case "response.function_call_arguments.delta":
-		index, ok := w.toolIndexes[chatFrontInt(event["output_index"])]
+		outIdx := chatFrontInt(event["output_index"])
+		index, ok := w.toolIndexes[outIdx]
 		if !ok {
 			return nil
+		}
+		if delta := stringValue(event["delta"]); delta != "" {
+			w.toolArgsSeen[outIdx] = true
 		}
 		return w.chunk(map[string]any{"tool_calls": []any{map[string]any{
 			"index": index, "function": map[string]any{"arguments": event["delta"]},
 		}}}, nil, nil)
+	case "response.function_call_arguments.done":
+		outIdx := chatFrontInt(event["output_index"])
+		index, ok := w.toolIndexes[outIdx]
+		if !ok || w.toolArgsSeen[outIdx] {
+			return nil
+		}
+		args := stringValue(event["arguments"])
+		if args == "" {
+			return nil
+		}
+		w.toolArgsSeen[outIdx] = true
+		return w.chunk(map[string]any{"tool_calls": []any{map[string]any{
+			"index": index, "function": map[string]any{"arguments": args},
+		}}}, nil, nil)
 	case "response.custom_tool_call_input.done":
-		index, ok := w.toolIndexes[chatFrontInt(event["output_index"])]
+		outIdx := chatFrontInt(event["output_index"])
+		index, ok := w.toolIndexes[outIdx]
 		if !ok {
 			return nil
 		}
+		w.toolArgsSeen[outIdx] = true
 		encoded, _ := json.Marshal(map[string]any{"input": stringValue(event["input"])})
 		return w.chunk(map[string]any{"tool_calls": []any{map[string]any{
 			"index": index, "function": map[string]any{"arguments": string(encoded)},
+		}}}, nil, nil)
+	case "response.output_item.done":
+		item, _ := event["item"].(map[string]any)
+		itemType := stringValue(item["type"])
+		if itemType != "function_call" && itemType != "custom_tool_call" {
+			return nil
+		}
+		outIdx := chatFrontInt(event["output_index"])
+		index, exists := w.toolIndexes[outIdx]
+		if !exists {
+			if err := w.ensureRole(); err != nil {
+				return err
+			}
+			index = len(w.toolIndexes)
+			w.toolIndexes[outIdx] = index
+			w.sawToolCall = true
+			args := ""
+			if itemType == "function_call" {
+				args = stringValue(item["arguments"])
+			} else {
+				encoded, _ := json.Marshal(map[string]any{"input": stringValue(item["input"])})
+				args = string(encoded)
+			}
+			if args != "" {
+				w.toolArgsSeen[outIdx] = true
+			}
+			return w.chunk(map[string]any{"tool_calls": []any{map[string]any{
+				"index": index, "id": item["call_id"], "type": "function",
+				"function": map[string]any{"name": item["name"], "arguments": args},
+			}}}, nil, nil)
+		}
+		if w.toolArgsSeen[outIdx] {
+			return nil
+		}
+		args := ""
+		if itemType == "function_call" {
+			args = stringValue(item["arguments"])
+		} else if inputVal, hasInput := item["input"]; hasInput {
+			encoded, _ := json.Marshal(map[string]any{"input": stringValue(inputVal)})
+			args = string(encoded)
+		}
+		if args == "" {
+			return nil
+		}
+		w.toolArgsSeen[outIdx] = true
+		return w.chunk(map[string]any{"tool_calls": []any{map[string]any{
+			"index": index, "function": map[string]any{"arguments": args},
 		}}}, nil, nil)
 	case "response.completed", "response.incomplete":
 		response, _ := event["response"].(map[string]any)

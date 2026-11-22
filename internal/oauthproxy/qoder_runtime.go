@@ -763,6 +763,8 @@ func qoderFallbackModels() []qoderModel {
 }
 
 type qoderToolState struct {
+	index    int
+	order    int
 	id, name string
 	args     strings.Builder
 }
@@ -771,7 +773,9 @@ const qoderMaxSSELineBytes = 16 << 20
 
 func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *responseAssembler) (qoderStreamUsage, error) {
 	usage := qoderStreamUsage{}
-	tools := make(map[int]*qoderToolState)
+	tools := make(map[string]*qoderToolState)
+	activeSlot := make(map[int]string)
+	nextSlot := 0
 	retainedArgs := 0
 	terminalSeen := false
 	scanner := bufio.NewScanner(reader)
@@ -882,13 +886,23 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 				}
 			}
 			for _, toolCall := range delta.ToolCalls {
-				state := tools[toolCall.Index]
+				key := activeSlot[toolCall.Index]
+				if key == "" {
+					key = fmt.Sprintf("%d", toolCall.Index)
+				}
+				state := tools[key]
+				if state != nil && toolCall.ID != "" && state.id != "" && state.id != toolCall.ID {
+					nextSlot++
+					key = fmt.Sprintf("%d#%d", toolCall.Index, nextSlot)
+					state = nil
+				}
 				if state == nil {
 					if len(tools) >= assemblerMaxToolCalls {
 						return usage, fmt.Errorf("Qoder tool call stream exceeds %d concurrent tool calls", assemblerMaxToolCalls)
 					}
-					state = &qoderToolState{}
-					tools[toolCall.Index] = state
+					state = &qoderToolState{index: toolCall.Index, order: nextSlot}
+					tools[key] = state
+					activeSlot[toolCall.Index] = key
 				}
 				if toolCall.ID != "" {
 					state.id = toolCall.ID
@@ -935,21 +949,41 @@ func processQoderEventStream(ctx context.Context, reader io.Reader, assembler *r
 	if err := assembler.flushInlineContent(); err != nil {
 		return usage, err
 	}
-	indexes := make([]int, 0, len(tools))
-	for index := range tools {
-		indexes = append(indexes, index)
+	type indexedQoderTool struct {
+		key   string
+		state *qoderToolState
 	}
-	sort.Ints(indexes)
-	for _, index := range indexes {
-		if err := assembler.validateToolUseName(tools[index].name); err != nil {
-			return usage, err
+	ordered := make([]indexedQoderTool, 0, len(tools))
+	for key, state := range tools {
+		ordered = append(ordered, indexedQoderTool{key: key, state: state})
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].state.index != ordered[j].state.index {
+			return ordered[i].state.index < ordered[j].state.index
+		}
+		if ordered[i].state.order != ordered[j].state.order {
+			return ordered[i].state.order < ordered[j].state.order
+		}
+		return ordered[i].key < ordered[j].key
+	})
+	truncated := assembler.stopReason == stopMaxTokens
+	if !truncated {
+		for _, entry := range ordered {
+			if err := assembler.validateToolUseName(entry.state.name); err != nil {
+				return usage, err
+			}
 		}
 	}
-	for _, index := range indexes {
-		state := tools[index]
+	for _, entry := range ordered {
+		state := entry.state
 		id := strings.TrimSpace(state.id)
 		if id == "" {
-			id = "toolu_" + qoderStableID("qoder-tool", state.name, state.args.String(), fmt.Sprintf("%d", index))
+			id = "toolu_" + qoderStableID("qoder-tool", state.name, state.args.String(), entry.key)
+		}
+		if truncated {
+			if _, _, _, err := assembler.validateToolUse(state.name, state.args.String()); err != nil {
+				continue
+			}
 		}
 		if err := assembler.addToolUse(id, state.name, state.args.String()); err != nil {
 			return usage, err

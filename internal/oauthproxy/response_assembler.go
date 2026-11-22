@@ -274,10 +274,14 @@ func (a *responseAssembler) outputItems() []map[string]any {
 
 // envelope renders the response object for a lifecycle event or final body.
 func (a *responseAssembler) envelope(status string) map[string]any {
+	parallelToolCalls := true
+	if a.request != nil && a.request.parallelToolCalls != nil {
+		parallelToolCalls = *a.request.parallelToolCalls
+	}
 	response := map[string]any{
 		"id": a.responseID, "object": "response", "created_at": a.createdAt, "status": status,
 		"model": a.request.clientModel, "output": a.outputItems(), "usage": a.usage(),
-		"error": nil, "incomplete_details": nil, "parallel_tool_calls": true,
+		"error": nil, "incomplete_details": nil, "parallel_tool_calls": parallelToolCalls,
 	}
 	if status == "incomplete" {
 		reason := "max_output_tokens"
@@ -461,12 +465,9 @@ func (a *responseAssembler) validateToolUseName(name string) error {
 	return nil
 }
 
-// addToolUse emits one complete tool call. name is the name the upstream
-// returned; it is mapped back to the client's own declaration.
-func (a *responseAssembler) addToolUse(id, name, partialJSON string) error {
-	if len(a.blocks) >= assemblerMaxBlocks {
-		return fmt.Errorf("upstream response exceeds %d content blocks", assemblerMaxBlocks)
-	}
+// validateToolUse checks that name resolves to a declared tool and that
+// partialJSON is a valid JSON object satisfying the tool kind's contract.
+func (a *responseAssembler) validateToolUse(name, partialJSON string) (toolSpec, map[string]any, string, error) {
 	if original := a.request.toolNameMap[name]; original != "" {
 		name = original
 	}
@@ -475,25 +476,51 @@ func (a *responseAssembler) addToolUse(id, name, partialJSON string) error {
 	}
 	var input map[string]any
 	if err := decodeProtocolJSON([]byte(partialJSON), &input); err != nil || input == nil {
-		return fmt.Errorf("upstream tool %s returned invalid JSON input", safeToolNameForError(name))
+		return toolSpec{}, nil, "", fmt.Errorf("upstream tool %s returned invalid JSON input", safeToolNameForError(name))
 	}
 	spec, declared := a.request.tools[name]
 	if a.request.tools != nil && !declared {
-		return fmt.Errorf("provider called a tool outside the declared tool list: %q", safeToolNameForError(name))
+		return toolSpec{}, nil, "", fmt.Errorf("provider called a tool outside the declared tool list: %q", safeToolNameForError(name))
 	}
 	if !declared {
 		spec = toolSpec{Name: name, Kind: "function", WireName: name}
 	}
-	if spec.Kind == "custom" {
+	switch spec.Kind {
+	case "custom":
 		if _, ok := input["input"].(string); !ok {
-			return fmt.Errorf("provider returned invalid custom tool input")
+			return toolSpec{}, nil, "", fmt.Errorf("provider returned invalid custom tool input")
 		}
-	}
-	if spec.Kind == "computer" {
+	case "computer":
 		if err := validateComputerToolInput(input); err != nil {
-			return err
+			return toolSpec{}, nil, "", err
+		}
+	case "shell":
+		if err := validateShellToolInput(input); err != nil {
+			return toolSpec{}, nil, "", err
+		}
+	case "local_shell":
+		if err := validateLocalShellToolInput(input); err != nil {
+			return toolSpec{}, nil, "", err
+		}
+	case "apply_patch":
+		if err := validateApplyPatchToolInput(input); err != nil {
+			return toolSpec{}, nil, "", err
 		}
 	}
+	return spec, input, partialJSON, nil
+}
+
+// addToolUse emits one complete tool call. name is the name the upstream
+// returned; it is mapped back to the client's own declaration.
+func (a *responseAssembler) addToolUse(id, name, partialJSON string) error {
+	if len(a.blocks) >= assemblerMaxBlocks {
+		return fmt.Errorf("upstream response exceeds %d content blocks", assemblerMaxBlocks)
+	}
+	spec, input, normalizedJSON, err := a.validateToolUse(name, partialJSON)
+	if err != nil {
+		return err
+	}
+	partialJSON = normalizedJSON
 	if err := a.retain(len(partialJSON)); err != nil {
 		return err
 	}
@@ -665,9 +692,15 @@ func (a *responseAssembler) finish() error {
 	if err := a.flushInlineContent(); err != nil {
 		return err
 	}
-	for id, tool := range a.tools {
-		if strings.TrimSpace(tool.input.String()) != "" {
-			return fmt.Errorf("upstream tool %s (%s) ended before stop=true", tool.name, id)
+	if a.stopReason == stopMaxTokens {
+		// Upstream hit token limit mid-tool-call; drop truncated accumulators so
+		// the caller receives response.incomplete (max_output_tokens) cleanly.
+		clear(a.tools)
+	} else {
+		for id, tool := range a.tools {
+			if strings.TrimSpace(tool.input.String()) != "" {
+				return fmt.Errorf("upstream tool %s (%s) ended before stop=true", safeToolNameForError(tool.name), id)
+			}
 		}
 	}
 	if err := a.closeActive(); err != nil {
@@ -826,4 +859,52 @@ func validateComputerToolInput(input map[string]any) error {
 		return nil
 	}
 	return fmt.Errorf("provider returned invalid computer tool action")
+}
+
+func validateShellToolInput(input map[string]any) error {
+	payload := input
+	if nested, ok := payload["action"].(map[string]any); ok {
+		payload = nested
+	}
+	commands, ok := payload["commands"].([]any)
+	if !ok || len(commands) == 0 {
+		return fmt.Errorf("provider returned invalid shell tool input")
+	}
+	for _, cmd := range commands {
+		text, ok := cmd.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return fmt.Errorf("provider returned invalid shell tool input")
+		}
+	}
+	return nil
+}
+
+func validateLocalShellToolInput(input map[string]any) error {
+	payload := input
+	if nested, ok := payload["action"].(map[string]any); ok {
+		payload = nested
+	}
+	command, ok := payload["command"].([]any)
+	if !ok || len(command) == 0 {
+		return fmt.Errorf("provider returned invalid local_shell tool input")
+	}
+	for _, arg := range command {
+		if _, ok := arg.(string); !ok {
+			return fmt.Errorf("provider returned invalid local_shell tool input")
+		}
+	}
+	return nil
+}
+
+func validateApplyPatchToolInput(input map[string]any) error {
+	payload := input
+	if nested, ok := payload["operation"].(map[string]any); ok {
+		payload = nested
+	}
+	opType, _ := payload["type"].(string)
+	path, _ := payload["path"].(string)
+	if strings.TrimSpace(opType) == "" || strings.TrimSpace(path) == "" {
+		return fmt.Errorf("provider returned invalid apply_patch tool input")
+	}
+	return nil
 }

@@ -208,18 +208,22 @@ func qoderTransformTools(tools []conversationTool) ([]any, error) {
 		if name == "" {
 			return nil, fmt.Errorf("tool name is required")
 		}
-		var parameters any = map[string]any{"type": "object", "properties": map[string]any{}}
-		if len(tool.Parameters) > 0 && string(tool.Parameters) != "null" {
-			if err := json.Unmarshal(tool.Parameters, &parameters); err != nil {
+		schemaBytes := tool.Parameters
+		if len(schemaBytes) == 0 || string(schemaBytes) == "null" {
+			schemaBytes = json.RawMessage(`{"type":"object","properties":{}}`)
+		} else {
+			var probe map[string]any
+			if err := decodeProtocolJSON(schemaBytes, &probe); err != nil {
 				return nil, fmt.Errorf("tool %s has invalid parameters: %w", name, err)
 			}
+			schemaBytes = ensureObjectSchema(schemaBytes)
 		}
 		transformed = append(transformed, map[string]any{
 			"type": "function",
 			"function": map[string]any{
 				"name":        name,
 				"description": tool.Description,
-				"parameters":  parameters,
+				"parameters":  schemaBytes,
 			},
 		})
 	}

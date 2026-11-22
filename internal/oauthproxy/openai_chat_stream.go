@@ -14,6 +14,7 @@ import (
 // fragments and are joined before emission.
 type chatToolCall struct {
 	index     int
+	order     int
 	id        string
 	name      string
 	arguments strings.Builder
@@ -23,6 +24,8 @@ type chatToolCall struct {
 type chatCompletionsStreamState struct {
 	assembler    *responseAssembler
 	tools        map[string]*chatToolCall
+	activeSlot   map[int]string
+	nextSlot     int
 	usage        map[string]any
 	retained     int
 	terminalSeen bool
@@ -154,17 +157,36 @@ func (s *chatCompletionsStreamState) process(payload []byte) error {
 }
 
 func (s *chatCompletionsStreamState) accumulateToolCall(raw map[string]any) error {
+	if s.tools == nil {
+		s.tools = make(map[string]*chatToolCall)
+	}
+	if s.activeSlot == nil {
+		s.activeSlot = make(map[int]string)
+	}
 	index := intValue(raw["index"])
-	key := fmt.Sprintf("%d", index)
+	id := stringValue(raw["id"])
+	key := s.activeSlot[index]
+	if key == "" {
+		key = fmt.Sprintf("%d", index)
+	}
 	call := s.tools[key]
+	// Some OpenAI-compatible gateways omit index (defaulting every parallel call
+	// to 0) and distinguish concurrent calls only by id. Open a new slot instead
+	// of concatenating two distinct calls into one corrupted entry.
+	if call != nil && id != "" && call.id != "" && call.id != id {
+		s.nextSlot++
+		key = fmt.Sprintf("%d#%d", index, s.nextSlot)
+		call = nil
+	}
 	if call == nil {
 		if len(s.tools) >= assemblerMaxToolCalls {
 			return fmt.Errorf("OpenAI Chat tool call stream exceeds %d concurrent tool calls", assemblerMaxToolCalls)
 		}
-		call = &chatToolCall{index: index}
+		call = &chatToolCall{index: index, order: s.nextSlot}
 		s.tools[key] = call
+		s.activeSlot[index] = key
 	}
-	if id := stringValue(raw["id"]); id != "" {
+	if id != "" {
 		call.id = id
 	}
 	if function := mapValue(raw["function"]); function != nil {
@@ -247,19 +269,36 @@ func chatValidateToolName(name string, declared map[string]struct{}) error {
 // emitTools flushes accumulated calls in index order. With a request-bound
 // catalog, every name must be a complete declaration before any call is emitted.
 func (s *chatCompletionsStreamState) emitTools() error {
-	indices := make([]int, 0, len(s.tools))
-	for _, call := range s.tools {
-		indices = append(indices, call.index)
+	type indexedCall struct {
+		key  string
+		call *chatToolCall
 	}
-	sort.Ints(indices)
-	// Validate the whole batch before exposing even its first function call.
-	for _, index := range indices {
-		if err := chatValidateToolName(s.tools[fmt.Sprintf("%d", index)].name, s.assembler.request.declaredToolNames); err != nil {
-			return err
+	ordered := make([]indexedCall, 0, len(s.tools))
+	for key, call := range s.tools {
+		if call != nil {
+			ordered = append(ordered, indexedCall{key: key, call: call})
 		}
 	}
-	for _, index := range indices {
-		call := s.tools[fmt.Sprintf("%d", index)]
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].call.index != ordered[j].call.index {
+			return ordered[i].call.index < ordered[j].call.index
+		}
+		if ordered[i].call.order != ordered[j].call.order {
+			return ordered[i].call.order < ordered[j].call.order
+		}
+		return ordered[i].key < ordered[j].key
+	})
+	truncated := s.assembler.stopReason == stopMaxTokens
+	if !truncated {
+		// Validate the whole batch before exposing even its first function call.
+		for _, entry := range ordered {
+			if err := chatValidateToolName(entry.call.name, s.assembler.request.declaredToolNames); err != nil {
+				return err
+			}
+		}
+	}
+	for _, entry := range ordered {
+		call := entry.call
 		if call == nil || call.emitted {
 			continue
 		}
@@ -270,14 +309,25 @@ func (s *chatCompletionsStreamState) emitTools() error {
 		}
 		name := call.name
 		if strings.TrimSpace(name) == "" {
-			name = fmt.Sprintf("tool_%d", index)
+			if truncated {
+				continue
+			}
+			name = fmt.Sprintf("tool_%d", call.index)
 		}
 		arguments := call.arguments.String()
 		if strings.TrimSpace(arguments) == "" {
 			arguments = "{}"
 		}
+		if truncated {
+			if err := chatValidateToolName(name, s.assembler.request.declaredToolNames); err != nil {
+				continue
+			}
+			if _, _, _, err := s.assembler.validateToolUse(name, arguments); err != nil {
+				continue
+			}
+		}
 		if err := s.assembler.addToolUse(id, name, arguments); err != nil {
-			return fmt.Errorf("tool %s returned invalid JSON input: %w", name, err)
+			return err
 		}
 	}
 	return nil
@@ -314,14 +364,31 @@ func processChatCompletionsNonStream(body []byte, assembler *responseAssembler) 
 			return err
 		}
 	}
-	for index, rawCall := range sliceValue(message["tool_calls"]) {
+	if finish := stringValue(choice["finish_reason"]); finish != "" {
+		if finish != "stop" || assembler.stopReason != "refusal" {
+			assembler.stopReason = chatStopReason(finish)
+		}
+	}
+	truncated := assembler.stopReason == stopMaxTokens
+	rawCalls := sliceValue(message["tool_calls"])
+	if !truncated {
+		// Validate the whole batch before exposing even its first function call.
+		for _, rawCall := range rawCalls {
+			call := mapValue(rawCall)
+			function := mapValue(call["function"])
+			if err := chatValidateToolName(stringValue(function["name"]), assembler.request.declaredToolNames); err != nil {
+				return err
+			}
+		}
+	}
+	for index, rawCall := range rawCalls {
 		call := mapValue(rawCall)
 		function := mapValue(call["function"])
 		name := stringValue(function["name"])
-		if err := chatValidateToolName(name, assembler.request.declaredToolNames); err != nil {
-			return err
-		}
 		if strings.TrimSpace(name) == "" {
+			if truncated {
+				continue
+			}
 			name = fmt.Sprintf("tool_%d", index)
 		}
 		id := stringValue(call["id"])
@@ -332,13 +399,16 @@ func processChatCompletionsNonStream(body []byte, assembler *responseAssembler) 
 		if strings.TrimSpace(arguments) == "" {
 			arguments = "{}"
 		}
-		if err := assembler.addToolUse(id, name, arguments); err != nil {
-			return fmt.Errorf("tool %s returned invalid JSON input: %w", name, err)
+		if truncated {
+			if err := chatValidateToolName(name, assembler.request.declaredToolNames); err != nil {
+				continue
+			}
+			if _, _, _, err := assembler.validateToolUse(name, arguments); err != nil {
+				continue
+			}
 		}
-	}
-	if finish := stringValue(choice["finish_reason"]); finish != "" {
-		if finish != "stop" || assembler.stopReason != "refusal" {
-			assembler.stopReason = chatStopReason(finish)
+		if err := assembler.addToolUse(id, name, arguments); err != nil {
+			return err
 		}
 	}
 	chatApplyUsage(assembler, mapValue(payload["usage"]))
