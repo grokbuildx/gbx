@@ -36,13 +36,26 @@ const ReleaseArchiveSuffix = ".gz"
 // archive cannot fill the disk. Release binaries are about 30 MiB.
 var MaxReleaseBinaryBytes int64 = 256 << 20
 
+const (
+	defaultLatestReleaseAPI    = "https://api.github.com/repos/grokbuildx/gbx/releases/latest"
+	defaultLatestReleaseWebURL = "https://github.com/grokbuildx/gbx/releases/latest"
+	defaultNpmRegistryBase     = "https://registry.npmjs.org"
+)
+
 // LatestReleaseAPI is the GitHub endpoint naming the newest published release.
 // It is the version source of truth: the GitHub release and its assets exist
 // before the npm job that publishes the matching package has run.
-var LatestReleaseAPI = "https://api.github.com/repos/grokbuildx/gbx/releases/latest"
+var LatestReleaseAPI = defaultLatestReleaseAPI
+
+// LatestReleaseWebURL is the non-API GitHub release redirect fallback used when
+// LatestReleaseAPI is rate-limited (HTTP 403/429) or unreachable.
+var LatestReleaseWebURL = defaultLatestReleaseWebURL
+
+// NpmRegistryBase is the default npm registry used for version checks.
+var NpmRegistryBase = defaultNpmRegistryBase
 
 // HTTPClient is used for version metadata lookups (GitHub release and npm registry).
-var HTTPClient = &http.Client{Timeout: 5 * time.Second}
+var HTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // RunCommand executes an external update command (npm/go) attached to stdio.
 func RunCommand(name string, args ...string) error {
@@ -110,34 +123,72 @@ func GoBinDirs() []string {
 // both the fallback when the GitHub API is unreachable (it is blocked on some
 // networks) and the gate on the npm method.
 func LatestVersions() (latest string, npmReady bool) {
-	release, releaseErr := FetchLatestReleaseVersion()
-	npm, npmErr := FetchLatestNpmVersion()
+	latest, npmReady, _ = LatestVersionsDetailed()
+	return latest, npmReady
+}
+
+// LatestVersionsDetailed queries GitHub release and npm registry concurrently,
+// returning a diagnostic error when neither source answered.
+func LatestVersionsDetailed() (latest string, npmReady bool, err error) {
+	var (
+		release, npm       string
+		releaseErr, npmErr error
+		done               = make(chan struct{})
+	)
+	go func() {
+		npm, npmErr = FetchLatestNpmVersion()
+		close(done)
+	}()
+	release, releaseErr = FetchLatestReleaseVersion()
+	<-done
+
 	switch {
 	case releaseErr == nil:
 		latest = release
 	case npmErr == nil:
 		latest = npm
 	default:
-		return "unknown", false
+		return "unknown", false, fmt.Errorf("GitHub: %v; npm: %v", releaseErr, npmErr)
 	}
-	return latest, npmErr == nil && npm != "unknown" && CanonicalReleaseTag(npm) == CanonicalReleaseTag(latest)
+	return latest, npmErr == nil && npm != "unknown" && CanonicalReleaseTag(npm) == CanonicalReleaseTag(latest), nil
 }
 
 // FetchLatestReleaseVersion names the newest published GitHub release.
+// When the default GitHub JSON API is rate-limited or unreachable, it falls
+// back to the unthrottled /releases/latest HTTP redirect header.
 func FetchLatestReleaseVersion() (string, error) {
-	req, err := http.NewRequest(http.MethodGet, LatestReleaseAPI, nil)
-	if err != nil {
+	tag, unstable, err := fetchLatestReleaseAPI(LatestReleaseAPI)
+	if err == nil {
+		return tag, nil
+	}
+	// If the API returned an explicit draft/prerelease status, honor that
+	// rejection instead of bypassing it through the web redirect.
+	if unstable {
 		return "", err
 	}
+	if LatestReleaseAPI == defaultLatestReleaseAPI && LatestReleaseWebURL != "" {
+		if webTag, webErr := fetchLatestReleaseRedirect(LatestReleaseWebURL); webErr == nil {
+			return webTag, nil
+		}
+	}
+	return "", err
+}
+
+func fetchLatestReleaseAPI(endpoint string) (tag string, unstable bool, err error) {
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", false, err
+	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "gbx-selfupdate")
 	resp, err := HTTPClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP status %d", resp.StatusCode)
+		return "", false, fmt.Errorf("HTTP status %d", resp.StatusCode)
 	}
 
 	var result struct {
@@ -146,20 +197,155 @@ func FetchLatestReleaseVersion() (string, error) {
 		Prerelease bool   `json:"prerelease"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if result.TagName == "" {
-		return "", fmt.Errorf("empty tag in response")
+		return "", false, fmt.Errorf("empty tag in response")
 	}
 	if result.Draft || result.Prerelease {
-		return "", fmt.Errorf("latest release %s is not a stable release", result.TagName)
+		return "", true, fmt.Errorf("latest release %s is not a stable release", result.TagName)
 	}
-	return CanonicalReleaseTag(result.TagName), nil
+	return CanonicalReleaseTag(result.TagName), false, nil
+}
+
+func fetchLatestReleaseRedirect(webURL string) (string, error) {
+	client := &http.Client{
+		Timeout:   HTTPClient.Timeout,
+		Transport: HTTPClient.Transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequest(http.MethodHead, webURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "gbx-selfupdate")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+		return "", fmt.Errorf("HTTP status %d", resp.StatusCode)
+	}
+	return parseReleaseTagFromRedirect(resp.Header.Get("Location"))
+}
+
+func parseReleaseTagFromRedirect(location string) (string, error) {
+	const marker = "/releases/tag/"
+	idx := strings.Index(location, marker)
+	if idx < 0 {
+		return "", fmt.Errorf("unexpected release redirect %q", location)
+	}
+	tag := location[idx+len(marker):]
+	if cut := strings.IndexAny(tag, "?#/"); cut >= 0 {
+		tag = tag[:cut]
+	}
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return "", fmt.Errorf("empty release tag in redirect %q", location)
+	}
+	return CanonicalReleaseTag(tag), nil
 }
 
 // FetchLatestNpmVersion names the newest version of the npm launcher package.
+// When using the default transport, a custom registry configured via
+// npm_config_registry or ~/.npmrc (e.g. a regional mirror) is tried first
+// before falling back to registry.npmjs.org.
 func FetchLatestNpmVersion() (string, error) {
-	resp, err := HTTPClient.Get("https://registry.npmjs.org/@grokbuildx/gbx/latest")
+	bases := npmRegistryCandidates()
+	var lastErr error
+	for _, base := range bases {
+		version, err := fetchLatestNpmVersionFrom(base)
+		if err == nil {
+			return version, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		return "", fmt.Errorf("no npm registry configured")
+	}
+	return "", lastErr
+}
+
+func npmRegistryCandidates() []string {
+	defaultBase := strings.TrimRight(strings.TrimSpace(NpmRegistryBase), "/")
+	if defaultBase == "" {
+		defaultBase = defaultNpmRegistryBase
+	}
+	// Preserve deterministic isolation when unit tests inject a custom Transport.
+	if HTTPClient.Transport != nil {
+		return []string{defaultBase}
+	}
+	var out []string
+	if configured := ConfiguredNpmRegistry(); configured != "" && !strings.EqualFold(configured, defaultBase) {
+		out = append(out, configured)
+	}
+	out = append(out, defaultBase)
+	return out
+}
+
+// ConfiguredNpmRegistry returns the user's configured npm registry for
+// @grokbuildx (from npm_config_registry env or ~/.npmrc), normalized without a
+// trailing slash, or "" when unset.
+func ConfiguredNpmRegistry() string {
+	var npmrc string
+	if home, err := os.UserHomeDir(); err == nil {
+		if raw, err := os.ReadFile(filepath.Join(home, ".npmrc")); err == nil {
+			npmrc = string(raw)
+		}
+	}
+	return parseConfiguredNpmRegistry(os.Getenv("NPM_CONFIG_REGISTRY"), os.Getenv("npm_config_registry"), npmrc)
+}
+
+func parseConfiguredNpmRegistry(envUpper, envLower, npmrc string) string {
+	for _, envVal := range []string{envUpper, envLower} {
+		if u := sanitizeRegistryURL(envVal); u != "" {
+			return u
+		}
+	}
+	var fallback string
+	for _, line := range strings.Split(npmrc, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		val = sanitizeRegistryURL(strings.Trim(strings.TrimSpace(val), `"'`))
+		if val == "" {
+			continue
+		}
+		if key == "@grokbuildx:registry" {
+			return val
+		}
+		if key == "registry" && fallback == "" {
+			fallback = val
+		}
+	}
+	return fallback
+}
+
+func sanitizeRegistryURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "https://") && !strings.HasPrefix(raw, "http://") {
+		return ""
+	}
+	return strings.TrimRight(raw, "/")
+}
+
+func fetchLatestNpmVersionFrom(registryBase string) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(registryBase, "/")+"/@grokbuildx/gbx/latest", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "gbx-selfupdate")
+	resp, err := HTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}

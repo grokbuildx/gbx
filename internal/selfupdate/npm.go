@@ -40,9 +40,14 @@ func NpmGlobalPaths(root, goos string) (NpmInstallPaths, error) {
 	}, nil
 }
 
-// NpmUpdateArgs constructs the npm install arguments pinning version.
+// NpmUpdateArgs constructs the npm install arguments pinning version, or
+// falling back to @latest when the version check could not resolve a tag.
 func NpmUpdateArgs(version string) []string {
-	return []string{"install", "-g", "@grokbuildx/gbx@" + NpmPackageVersion(version), "--include=optional", "--prefer-online"}
+	spec := "latest"
+	if trimmed := strings.TrimSpace(version); trimmed != "" && trimmed != "unknown" {
+		spec = NpmPackageVersion(trimmed)
+	}
+	return []string{"install", "-g", "@grokbuildx/gbx@" + spec, "--include=optional", "--prefer-online"}
 }
 
 // UpdateViaNpm runs global npm installation, verifies the resulting binary and
@@ -135,7 +140,8 @@ func VerifyNpmDestination(paths NpmInstallPaths, want string) error {
 	return nil
 }
 
-// VerifyNpmInstall runs binary version and verifies it matches want.
+// VerifyNpmInstall runs binary version and verifies it matches want (or prints
+// any valid gbx version header when want is empty/"unknown").
 func VerifyNpmInstall(binary, want string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -146,8 +152,17 @@ func VerifyNpmInstall(binary, want string) error {
 	// The first line is gbx; later lines describe the bundled Grok Build.
 	got, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 	got = strings.TrimSpace(got)
-	if !strings.HasPrefix(got, "gbx version ") || CanonicalReleaseTag(strings.TrimPrefix(got, "gbx version ")) != CanonicalReleaseTag(want) {
-		return fmt.Errorf("npm-installed %s reports %q, expected gbx version %s", binary, got, CanonicalReleaseTag(want))
+	if !strings.HasPrefix(got, "gbx version ") {
+		return fmt.Errorf("npm-installed %s reports %q, expected gbx version output", binary, got)
+	}
+	gotVersion := strings.TrimSpace(strings.TrimPrefix(got, "gbx version "))
+	if gotVersion == "" {
+		return fmt.Errorf("npm-installed %s reported an empty version", binary)
+	}
+	if trimmed := strings.TrimSpace(want); trimmed != "" && trimmed != "unknown" {
+		if CanonicalReleaseTag(gotVersion) != CanonicalReleaseTag(trimmed) {
+			return fmt.Errorf("npm-installed %s reports %q, expected gbx version %s", binary, got, CanonicalReleaseTag(trimmed))
+		}
 	}
 	return nil
 }

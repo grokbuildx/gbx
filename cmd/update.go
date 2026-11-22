@@ -43,9 +43,13 @@ func runUpdate(method string) error {
 	fmt.Printf("Current version: %s\n", Version)
 	fmt.Println("Checking for updates...")
 
-	latestVersion, npmReady := selfupdate.LatestVersions()
+	latestVersion, npmReady, checkErr := selfupdate.LatestVersionsDetailed()
 	if latestVersion == "unknown" {
-		fmt.Println("⚠️  Could not check for latest version: neither the GitHub release nor the npm registry answered")
+		if checkErr != nil {
+			fmt.Printf("⚠️  Could not check for latest version (%v)\n", checkErr)
+		} else {
+			fmt.Println("⚠️  Could not check for latest version: neither the GitHub release nor the npm registry answered")
+		}
 	} else {
 		fmt.Printf("Latest version: %s\n\n", latestVersion)
 	}
@@ -54,13 +58,16 @@ func runUpdate(method string) error {
 		return nil
 	}
 	// The npm package is published by a later job than the GitHub release, so a
-	// brand-new version can exist for hours without an npm package. Offering npm
-	// then installs an older version (or fails), and a launcher replaced by npm
-	// has to be reinstalled by hand.
+	// brand-new version can exist briefly without an npm package. Only hide npm
+	// when we confirmed a newer GitHub release that npm does not carry yet; if
+	// version lookup failed completely ("unknown"), keep npm selectable so users
+	// can still update via their configured npm registry/mirror.
+	npmLagging := latestVersion != "unknown" && !npmReady
+	npmAvailable := !npmLagging
 
 	detected := selfupdate.DetectInstallMethod()
 	suggested := detected
-	if detected == "npm" && !npmReady {
+	if detected == "npm" && npmLagging {
 		// npm can only install its own latest, which is still the old release.
 		// Replacing the binary in place leaves the npm package installed; on
 		// Windows a running executable cannot be replaced, so there is nothing
@@ -74,17 +81,17 @@ func runUpdate(method string) error {
 	case "":
 		if !term.IsTerminal(os.Stdin.Fd()) {
 			available := "self|go"
-			if npmReady {
+			if npmAvailable {
 				available = "self|npm|go"
 			}
 			return fmt.Errorf("no terminal to ask on; run gbx update --method %s (suggested) or %s", suggested, available)
 		}
-		if detected == "npm" && !npmReady {
+		if detected == "npm" && npmLagging {
 			fmt.Println(locale.T(
 				"npm 上还没有这个版本；本次只替换二进制文件，不重装 npm 包。",
 				"npm does not carry this version yet; replacing the binary in place instead of reinstalling the npm package."))
 		}
-		method = promptUpdateMethod(suggested, npmReady)
+		method = promptUpdateMethod(suggested, npmAvailable)
 	case "self", "npm", "go":
 	default:
 		return fmt.Errorf("unknown update method %q; use self, npm, or go", method)
@@ -104,7 +111,7 @@ func runUpdate(method string) error {
 		}
 		fmt.Println("\n🎉 Successfully updated gbx to the latest version!")
 	case "npm":
-		if !npmReady {
+		if npmLagging {
 			return fmt.Errorf("npm does not have %s yet (publishing lags the GitHub release); use --method self or go", latestVersion)
 		}
 		recovered, args, backup, err := selfupdate.UpdateViaNpm(latestVersion)
@@ -117,11 +124,15 @@ func runUpdate(method string) error {
 		if backup != "" {
 			fmt.Printf("Previous version retained at: %s\n", backup)
 		}
+		targetLabel := "the latest version"
+		if latestVersion != "unknown" {
+			targetLabel = selfupdate.CanonicalReleaseTag(latestVersion)
+		}
 		if recovered {
-			fmt.Printf("\nRecovered gbx %s with the release binary; npm installation did not complete.\n", selfupdate.CanonicalReleaseTag(latestVersion))
+			fmt.Printf("\nRecovered gbx %s with the release binary; npm installation did not complete.\n", targetLabel)
 			fmt.Println("To repair the npm package later: npm " + strings.Join(args, " "))
 		} else {
-			fmt.Printf("\n🎉 Successfully updated gbx to %s via npm!\n", selfupdate.CanonicalReleaseTag(latestVersion))
+			fmt.Printf("\n🎉 Successfully updated gbx to %s via npm!\n", targetLabel)
 		}
 		return nil
 	case "go":

@@ -126,3 +126,16 @@ func TestRunUpdateNpmDoesNotSkipRepairWhenBinaryIsCurrent(t *testing.T) {
 		t.Fatalf("explicit npm repair was skipped: %v", err)
 	}
 }
+
+func TestRunUpdateUnknownVersionKeepsNpmAvailable(t *testing.T) {
+	// Both GitHub and npm version checks fail: update must NOT claim npm lacks
+	// the version and must keep npm selectable (installing @latest).
+	withReleaseAndNpm(t, http.StatusForbidden, ``, http.StatusNotFound, `{}`)
+	err := runUpdate("")
+	if err == nil {
+		t.Fatal("expected non-TTY error asking for --method")
+	}
+	if !strings.Contains(err.Error(), "self|npm|go") {
+		t.Fatalf("npm was falsely removed when version lookup failed: %v", err)
+	}
+}
