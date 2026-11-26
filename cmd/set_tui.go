@@ -72,6 +72,7 @@ const (
 	rowTest     // Auto Configure
 	rowProtocol
 	rowFast
+	rowModelPool
 	rowDefaultModel
 	rowTestModels // Test model availability (optional, costs quota)
 	rowContext    // Context & Compact entry
@@ -117,6 +118,7 @@ type connDraft struct {
 
 	probeEndpoint string
 	probeAPIKey   string
+	probeModels   string
 
 	// detectedInputEndpoint / detectedInputKey hold the raw Endpoint/API Key the
 	// last successful detection ran against (before any normalization). A
@@ -124,14 +126,18 @@ type connDraft struct {
 	// an edit or cancelling a re-detection un-dirties the page naturally.
 	detectedInputEndpoint string
 	detectedInputKey      string
+	detectedInputModels   string
 
 	// inputEndpoint / inputAPIKey mirror the text-input widget values so
 	// switchSource can save and restore what the user typed without leaking the
 	// normalized endpoint back into the input box on the way back.
 	inputEndpoint string
 	inputAPIKey   string
+	inputModels   string
 
 	modelPoolFromDiscovery bool
+	catalogDiscovered      bool
+	manualModelsEdited     bool
 	hadLocalModelPool      bool
 	// connectionDirty reports that the current Endpoint/API Key inputs differ
 	// from the last successful detection. A dirty connection must be re-tested
@@ -210,13 +216,15 @@ type AdvancedConfigModel struct {
 	lastKeyCopyAt time.Time
 	lastUrlCopyAt time.Time
 
-	// The three text inputs (endpoint, API key, models.dev filter) are
-	// hand-rolled line editors: each owns a State[string] plus a focused flag.
+	// The text inputs (endpoint, API key, manual model pool, models.dev filter)
+	// are hand-rolled line editors: each owns a State[string] plus a focused flag.
 	// The API key editor is multi-line (Enter inserts a newline).
-	urlText    *tui.State[string]
-	keyText    *tui.State[string]
-	urlFocused bool
-	keyFocused bool
+	urlText       *tui.State[string]
+	keyText       *tui.State[string]
+	modelsText    *tui.State[string]
+	urlFocused    bool
+	keyFocused    bool
+	modelsFocused bool
 
 	// Input box widths, derived from panelWidth in updateInputWidths (and
 	// only used by Render; the hand-rolled editors carry no width of their own).
@@ -322,6 +330,7 @@ type modelFetchDoneMsg struct {
 	discoveredModelsRaw string
 	contextWindows      map[string]int
 	modelInfos          []protocol.ModelInfo
+	catalogDiscovered   bool
 	err                 error
 }
 
@@ -433,6 +442,9 @@ func (m *AdvancedConfigModel) visibleRows() []configRow {
 	modelTestReady := ready && (!m.usesModelsDev() || m.live().keyVerified)
 	// Render order matches View: Connection → Models → Context →
 	// Runtime (Fast) → Active → actions.
+	if m.source == sourceCustom {
+		rows = append(rows, configRow{kind: rowModelPool, editable: true})
+	}
 	rows = append(rows,
 		configRow{kind: rowDefaultModel, editable: ready},
 		configRow{kind: rowTestModels, editable: modelTestReady},
@@ -562,11 +574,11 @@ func (m *AdvancedConfigModel) canSave() bool {
 		if m.usesModelsDev() {
 			return m.live().keyVerified
 		}
-		return true
+		return countCSV(m.p.Model) > 0
 	}
 	// No detection yet: allow saving an existing provider whose connection inputs
 	// still match the persisted ones.
-	return m.live().autoConfigured && m.connectionUnchanged()
+	return m.live().autoConfigured && m.connectionUnchanged() && countCSV(m.p.Model) > 0
 }
 
 // requestSave runs the shared save gate: it blocks an unconfirmed save, arms
@@ -614,21 +626,39 @@ func (m *AdvancedConfigModel) connectionMatchesDetected() bool {
 		baselineEndpoint = strings.TrimSpace(m.p.Endpoint)
 		baselineKey = m.p.APIKey
 	}
-	return strings.TrimSpace(m.urlText.Get()) == strings.TrimSpace(baselineEndpoint) &&
-		m.keyText.Get() == baselineKey
+	if strings.TrimSpace(m.urlText.Get()) != strings.TrimSpace(baselineEndpoint) || m.keyText.Get() != baselineKey {
+		return false
+	}
+	// When the connection was verified via a user-entered model (because the
+	// gateway has no /models catalog), editing the model pool requires a fresh
+	// verification so unverified model IDs are checked before saving.
+	if m.source == sourceCustom && hasDetected && !m.live().catalogDiscovered && m.modelsText != nil {
+		return normalizeModelCSV(m.modelsText.Get()) == normalizeModelCSV(m.live().detectedInputModels)
+	}
+	return true
 }
 
 // syncConnectionInputs copies the current Endpoint/API Key inputs into the
-// provider draft. The normal flow does this inside Auto Configure's detection
-// step, but models.dev providers bypass the probe (their endpoint and protocol
-// come from metadata), so the entered API key would otherwise never reach the
-// persisted provider.
+// provider draft. For models.dev providers (which bypass Auto Configure), this
+// moves the typed API key into p.APIKey; for Custom providers, detectedEndpoint
+// already holds the normalized base URL when Endpoint was left untouched, so
+// only overwrite p.Endpoint when it is still empty or differs from inputEndpoint.
 func (m *AdvancedConfigModel) syncConnectionInputs() {
 	if m.usesOAuth() {
 		return
 	}
-	m.p.Endpoint = strings.TrimSpace(m.urlText.Get())
+	rawURL := strings.TrimSpace(m.urlText.Get())
+	if m.usesModelsDev() || strings.TrimSpace(m.p.Endpoint) == "" {
+		m.p.Endpoint = rawURL
+	} else if m.source == sourceCustom {
+		m.p.Endpoint = normalizeModelBaseURL(rawURL)
+	}
 	m.p.APIKey = m.keyText.Get()
+	if m.source == sourceCustom && m.modelsText != nil && (m.live().manualModelsEdited || !m.live().catalogDiscovered) {
+		if normalized := normalizeModelCSV(m.modelsText.Get()); normalized != "" {
+			m.p.Model = normalized
+		}
+	}
 }
 
 // connectionUnchanged reports whether the endpoint/api-key inputs still match
@@ -663,8 +693,10 @@ func NewAdvancedConfigModel(p *provider.Provider) *AdvancedConfigModel {
 		compactPreset:        compactPresetFromProvider(*customP),
 		probeEndpoint:        customP.Endpoint,
 		probeAPIKey:          customP.APIKey,
+		probeModels:          customP.Model,
 		inputEndpoint:        customP.Endpoint,
 		inputAPIKey:          customP.APIKey,
+		inputModels:          customP.Model,
 	}
 	modelsDevDraft := &connDraft{
 		p:                    modelsDevP,
@@ -690,6 +722,7 @@ func NewAdvancedConfigModel(p *provider.Provider) *AdvancedConfigModel {
 		cursor:            0,
 		urlText:           tui.NewState(p.Endpoint),
 		keyText:           tui.NewState(p.APIKey),
+		modelsText:        tui.NewState(active.inputModels),
 		modelsDevText:     tui.NewState(""),
 		defaultModelText:  tui.NewState(""),
 		IsActiveChosen:    true,
@@ -753,7 +786,7 @@ func (m *AdvancedConfigModel) textInputHasKeyboard() bool {
 		return false
 	}
 	row := m.currentRow()
-	return row == rowEndpoint || row == rowAPIKey
+	return row == rowEndpoint || row == rowAPIKey || (m.source == sourceCustom && row == rowModelPool)
 }
 
 func (m *AdvancedConfigModel) availabilitySmokeTestModel() string {
@@ -1166,6 +1199,9 @@ func (m *AdvancedConfigModel) BindApp(app *tui.App) {
 	m.app = app
 	m.urlText.BindApp(app)
 	m.keyText.BindApp(app)
+	if m.modelsText != nil {
+		m.modelsText.BindApp(app)
+	}
 	m.modelsDevText.BindApp(app)
 	if m.defaultModelText != nil {
 		m.defaultModelText.BindApp(app)
@@ -1213,6 +1249,13 @@ func (m *AdvancedConfigModel) togglePoolModelOneM(baseID string) {
 		}
 	}
 	m.p.Model = strings.Join(out, ",")
+	if m.source == sourceCustom && m.modelsText != nil {
+		m.modelsText.Set(m.p.Model)
+		m.live().inputModels = m.p.Model
+		if !m.live().connectionDirty {
+			m.live().detectedInputModels = m.p.Model
+		}
+	}
 	if strings.EqualFold(stripOneMSuffix(m.p.DefaultModel), want) {
 		canonical := want
 		for _, mod := range m.live().modelPool {

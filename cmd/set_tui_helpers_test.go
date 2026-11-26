@@ -44,6 +44,7 @@ var rowClickLabels = map[configRowKind]rowClickLabel{
 	rowTest:         {en: "Auto Configure"},
 	rowProtocol:     {en: "Protocol", zh: "协议"},
 	rowFast:         {en: "Fast"},
+	rowModelPool:    {en: "Model Pool", zh: "模型列表"},
 	rowDefaultModel: {en: "Default Model", zh: "默认模型"},
 	rowTestModels:   {en: "Check", zh: "检查"},
 	rowContext:      {en: "Context & Compact", zh: "上下文与压缩"},
@@ -183,6 +184,9 @@ func rowClickLabelPrefixes(kind configRowKind) []string {
 	}
 	if kind == rowDefaultModel {
 		prefixes = append(prefixes, "Default")
+	}
+	if kind == rowModelPool {
+		prefixes = append(prefixes, "Models", "模型")
 	}
 	return prefixes
 }

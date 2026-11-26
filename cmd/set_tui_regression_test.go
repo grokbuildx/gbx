@@ -316,3 +316,135 @@ func TestProviderSelectorLabelUsesEditableColor(t *testing.T) {
 		}
 	}
 }
+
+// TestCustomGatewayWithoutModelsEndpointCanConfigureAndReopen covers gateways
+// such as China Unicom Yuanjing MaaS (/openapi/compatible-mode/v1/chat/completions)
+// that serve Chat Completions without exposing GET /models (returning 404).
+func TestCustomGatewayWithoutModelsEndpointCanConfigureAndReopen(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/openapi/compatible-mode/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/openapi/compatible-mode/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-valid" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"code":16,"msg":"auth failed"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-ok","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"OK"}}]}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	fullChatURL := server.URL + "/openapi/compatible-mode/v1/chat/completions"
+	wantBaseURL := server.URL + "/openapi/compatible-mode/v1"
+
+	p := providerFrom("yjmaas", "", "")
+	p.Model = ""
+	p.APIKey = ""
+	m := NewAdvancedConfigModel(&p)
+	m.urlText.Set(fullChatURL)
+	m.keyText.Set("sk-valid")
+
+	// 1. Running Auto Configure before entering models sees HTTP 404 on /models,
+	// focuses rowModelPool automatically, and renders the manual-model hint.
+	m.activateRow(rowTest)
+	select {
+	case msg := <-m.fetchDone:
+		m.handleFetchDone(msg)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Auto Configure without models timed out")
+	}
+	if m.canSave() {
+		t.Fatal("gateway with 404 /models and empty pool must not be saveable")
+	}
+	if m.currentRow() != rowModelPool {
+		t.Fatalf("cursor after 404 /models = %v, want rowModelPool (%v)", m.currentRow(), rowModelPool)
+	}
+	view := renderView(t, m)
+	if !strings.Contains(view, "/models") {
+		t.Fatalf("missing /models guidance in view:\n%s", view)
+	}
+
+	// 2. Typing manual model IDs (including [1m] and letters like q/k/j/h/l) and
+	// pressing Enter verifies against POST /chat/completions and unlocks Save.
+	for _, r := range "minimax-m2.5, qwen3-32b[1m]" {
+		m.handleKey(keyPress(r))
+	}
+	if m.quitRequested {
+		t.Fatal("typing 'q' inside Model Pool quit the TUI")
+	}
+	m.handleKey(tui.KeyEvent{Key: tui.KeyEnter})
+	select {
+	case msg := <-m.fetchDone:
+		m.handleFetchDone(msg)
+	case <-time.After(3 * time.Second):
+		t.Fatal("manual model verification timed out")
+	}
+	if m.live().detectionError != nil || !m.canSave() {
+		t.Fatalf("manual model verification failed: canSave=%t err=%v", m.canSave(), m.live().detectionError)
+	}
+	if m.p.Endpoint != wantBaseURL {
+		t.Fatalf("normalized endpoint = %q, want %q", m.p.Endpoint, wantBaseURL)
+	}
+	if m.p.Type != "openai" {
+		t.Fatalf("detected type = %q, want openai", m.p.Type)
+	}
+	if m.p.Model != "minimax-m2.5,qwen3-32b[1m]" {
+		t.Fatalf("persisted Model = %q, want minimax-m2.5,qwen3-32b[1m]", m.p.Model)
+	}
+
+	// 3. Editing the model list on a /models-less gateway marks connection dirty
+	// until re-verified.
+	m.cursor = m.mainRowIndex(rowModelPool)
+	m.handleKey(keyPress('x'))
+	if !m.live().connectionDirty || m.canSave() {
+		t.Fatalf("editing unverified model IDs must mark dirty: dirty=%t canSave=%t", m.live().connectionDirty, m.canSave())
+	}
+	m.handleKey(tui.KeyEvent{Key: tui.KeyBackspace})
+	if m.live().connectionDirty || !m.canSave() {
+		t.Fatalf("reverting model edit must restore saveable state: dirty=%t canSave=%t", m.live().connectionDirty, m.canSave())
+	}
+
+	// 4. An invalid API key is rejected even when manual models are supplied,
+	// without wiping the typed model IDs.
+	m.keyText.Set("sk-wrong")
+	m.refreshConnectionDirty()
+	m.activateRow(rowTest)
+	select {
+	case msg := <-m.fetchDone:
+		m.handleFetchDone(msg)
+	case <-time.After(3 * time.Second):
+		t.Fatal("invalid key probe timed out")
+	}
+	if m.canSave() || m.live().detectionError == nil {
+		t.Fatalf("invalid key unexpectedly passed: canSave=%t err=%v", m.canSave(), m.live().detectionError)
+	}
+	if m.modelsText.Get() != "minimax-m2.5,qwen3-32b[1m]" {
+		t.Fatalf("failed probe wiped user-typed models: %q", m.modelsText.Get())
+	}
+
+	// 5. Reopening a saved Custom provider whose gateway has no /models verifies
+	// the saved pool automatically instead of wiping it.
+	savedProvider := *m.p
+	savedProvider.Endpoint = wantBaseURL
+	savedProvider.APIKey = "sk-valid"
+	savedProvider.Model = "minimax-m2.5,qwen3-32b[1m]"
+	reopened := NewAdvancedConfigModel(&savedProvider)
+	reopened.startAutoDetect()
+	select {
+	case msg := <-reopened.fetchDone:
+		reopened.handleFetchDone(msg)
+	case <-time.After(3 * time.Second):
+		t.Fatal("reopen auto-detect timed out")
+	}
+	if !reopened.canSave() || reopened.p.Model != "minimax-m2.5,qwen3-32b[1m]" {
+		t.Fatalf("reopened provider lost models or save state: canSave=%t model=%q err=%v",
+			reopened.canSave(), reopened.p.Model, reopened.live().detectionError)
+	}
+}

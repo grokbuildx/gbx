@@ -625,3 +625,84 @@ func TestCapabilitiesExposeDefaultProviderModelAndEfforts(t *testing.T) {
 		t.Fatalf("defaultEffortLevels = %v, want %v", caps.DefaultEffortLevels, oauthproxy.DefaultNativeGrokEffortLevels())
 	}
 }
+
+func TestConfigProviderWithoutModelsEndpointNormalizesAndProbesConfiguredModel(t *testing.T) {
+	isolateConfig(t)
+	var chatCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/openapi/compatible-mode/v1/models":
+			http.NotFound(w, r)
+		case "/openapi/compatible-mode/v1/chat/completions":
+			chatCalls++
+			if r.Header.Get("Authorization") != "Bearer sk-valid-10010" {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"code":16,"msg":"auth failed"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"OK"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	httpServer := newConfigServer(t)
+	fullEndpoint := upstream.URL + "/openapi/compatible-mode/v1/chat/completions"
+	wantBase := upstream.URL + "/openapi/compatible-mode/v1"
+
+	// 1. Catalog-only fetch (used by "Fetch models" and dialog open) fails without billing a completion call.
+	status, body := doJSON(t, "POST", httpServer.URL+"/api/config/providers/yjmaas/test", "secret",
+		`{"endpoint":"`+fullEndpoint+`","apiKey":"sk-valid-10010","type":"openai","models":"minimax-m2.5","catalogOnly":true}`)
+	if status != http.StatusOK {
+		t.Fatalf("catalogOnly test status = %d: %s", status, body)
+	}
+	var res ProbeResult
+	if err := json.Unmarshal(body, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.OK || chatCalls != 0 {
+		t.Fatalf("catalogOnly probe = %+v chatCalls=%d, want OK=false and 0 completion calls", res, chatCalls)
+	}
+
+	// 2. Explicit "Test connection" with configured models verifies against /chat/completions.
+	status, body = doJSON(t, "POST", httpServer.URL+"/api/config/providers/yjmaas/test", "secret",
+		`{"endpoint":"`+fullEndpoint+`","apiKey":"sk-valid-10010","type":"openai","models":"minimax-m2.5[1m],glm-5"}`)
+	if status != http.StatusOK {
+		t.Fatalf("fallback test status = %d: %s", status, body)
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK || !slices.Equal(res.Models, []string{"minimax-m2.5", "glm-5"}) || chatCalls != 1 {
+		t.Fatalf("fallback probe = %+v chatCalls=%d", res, chatCalls)
+	}
+
+	// 3. Invalid key is rejected during fallback verification without leaking the key.
+	status, body = doJSON(t, "POST", httpServer.URL+"/api/config/providers/yjmaas/test", "secret",
+		`{"endpoint":"`+fullEndpoint+`","apiKey":"sk-wrong-secret","type":"openai","models":"minimax-m2.5"}`)
+	if status != http.StatusOK {
+		t.Fatalf("bad key test status = %d: %s", status, body)
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.OK || strings.Contains(res.Message, "sk-wrong-secret") {
+		t.Fatalf("bad key probe = %+v", res)
+	}
+
+	// 4. Saving the provider strips /chat/completions from Endpoint so the base URL is clean.
+	status, body = doJSON(t, "POST", httpServer.URL+"/api/config/providers", "secret",
+		`{"name":"yjmaas","type":"openai","endpoint":"`+fullEndpoint+`","apiKey":"sk-valid-10010","models":"minimax-m2.5"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("create provider = %d: %s", status, body)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Providers["yjmaas"].Endpoint; got != wantBase {
+		t.Fatalf("saved Endpoint = %q, want %q", got, wantBase)
+	}
+}

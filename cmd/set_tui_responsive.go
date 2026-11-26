@@ -139,6 +139,13 @@ func editViewport(text string, width int) string {
 	return strings.Join(lines, "\n")
 }
 
+// editSingleLineViewport formats a single-line text editor so the trailing
+// insertion cursor stays visible without wrapping onto extra lines.
+func editSingleLineViewport(text string, width int) string {
+	text = strings.NewReplacer("\n", " ", "\r", " ").Replace(text)
+	return editViewport(text, width)
+}
+
 func (m *AdvancedConfigModel) wrapPicker(body *tui.Element) *tui.Element {
 	rows := body.Children()
 	compact := m.height > 0 && m.height < 18

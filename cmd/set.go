@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -407,11 +408,12 @@ func stringInSlice(s string, slice []string) bool {
 }
 
 type protocolDetectionResult struct {
-	protocol   string
-	models     string
-	modelInfos []protocol.ModelInfo
-	baseURL    string
-	err        error
+	protocol          string
+	models            string
+	modelInfos        []protocol.ModelInfo
+	baseURL           string
+	catalogDiscovered bool
+	err               error
 }
 
 // A models list verifies credentials. Chat and Responses share that list,
@@ -421,6 +423,10 @@ func detectProtocolAndModelsPreferred(endpoint, apiKey string, preference ...str
 }
 
 func detectProtocolAndModelsPreferredContext(ctx context.Context, endpoint, apiKey string, preference ...string) protocolDetectionResult {
+	return detectProtocolAndModelsWithManualContext(ctx, endpoint, apiKey, "", false, preference...)
+}
+
+func detectProtocolAndModelsWithManualContext(ctx context.Context, endpoint, apiKey, manualModelsCSV string, preferManual bool, preference ...string) protocolDetectionResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -428,26 +434,141 @@ func detectProtocolAndModelsPreferredContext(ctx context.Context, endpoint, apiK
 	if base == "" || strings.TrimSpace(apiKey) == "" {
 		return protocolDetectionResult{err: fmt.Errorf("endpoint and API key are required")}
 	}
+	typ := "openai"
+	if len(preference) > 0 && provider.IsOpenAIResponsesType(preference[0]) {
+		typ = "openai_responses"
+	}
+	manualNormalized := normalizeModelCSV(manualModelsCSV)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, protocol.NormalizeOpenAIModelsURL(base), nil)
 	if err != nil {
 		return protocolDetectionResult{err: err}
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	result, err := fetchModelListForDetection(req, 8*time.Second)
-	if err != nil {
-		return protocolDetectionResult{err: fmt.Errorf("OpenAI model-list probe failed: %w", err)}
+	if err == nil {
+		if result.shape == modelListShapeAnthropic {
+			return protocolDetectionResult{err: fmt.Errorf("this endpoint serves the retired Anthropic Messages protocol; enter a Responses or Chat Completions endpoint")}
+		}
+		if result.models != "" {
+			models := result.models
+			if preferManual && manualNormalized != "" {
+				models = manualNormalized
+			}
+			return protocolDetectionResult{
+				protocol:          typ,
+				models:            models,
+				modelInfos:        result.modelInfos,
+				baseURL:           base,
+				catalogDiscovered: true,
+			}
+		}
+		if manualNormalized == "" {
+			return protocolDetectionResult{err: fmt.Errorf("endpoint returned no models")}
+		}
+	} else {
+		if manualNormalized == "" {
+			return protocolDetectionResult{err: fmt.Errorf("OpenAI model-list probe failed: %w", err)}
+		}
+		var httpErr modelProbeHTTPError
+		if !errors.As(err, &httpErr) {
+			// Transport/DNS/TLS errors mean the host itself could not be reached.
+			return protocolDetectionResult{err: fmt.Errorf("OpenAI model-list probe failed: %w", err)}
+		}
 	}
-	if result.shape == modelListShapeAnthropic {
-		return protocolDetectionResult{err: fmt.Errorf("this endpoint serves the retired Anthropic Messages protocol; enter a Responses or Chat Completions endpoint")}
-	}
-	if result.models == "" {
+
+	// Gateways such as China Unicom Yuanjing MaaS serve Chat Completions without
+	// exposing GET /models (returning 404/403/405/501 or an empty list). Verify
+	// the connection and key against the first user-configured model instead.
+	parsedManual := parseModelList(manualNormalized)
+	if len(parsedManual) == 0 {
 		return protocolDetectionResult{err: fmt.Errorf("endpoint returned no models")}
 	}
-	typ := "openai"
-	if len(preference) > 0 && provider.IsOpenAIResponsesType(preference[0]) {
-		typ = "openai_responses"
+	firstModel := stripOneMSuffix(parsedManual[0])
+	if _, verifyErr := protocol.VerifyOpenAIGatewayModelContext(ctx, base, apiKey, firstModel, typ, keyVerifyTimeout); verifyErr != nil {
+		return protocolDetectionResult{err: localizeGatewayModelProbeError(verifyErr)}
 	}
-	return protocolDetectionResult{protocol: typ, models: result.models, modelInfos: result.modelInfos, baseURL: base}
+	return protocolDetectionResult{
+		protocol:          typ,
+		models:            manualNormalized,
+		baseURL:           base,
+		catalogDiscovered: false,
+	}
+}
+
+func normalizeModelCSV(raw string) string {
+	entries := parseModelList(raw)
+	if len(entries) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(entries))
+	indexByBase := make(map[string]int, len(entries))
+	for _, entry := range entries {
+		normalized := provider.NormalizeModelID(entry)
+		base := stripOneMSuffix(normalized)
+		if base == "" {
+			continue
+		}
+		key := strings.ToLower(base)
+		has1M := hasOneMSuffix(normalized)
+		if idx, exists := indexByBase[key]; exists {
+			if has1M && !hasOneMSuffix(out[idx]) {
+				out[idx] = stripOneMSuffix(out[idx]) + "[1m]"
+			}
+			continue
+		}
+		indexByBase[key] = len(out)
+		if has1M {
+			out = append(out, base+"[1m]")
+		} else {
+			out = append(out, base)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+func localizeGatewayModelProbeError(err error) error {
+	var probeErr *protocol.GatewayModelProbeError
+	if !errors.As(err, &probeErr) {
+		return err
+	}
+	switch {
+	case probeErr.AuthRejected:
+		if probeErr.StatusCode > 0 {
+			return fmt.Errorf(locale.T("API key 无效（HTTP %d）", "invalid API key (HTTP %d)"), probeErr.StatusCode)
+		}
+		return fmt.Errorf("%s", locale.T("API key 无效", "invalid API key"))
+	case probeErr.RouteOrModelMissing:
+		if probeErr.StatusCode > 0 {
+			return fmt.Errorf(
+				locale.T(
+					"该网关无 /models 列表，且探测模型 %q 返回 HTTP %d（请检查端点 URL、协议或模型 ID）",
+					"gateway has no /models catalog and probing model %q returned HTTP %d (check endpoint URL, protocol, or model ID)",
+				),
+				probeErr.Model,
+				probeErr.StatusCode,
+			)
+		}
+		return err
+	case probeErr.StatusCode > 0:
+		return fmt.Errorf(locale.T("验证请求失败（HTTP %d）", "verification request failed (HTTP %d)"), probeErr.StatusCode)
+	default:
+		return err
+	}
+}
+
+func isModelsCatalogMissingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var httpErr modelProbeHTTPError
+	if errors.As(err, &httpErr) {
+		switch httpErr.statusCode {
+		case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented, http.StatusForbidden:
+			return true
+		}
+	}
+	return strings.Contains(err.Error(), "endpoint returned no models")
 }
 
 func detectProtocolAndModelsDetailed(endpoint, apiKey string) protocolDetectionResult {
@@ -469,13 +590,7 @@ type modelListDetection struct {
 }
 
 func normalizeModelBaseURL(endpoint string) string {
-	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
-	switch {
-	case strings.HasSuffix(endpoint, "/models"):
-		return strings.TrimSuffix(endpoint, "/models")
-	default:
-		return endpoint
-	}
+	return protocol.NormalizeOpenAIBaseURL(endpoint)
 }
 
 type modelProbeHTTPError struct {

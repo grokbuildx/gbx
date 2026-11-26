@@ -31,14 +31,28 @@ func rewriteEndpointPath(endpoint string, rewrite func(string) string) string {
 
 func normalizeOpenAIPath(baseURL, suffix string) string {
 	return rewriteEndpointPath(normalizeEndpoint(baseURL, "https://api.openai.com/v1"), func(path string) string {
-		for _, existing := range []string{"/chat/completions", "/responses", "/models"} {
-			if strings.HasSuffix(path, existing) {
-				path = strings.TrimSuffix(path, existing)
-				break
-			}
-		}
-		return path + suffix
+		return trimOpenAIEndpointSuffix(path) + suffix
 	})
+}
+
+func trimOpenAIEndpointSuffix(path string) string {
+	for _, existing := range []string{"/chat/completions", "/responses", "/models"} {
+		if strings.HasSuffix(path, existing) {
+			return strings.TrimSuffix(path, existing)
+		}
+	}
+	return path
+}
+
+// NormalizeOpenAIBaseURL strips a trailing /models, /chat/completions, or
+// /responses path suffix from a configured endpoint while keeping an empty
+// input empty so callers never accidentally substitute api.openai.com.
+func NormalizeOpenAIBaseURL(baseURL string) string {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		return ""
+	}
+	return strings.TrimRight(rewriteEndpointPath(trimmed, trimOpenAIEndpointSuffix), "/")
 }
 
 func NormalizeOpenAIModelsURL(baseURL string) string {

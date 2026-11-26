@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -444,4 +445,336 @@ func GetCodexClientModelInfos(baseURL, apiKey string) ([]ModelInfo, error) {
 // 1M-class window. Values are advisory suggestions only.
 func ContextWindowSuggests1M(window int) bool {
 	return window >= 900_000
+}
+
+// GatewayModelProbeError describes why a single-model gateway verification
+// probe failed when /models discovery is unavailable.
+type GatewayModelProbeError struct {
+	StatusCode          int
+	Model               string
+	Message             string
+	AuthRejected        bool
+	RouteOrModelMissing bool
+}
+
+func (e *GatewayModelProbeError) Error() string {
+	switch {
+	case e.AuthRejected:
+		if e.Message != "" {
+			return fmt.Sprintf("invalid API key (HTTP %d: %s)", e.StatusCode, e.Message)
+		}
+		return fmt.Sprintf("invalid API key (HTTP %d)", e.StatusCode)
+	case e.RouteOrModelMissing:
+		if e.Message != "" {
+			return fmt.Sprintf("probing model %q failed (HTTP %d: %s)", e.Model, e.StatusCode, e.Message)
+		}
+		return fmt.Sprintf("probing model %q returned HTTP %d (check endpoint URL, protocol, or model ID)", e.Model, e.StatusCode)
+	case e.StatusCode > 0 && e.Message != "":
+		return fmt.Sprintf("verification request failed (HTTP %d: %s)", e.StatusCode, e.Message)
+	case e.StatusCode > 0:
+		return fmt.Sprintf("verification request failed (HTTP %d)", e.StatusCode)
+	case e.Message != "":
+		return e.Message
+	default:
+		return "verification request failed"
+	}
+}
+
+// VerifyOpenAIGatewayModelContext verifies an OpenAI-compatible Chat Completions
+// or Responses gateway that does not expose GET /models by sending one minimal
+// non-streaming inference probe for a user-supplied model ID.
+func VerifyOpenAIGatewayModelContext(parent context.Context, baseURL, apiKey, model, wireProtocol string, timeout time.Duration) (int, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return 0, fmt.Errorf("model ID is required")
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+
+	if strings.EqualFold(strings.TrimSpace(wireProtocol), "openai_responses") {
+		payload := map[string]any{
+			"model": model,
+			"input": []map[string]any{
+				{"type": "message", "role": "user", "content": []map[string]string{{"type": "input_text", "text": "hi"}}},
+			},
+			"max_output_tokens": 1,
+			"store":             false,
+		}
+		status, body, err := doGatewayModelProbe(parent, NormalizeOpenAIResponsesURL(baseURL), apiKey, payload, timeout)
+		if err != nil {
+			return 0, err
+		}
+		return classifyGatewayModelProbe(status, model, body)
+	}
+
+	chatURL := NormalizeOpenAIChatCompletionsURL(baseURL)
+	makeChatPayload := func(tokenField string) map[string]any {
+		payload := map[string]any{
+			"model":    model,
+			"messages": []map[string]string{{"role": "user", "content": "Reply OK."}},
+			"stream":   false,
+		}
+		if tokenField != "" {
+			payload[tokenField] = 1
+		}
+		return payload
+	}
+
+	if strings.HasPrefix(strings.ToLower(model), "cline-pass/") {
+		status, body, err := doGatewayModelProbe(parent, chatURL, apiKey, makeChatPayload(""), timeout)
+		if err != nil {
+			return 0, err
+		}
+		return classifyGatewayModelProbe(status, model, body)
+	}
+
+	status, body, err := doGatewayModelProbe(parent, chatURL, apiKey, makeChatPayload("max_tokens"), timeout)
+	if err != nil {
+		return 0, err
+	}
+	if status == http.StatusBadRequest && strings.Contains(strings.ToLower(string(body)), "max_completion_tokens") {
+		status, body, err = doGatewayModelProbe(parent, chatURL, apiKey, makeChatPayload("max_completion_tokens"), timeout)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if status >= http.StatusInternalServerError && looksLikeJSONObject(body) {
+		status, body, err = doGatewayModelProbe(parent, chatURL, apiKey, makeChatPayload(""), timeout)
+		if err != nil {
+			return 0, err
+		}
+	}
+	return classifyGatewayModelProbe(status, model, body)
+}
+
+func doGatewayModelProbe(parent context.Context, targetURL, apiKey string, payload map[string]any, timeout time.Duration) (int, []byte, error) {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return 0, nil, err
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(encoded))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := newProbeHTTPClient(timeout).Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeDiscardBytes))
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, body, nil
+}
+
+func classifyGatewayModelProbe(status int, model string, body []byte) (int, error) {
+	msg := extractGatewayProbeMessage(body)
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return status, &GatewayModelProbeError{
+			StatusCode:   status,
+			Model:        model,
+			Message:      msg,
+			AuthRejected: true,
+		}
+	case http.StatusNotFound, http.StatusMethodNotAllowed:
+		return status, &GatewayModelProbeError{
+			StatusCode:          status,
+			Model:               model,
+			Message:             msg,
+			RouteOrModelMissing: true,
+		}
+	}
+
+	if status >= 200 && status < 300 {
+		if !looksLikeJSONObject(body) {
+			return status, &GatewayModelProbeError{
+				StatusCode:          status,
+				Model:               model,
+				Message:             "endpoint did not return a JSON completion payload",
+				RouteOrModelMissing: true,
+			}
+		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(bytes.TrimSpace(body), &top); err != nil {
+			return status, &GatewayModelProbeError{
+				StatusCode:          status,
+				Model:               model,
+				Message:             "invalid JSON response",
+				RouteOrModelMissing: true,
+			}
+		}
+		if authRejected, isErr, errMsg := inspectJSON200Envelope(top); isErr {
+			return status, &GatewayModelProbeError{
+				StatusCode:   status,
+				Model:        model,
+				Message:      firstNonEmpty(errMsg, msg),
+				AuthRejected: authRejected,
+			}
+		}
+		if !hasCompletionPayloadFields(top) {
+			return status, &GatewayModelProbeError{
+				StatusCode:          status,
+				Model:               model,
+				Message:             "endpoint returned an unrecognized JSON object",
+				RouteOrModelMissing: true,
+			}
+		}
+		return status, nil
+	}
+
+	if status == http.StatusTooManyRequests || status == http.StatusBadRequest || status == http.StatusUnprocessableEntity {
+		if !looksLikeJSONObject(body) {
+			return status, &GatewayModelProbeError{
+				StatusCode: status,
+				Model:      model,
+				Message:    msg,
+			}
+		}
+		if status != http.StatusTooManyRequests && looksLikeMissingModelError(body, msg) {
+			return status, &GatewayModelProbeError{
+				StatusCode:          status,
+				Model:               model,
+				Message:             msg,
+				RouteOrModelMissing: true,
+			}
+		}
+		return status, nil
+	}
+
+	return status, &GatewayModelProbeError{
+		StatusCode: status,
+		Model:      model,
+		Message:    msg,
+	}
+}
+
+func looksLikeJSONObject(body []byte) bool {
+	trimmed := bytes.TrimSpace(body)
+	return len(trimmed) > 0 && trimmed[0] == '{' && json.Valid(trimmed)
+}
+
+func hasCompletionPayloadFields(top map[string]json.RawMessage) bool {
+	for _, key := range []string{"choices", "output", "id", "object", "model", "usage"} {
+		if _, ok := top[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func inspectJSON200Envelope(top map[string]json.RawMessage) (authRejected bool, isErr bool, message string) {
+	if rawErr, ok := top["error"]; ok {
+		trimmed := strings.TrimSpace(string(rawErr))
+		if trimmed != "" && trimmed != "null" {
+			msg := extractNestedErrorMessage(rawErr)
+			return looksLikeAuthMessage(msg), true, msg
+		}
+	}
+	if _, hasChoices := top["choices"]; hasChoices {
+		return false, false, ""
+	}
+	if _, hasOutput := top["output"]; hasOutput {
+		return false, false, ""
+	}
+	rawCode, hasCode := top["code"]
+	if !hasCode {
+		return false, false, ""
+	}
+	codeStr := strings.Trim(strings.TrimSpace(string(rawCode)), `"`)
+	if codeStr == "" || codeStr == "0" || codeStr == "200" || strings.EqualFold(codeStr, "null") || strings.EqualFold(codeStr, "ok") || strings.EqualFold(codeStr, "success") {
+		return false, false, ""
+	}
+	msg := firstNonEmpty(jsonStringField(top["msg"]), jsonStringField(top["message"]))
+	if msg == "" {
+		return false, false, ""
+	}
+	auth := codeStr == "401" || codeStr == "403" || codeStr == "16" || looksLikeAuthMessage(msg)
+	return auth, true, msg
+}
+
+func looksLikeAuthMessage(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, token := range []string{"invalid_api_key", "invalid api key", "unauthorized", "authentication", "unauthenticated", "forbidden"} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeMissingModelError(body []byte, msg string) bool {
+	lowerBody := strings.ToLower(string(body))
+	if strings.Contains(lowerBody, `"model_not_found"`) {
+		return true
+	}
+	lowerMsg := strings.ToLower(msg)
+	if !strings.Contains(lowerMsg, "model") {
+		return false
+	}
+	for _, phrase := range []string{"not found", "does not exist", "not exist", "unknown model", "invalid model", "unsupported model"} {
+		if strings.Contains(lowerMsg, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractGatewayProbeMessage(body []byte) string {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return ""
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &top); err != nil {
+		return ""
+	}
+	if rawErr, ok := top["error"]; ok {
+		if msg := extractNestedErrorMessage(rawErr); msg != "" {
+			return clampProbeText(msg, 200)
+		}
+	}
+	return clampProbeText(firstNonEmpty(jsonStringField(top["message"]), jsonStringField(top["msg"]), jsonStringField(top["detail"])), 200)
+}
+
+func extractNestedErrorMessage(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.TrimSpace(s)
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		return firstNonEmpty(jsonStringField(obj["message"]), jsonStringField(obj["msg"]), jsonStringField(obj["code"]))
+	}
+	return ""
+}
+
+func jsonStringField(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.TrimSpace(s)
+	}
+	return ""
+}
+
+func clampProbeText(s string, maxLen int) string {
+	s = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(strings.TrimSpace(s))
+	if maxLen > 0 && len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
 }

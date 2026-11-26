@@ -43,6 +43,10 @@ func (m *AdvancedConfigModel) handleOAuthRuntimeDone(msg oauthRuntimeDoneMsg) {
 }
 
 func (m *AdvancedConfigModel) applyModelDetectionResult(detectedType, discoveredModelsRaw, detectedEndpoint string, derr error) {
+	m.applyModelDetectionResultWithSource(detectedType, discoveredModelsRaw, detectedEndpoint, true, derr)
+}
+
+func (m *AdvancedConfigModel) applyModelDetectionResultWithSource(detectedType, discoveredModelsRaw, detectedEndpoint string, catalogDiscovered bool, derr error) {
 	discoveredModels := uniqueBaseModels(parseModelList(discoveredModelsRaw))
 	prevModelCSV := m.p.Model
 	m.live().hadLocalModelPool = countCSV(prevModelCSV) > 0
@@ -51,11 +55,12 @@ func (m *AdvancedConfigModel) applyModelDetectionResult(detectedType, discovered
 	detectedInputEndpoint := m.live().probeEndpoint
 	detectedInputKey := m.live().probeAPIKey
 	setDebugf(
-		"applyModelDetectionResult start detected_type=%q detected_endpoint=%q discovered_model_count=%d existing_model_count=%d err=%v",
+		"applyModelDetectionResult start detected_type=%q detected_endpoint=%q discovered_model_count=%d existing_model_count=%d catalog=%t err=%v",
 		detectedType,
 		detectedEndpoint,
 		len(discoveredModels),
 		countCSV(prevModelCSV),
+		catalogDiscovered,
 		derr,
 	)
 	if !m.usesOAuth() && detectedEndpoint != "" {
@@ -79,18 +84,37 @@ func (m *AdvancedConfigModel) applyModelDetectionResult(detectedType, discovered
 	if derr == nil && len(discoveredModels) > 0 {
 		m.live().modelPool = discoveredModels
 		m.live().modelPoolFromDiscovery = true
-		m.p.Model = preserveOneMMarkers(prevModelCSV, discoveredModels)
+		m.live().catalogDiscovered = catalogDiscovered
+		mergedSource := prevModelCSV
+		if strings.Contains(discoveredModelsRaw, "[1m]") || strings.Contains(discoveredModelsRaw, "[1M]") {
+			mergedSource = discoveredModelsRaw + "," + prevModelCSV
+		}
+		m.p.Model = preserveOneMMarkers(mergedSource, discoveredModels)
 		setDebugf("applyModelDetectionResult using discovered model pool count=%d", len(m.live().modelPool))
 	}
 
 	if derr != nil {
+		// Preserve models the user explicitly typed in this session while keeping
+		// unverified persisted pools cleared until detection succeeds.
+		if m.source == sourceCustom && m.live().manualModelsEdited && m.modelsText != nil {
+			m.live().modelPool = uniqueBaseModels(parseModelList(m.modelsText.Get()))
+		}
 		m.live().detectionError = derr
-		m.focusDetectionAction()
+		if m.source == sourceCustom && m.modelsText != nil && countCSV(m.modelsText.Get()) == 0 && isModelsCatalogMissingError(derr) {
+			if idx := m.mainRowIndex(rowModelPool); idx >= 0 {
+				m.cursor = idx
+				m.modelsFocused = true
+			} else {
+				m.focusDetectionAction()
+			}
+		} else {
+			m.focusDetectionAction()
+		}
 		setDebugf("applyModelDetectionResult detection failed detection_error=%v model_count=%d", m.live().detectionError, len(m.live().modelPool))
 		return
 	}
 
-	// 本次 set 必须以接口返回的模型为准；不再用旧的本地模型池兜底。
+	// 本次 set 必须以接口返回（或经验证的手动模型）为准；不再用旧的本地模型池兜底。
 	if len(m.live().modelPool) == 0 {
 		m.live().detectionError = fmt.Errorf("%s", locale.T(
 			"未从接口获取到任何可用模型，未使用本地旧模型池",
@@ -101,9 +125,20 @@ func (m *AdvancedConfigModel) applyModelDetectionResult(detectedType, discovered
 		return
 	}
 
-	sort.Strings(m.live().modelPool)
-	m.p.Model = preserveOneMMarkers(prevModelCSV, m.live().modelPool)
+	if catalogDiscovered && !m.live().manualModelsEdited {
+		sort.Strings(m.live().modelPool)
+	}
+	mergedSource := prevModelCSV
+	if strings.Contains(discoveredModelsRaw, "[1m]") || strings.Contains(discoveredModelsRaw, "[1M]") {
+		mergedSource = discoveredModelsRaw + "," + prevModelCSV
+	}
+	m.p.Model = preserveOneMMarkers(mergedSource, m.live().modelPool)
 	m.reconcileDefaultModelWithPool()
+	if m.source == sourceCustom && m.modelsText != nil {
+		m.modelsText.Set(m.p.Model)
+		m.live().inputModels = m.p.Model
+		m.live().detectedInputModels = m.p.Model
+	}
 	// Connection is now the detected endpoint, so it is no longer dirty.
 	m.live().connectionDirty = false
 	// Record the inputs this successful detection ran against (the raw values
@@ -171,7 +206,7 @@ func (m *AdvancedConfigModel) handleFetchDone(msg modelFetchDoneMsg) {
 			m.live().modelContextWindows[id] = window
 		}
 	}
-	m.applyModelDetectionResult(msg.detectedType, msg.discoveredModelsRaw, msg.detectedEndpoint, msg.err)
+	m.applyModelDetectionResultWithSource(msg.detectedType, msg.discoveredModelsRaw, msg.detectedEndpoint, msg.catalogDiscovered, msg.err)
 	m.markDirty()
 }
 

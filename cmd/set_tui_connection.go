@@ -179,6 +179,9 @@ func (m *AdvancedConfigModel) saveInputsToDraft() {
 	}
 	m.live().inputEndpoint = m.urlText.Get()
 	m.live().inputAPIKey = m.keyText.Get()
+	if m.source == sourceCustom && m.modelsText != nil {
+		m.live().inputModels = m.modelsText.Get()
+	}
 }
 
 // otherSource returns the source to toggle to (Custom ↔ models.dev).
@@ -220,8 +223,12 @@ func (m *AdvancedConfigModel) switchSource(target connectionSource) {
 
 	m.urlText.Set(m.live().inputEndpoint)
 	m.keyText.Set(m.live().inputAPIKey)
+	if m.modelsText != nil {
+		m.modelsText.Set(m.live().inputModels)
+	}
 	m.urlFocused = false
 	m.keyFocused = false
+	m.modelsFocused = false
 	m.cursor = m.mainRowIndex(rowSource)
 	m.keepCursorVisible()
 	if m.usesModelsDev() {
@@ -272,6 +279,7 @@ func (m *AdvancedConfigModel) applyModelsDevProvider(p modelsdev.Provider) {
 	m.keyText.Set(d.inputAPIKey)
 	m.urlFocused = false
 	m.keyFocused = true
+	m.modelsFocused = false
 	m.cursor = m.mainRowIndex(rowAPIKey)
 	setDebugf("models.dev applied provider=%q model_count=%d protocols=%d", draft.Name, len(d.modelPool), len(draft.ModelProtocols))
 }
@@ -289,7 +297,7 @@ func (m *AdvancedConfigModel) startAutoDetect() {
 		m.live().detecting = true
 		m.live().detectProgress = 5
 		m.live().detectFrame = 0
-		fetchModelsAsync(m.nextFetchCtx(), m.fetchDone, m.live().probeEndpoint, m.live().probeAPIKey, m.p.Type)
+		fetchModelsWithManualAsync(m.nextFetchCtx(), m.fetchDone, m.live().probeEndpoint, m.live().probeAPIKey, m.p.Model, false, m.p.Type)
 	}
 }
 

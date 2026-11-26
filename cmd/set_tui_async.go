@@ -141,19 +141,24 @@ func fetchModelsDevRefreshAsync(ctx context.Context, done chan<- modelsDevFetchD
 // fetchModelsAsync runs protocol detection + model fetching off the UI thread
 // and delivers the result on the fetch channel.
 func fetchModelsAsync(ctx context.Context, done chan<- modelFetchDoneMsg, endpoint, apiKey string, preference ...string) {
+	fetchModelsWithManualAsync(ctx, done, endpoint, apiKey, "", false, preference...)
+}
+
+func fetchModelsWithManualAsync(ctx context.Context, done chan<- modelFetchDoneMsg, endpoint, apiKey, manualModelsCSV string, preferManual bool, preference ...string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	pref := append([]string(nil), preference...)
 	go func() {
-		setDebugf("modelFetch start endpoint=%q api_key_len=%d", endpoint, len(apiKey))
-		result := detectProtocolAndModelsPreferredContext(ctx, endpoint, apiKey, pref...)
+		setDebugf("modelFetch start endpoint=%q api_key_len=%d manual_models=%d prefer_manual=%t", endpoint, len(apiKey), countCSV(manualModelsCSV), preferManual)
+		result := detectProtocolAndModelsWithManualContext(ctx, endpoint, apiKey, manualModelsCSV, preferManual, pref...)
 		setDebugf(
-			"modelFetch done endpoint=%q detected_endpoint=%q protocol=%q model_count=%d err=%v",
+			"modelFetch done endpoint=%q detected_endpoint=%q protocol=%q model_count=%d catalog=%t err=%v",
 			endpoint,
 			result.baseURL,
 			result.protocol,
 			countCSV(result.models),
+			result.catalogDiscovered,
 			result.err,
 		)
 		windows := make(map[string]int)
@@ -171,6 +176,7 @@ func fetchModelsAsync(ctx context.Context, done chan<- modelFetchDoneMsg, endpoi
 			discoveredModelsRaw: result.models,
 			contextWindows:      windows,
 			modelInfos:          result.modelInfos,
+			catalogDiscovered:   result.catalogDiscovered,
 			err:                 result.err,
 		}:
 		case <-ctx.Done():

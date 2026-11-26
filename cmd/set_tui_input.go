@@ -129,17 +129,25 @@ func (m *AdvancedConfigModel) activateRow(kind configRowKind) {
 	case rowTest:
 		// Start detection with the current input values (OAuth uses the session
 		// runtime endpoint/key already injected by configureOAuthRuntime).
+		manualModels := ""
+		preferManual := false
 		if !m.usesOAuth() {
 			m.p.Endpoint = m.urlText.Get()
 			m.p.APIKey = m.keyText.Get()
 			m.live().probeEndpoint = m.p.Endpoint
 			m.live().probeAPIKey = m.p.APIKey
+			if m.source == sourceCustom && m.modelsText != nil {
+				manualModels = m.modelsText.Get()
+				preferManual = m.live().manualModelsEdited
+				m.live().probeModels = manualModels
+			}
 			// The inputs being detected become the new baseline only if the
 			// detection succeeds; until then keep the dirty state honest.
 			m.refreshConnectionDirty()
 		}
 		m.urlFocused = false
 		m.keyFocused = false
+		m.modelsFocused = false
 		m.live().detectionError = nil
 		// AutoClaw needs no network model detection: its managed Chat route has a
 		// fixed catalog, so a generic /models probe would either hit the wrong
@@ -166,6 +174,7 @@ func (m *AdvancedConfigModel) activateRow(kind configRowKind) {
 					detectedEndpoint:    detectedEndpoint,
 					discoveredModelsRaw: strings.Join(oauthproxy.AutoClawModelIDs(), ","),
 					modelInfos:          oauthproxy.AutoClawModelCatalog(),
+					catalogDiscovered:   true,
 				}
 				select {
 				case done <- msg:
@@ -177,11 +186,11 @@ func (m *AdvancedConfigModel) activateRow(kind configRowKind) {
 		m.live().detecting = true
 		m.live().detectProgress = 5
 		m.live().detectFrame = 0
-		setDebugf("start detection endpoint=%q api_key_len=%d oauth=%t", m.live().probeEndpoint, len(m.live().probeAPIKey), m.usesOAuth())
+		setDebugf("start detection endpoint=%q api_key_len=%d oauth=%t manual_models=%d", m.live().probeEndpoint, len(m.live().probeAPIKey), m.usesOAuth(), countCSV(manualModels))
 		if m.canSelectCustomProtocol() {
-			fetchModelsAsync(m.nextFetchCtx(), m.fetchDone, m.live().probeEndpoint, m.live().probeAPIKey, m.p.Type)
+			fetchModelsWithManualAsync(m.nextFetchCtx(), m.fetchDone, m.live().probeEndpoint, m.live().probeAPIKey, manualModels, preferManual, m.p.Type)
 		} else {
-			fetchModelsAsync(m.nextFetchCtx(), m.fetchDone, m.live().probeEndpoint, m.live().probeAPIKey)
+			fetchModelsWithManualAsync(m.nextFetchCtx(), m.fetchDone, m.live().probeEndpoint, m.live().probeAPIKey, manualModels, preferManual)
 		}
 	case rowTestModels:
 		if !m.connectionReady() || m.usesModelsDev() && !m.live().keyVerified {
@@ -227,6 +236,7 @@ func (m *AdvancedConfigModel) handleFocusRow(row configRowKind) {
 			m.cursor = m.mainRowIndex(focus)
 			m.urlFocused = false
 			m.keyFocused = false
+			m.modelsFocused = false
 			m.markDirty()
 			return
 		}
@@ -259,6 +269,7 @@ func (m *AdvancedConfigModel) handleFocusRow(row configRowKind) {
 	m.keepCursorVisible()
 	m.urlFocused = false
 	m.keyFocused = false
+	m.modelsFocused = false
 	switch row {
 	case rowEndpoint:
 		m.urlFocused = true
@@ -266,6 +277,11 @@ func (m *AdvancedConfigModel) handleFocusRow(row configRowKind) {
 	case rowAPIKey:
 		m.keyFocused = true
 		m.refreshConnectionDirty()
+	case rowModelPool:
+		if m.source == sourceCustom {
+			m.modelsFocused = true
+			m.refreshConnectionDirty()
+		}
 	case rowTest, rowTestModels, rowProvider, rowSource, rowDefaultModel:
 		if alreadySelected {
 			m.activateRow(row)
@@ -365,7 +381,7 @@ func (m *AdvancedConfigModel) handleKey(ke tui.KeyEvent) {
 			delta = -delta
 		}
 		wasKeyRow := m.usesModelsDev() && m.currentRow() == rowAPIKey
-		m.urlFocused, m.keyFocused = false, false
+		m.urlFocused, m.keyFocused, m.modelsFocused = false, false, false
 		m.cursor = min(max(m.cursor+delta, 0), max(len(m.visibleRows())-1, 0))
 		m.keepCursorVisible()
 		if wasKeyRow {
@@ -381,7 +397,7 @@ func (m *AdvancedConfigModel) handleKey(ke tui.KeyEvent) {
 		if len(rows) == 0 {
 			return
 		}
-		m.urlFocused, m.keyFocused = false, false
+		m.urlFocused, m.keyFocused, m.modelsFocused = false, false, false
 		wasKeyRow := m.usesModelsDev() && m.currentRow() == rowAPIKey
 		if m.cursor > 0 {
 			m.cursor--
@@ -403,7 +419,7 @@ func (m *AdvancedConfigModel) handleKey(ke tui.KeyEvent) {
 		if len(rows) == 0 {
 			return
 		}
-		m.urlFocused, m.keyFocused = false, false
+		m.urlFocused, m.keyFocused, m.modelsFocused = false, false, false
 		wasKeyRow := m.usesModelsDev() && m.currentRow() == rowAPIKey
 		if m.cursor < len(rows)-1 {
 			m.cursor++
@@ -469,7 +485,7 @@ func (m *AdvancedConfigModel) handleKey(ke tui.KeyEvent) {
 		} else {
 			m.cursor = (m.cursor + 1) % len(rows)
 		}
-		m.urlFocused, m.keyFocused = false, false
+		m.urlFocused, m.keyFocused, m.modelsFocused = false, false, false
 		m.keepCursorVisible()
 		if wasKeyRow {
 			m.startModelsDevVerification()
@@ -487,28 +503,40 @@ func (m *AdvancedConfigModel) handleKey(ke tui.KeyEvent) {
 		return
 	}
 
-	// 文本输入路由：光标在 Endpoint / API Key 行时，可打印字符进入对应文本。
+	// 文本输入路由：光标在 Endpoint / API Key / Model Pool 行时，可打印字符进入对应文本。
 	if ke.IsRune() && ke.Mod == 0 && ke.Rune != 0 {
 		ch := string(ke.Rune)
 		switch {
 		case m.currentRow() == rowEndpoint && !m.usesOAuth():
 			m.urlFocused = true
 			m.keyFocused = false
+			m.modelsFocused = false
 			m.urlText.Set(m.urlText.Get() + ch)
 			m.refreshConnectionDirty()
 		case m.currentRow() == rowAPIKey && !m.usesOAuth():
 			m.urlFocused = false
 			m.keyFocused = true
+			m.modelsFocused = false
 			m.keyText.Set(m.keyText.Get() + ch)
 			m.refreshConnectionDirty()
 			if m.usesModelsDev() {
 				m.invalidateModelsDevKeyIfChanged()
 			}
+		case m.currentRow() == rowModelPool && m.source == sourceCustom:
+			m.urlFocused = false
+			m.keyFocused = false
+			m.modelsFocused = true
+			if m.modelsText == nil {
+				m.modelsText = tui.NewState("")
+			}
+			m.modelsText.Set(m.modelsText.Get() + ch)
+			m.onCustomModelsEdited()
 		default:
-			// 光标在按钮或只读行上时，取消两个输入框的焦点。
+			// 光标在按钮或只读行上时，取消输入框的焦点。
 			if !inputHasKeyboard {
 				m.urlFocused = false
 				m.keyFocused = false
+				m.modelsFocused = false
 			}
 		}
 		m.markDirty()
@@ -533,6 +561,14 @@ func (m *AdvancedConfigModel) handleKey(ke tui.KeyEvent) {
 			if m.usesModelsDev() && m.keyText.Get() != before {
 				m.invalidateModelsDevKeyIfChanged()
 			}
+		case m.currentRow() == rowModelPool && m.source == sourceCustom:
+			if m.modelsText != nil {
+				t := m.modelsText.Get()
+				if t != "" {
+					m.modelsText.Set(removeLastRune(t))
+				}
+				m.onCustomModelsEdited()
+			}
 		}
 		m.markDirty()
 		return
@@ -542,8 +578,23 @@ func (m *AdvancedConfigModel) handleKey(ke tui.KeyEvent) {
 	if !inputHasKeyboard {
 		m.urlFocused = false
 		m.keyFocused = false
+		m.modelsFocused = false
 		m.markDirty()
 	}
+}
+
+func (m *AdvancedConfigModel) onCustomModelsEdited() {
+	if m.modelsText == nil {
+		return
+	}
+	raw := m.modelsText.Get()
+	m.live().inputModels = raw
+	normalized := normalizeModelCSV(raw)
+	m.live().manualModelsEdited = normalized != ""
+	m.live().modelPool = uniqueBaseModels(parseModelList(normalized))
+	m.p.Model = normalized
+	m.reconcileDefaultModelWithPool()
+	m.refreshConnectionDirty()
 }
 
 // handleNavAlias maps the vim single-letter navigation aliases (h/j/k/l) onto
@@ -591,6 +642,19 @@ func (m *AdvancedConfigModel) handleEnter() {
 		setDebugf("enter api key -> next api_key_len=%d", len(m.keyText.Get()))
 	case rowProvider:
 		m.activateRow(rowProvider)
+	case rowModelPool:
+		m.modelsFocused = false
+		if strings.TrimSpace(m.urlText.Get()) == "" {
+			m.cursor = m.mainRowIndex(rowEndpoint)
+			m.urlFocused = true
+		} else if strings.TrimSpace(m.keyText.Get()) == "" {
+			m.cursor = m.mainRowIndex(rowAPIKey)
+			m.keyFocused = true
+		} else if m.modelsText != nil && countCSV(m.modelsText.Get()) > 0 {
+			m.activateRow(rowTest)
+		} else {
+			m.focusDetectionAction()
+		}
 	case rowTest:
 		m.activateRow(rowTest)
 	case rowProtocol, rowFast:

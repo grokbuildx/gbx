@@ -409,11 +409,18 @@ func (m *AdvancedConfigModel) viewDetectionSection() []bodyLine {
 	}
 
 	if m.live().detectionError != nil {
-		return plainBodyLines(
+		out := []*tui.Element{
 			spanLine(locale.T("检测失败，无法继续", "Detection failed; cannot continue"), stUnavailable),
 			spanLine(m.live().detectionError.Error(), stUnavailable),
-			plainLine(""),
-		)
+		}
+		if m.source == sourceCustom && isModelsCatalogMissingError(m.live().detectionError) {
+			out = append(out, spanLine(locale.T(
+				"该网关未提供 /models 列表 · 请在下方「模型列表」输入模型 ID（逗号分隔）后按 Enter 验证",
+				"Gateway has no /models catalog · type model IDs in Model Pool below (comma-separated) and press Enter",
+			), stOneM))
+		}
+		out = append(out, plainLine(""))
+		return plainBodyLines(out...)
 	}
 	// Connected: the header line carries the status; nothing extra here.
 	return nil
@@ -447,17 +454,12 @@ func (m *AdvancedConfigModel) viewMappingSection() []bodyLine {
 	)
 	ready := m.connectionReady()
 	pool := m.live().modelPool
-	if len(pool) == 0 {
+	if m.source == sourceCustom {
+		rows = append(rows, taggedBodyLine(m.customModelPoolRow(pool, ready), rowModelPool))
+	} else if len(pool) == 0 {
 		rows = append(rows, plainBodyLine(m.kvRow(locale.T("模型列表", "Model Pool"), span(locale.T("(未检测)", "(not detected)"), stGray))))
 	} else {
-		previewLabels := make([]string, 0, min(len(pool), 4))
-		for i := 0; i < len(pool) && i < 4; i++ {
-			previewLabels = append(previewLabels, m.modelDisplayLabel(pool[i]))
-		}
-		summary := fmt.Sprintf(locale.T("%d 个 · %s", "%d · %s"), len(pool), strings.Join(previewLabels, ", "))
-		if len(pool) > 4 {
-			summary += fmt.Sprintf(locale.T(" 等 (+%d)", " (+%d more)"), len(pool)-4)
-		}
+		summary := m.modelPoolSummary(pool)
 		style := stCyan
 		if !ready {
 			style = stGray
@@ -500,6 +502,76 @@ func (m *AdvancedConfigModel) viewMappingSection() []bodyLine {
 	}
 
 	return rows
+}
+
+func (m *AdvancedConfigModel) modelPoolSummary(pool []string) string {
+	previewLabels := make([]string, 0, min(len(pool), 4))
+	for i := 0; i < len(pool) && i < 4; i++ {
+		previewLabels = append(previewLabels, m.modelDisplayLabel(pool[i]))
+	}
+	summary := fmt.Sprintf(locale.T("%d 个 · %s", "%d · %s"), len(pool), strings.Join(previewLabels, ", "))
+	if len(pool) > 4 {
+		summary += fmt.Sprintf(locale.T(" 等 (+%d)", " (+%d more)"), len(pool)-4)
+	}
+	return summary
+}
+
+func (m *AdvancedConfigModel) customModelPoolRow(pool []string, ready bool) *tui.Element {
+	label := locale.T("模型列表", "Model Pool")
+	selected := m.cursor == m.mainRowIndex(rowModelPool)
+	raw := ""
+	if m.modelsText != nil {
+		raw = m.modelsText.Get()
+	} else if len(pool) > 0 {
+		raw = m.p.Model
+	}
+	if m.bodyWidth() < 48 {
+		if label == "Model Pool" {
+			label = "Models"
+		} else if label == "模型列表" {
+			label = "模型"
+		}
+		pad := max(tui.StringWidth(label)+1, 9)
+		budget := max(m.bodyWidth()-pad-3, 1)
+		if selected {
+			val := editSingleLineViewport(raw, budget)
+			if strings.TrimSpace(raw) == "" {
+				val = "▏"
+			}
+			return line(span("> ", stSelected), span(label+strings.Repeat(" ", pad-tui.StringWidth(label))+" ", stSelected), span(val, stSelected))
+		}
+		valStyle := stCyan
+		val := ""
+		if len(pool) == 0 {
+			val = locale.T("(手动输入或检测)", "(type or detect)")
+			valStyle = stGray
+		} else {
+			val = truncateMiddle(m.modelPoolSummary(pool), budget)
+			if !ready {
+				valStyle = stPurple
+			}
+		}
+		return line(span("  ", tui.NewStyle()), span(label+strings.Repeat(" ", pad-tui.StringWidth(label))+" ", stPurple), span(val, valStyle))
+	}
+
+	labelPad := stepperLabelPad(label)
+	labelText := label + strings.Repeat(" ", max(labelPad-tui.StringWidth(label), 0)) + " "
+	budget := max(m.bodyWidth()-tui.StringWidth(labelText)-2, 1)
+	if selected {
+		if strings.TrimSpace(raw) == "" {
+			hint := truncateMiddle(locale.T("输入模型 ID（逗号分隔，按 Enter 验证）", "type model IDs, comma-separated, Enter to verify"), max(budget-1, 0))
+			return line(span("> ", stSelected), span(labelText, stSelected), span("▏", stSelected), span(hint, stGray))
+		}
+		return line(span("> ", stSelected), span(labelText, stSelected), span(editSingleLineViewport(raw, budget), stSelected))
+	}
+	if len(pool) == 0 {
+		return line(span("  ", tui.NewStyle()), span(labelText, stPurple), span(truncateMiddle(locale.T("(未检测 · 无 /models 网关可在此手动输入)", "(not detected · or type model IDs here)"), budget), stGray))
+	}
+	valStyle := stCyan
+	if !ready {
+		valStyle = stPurple
+	}
+	return line(span("  ", tui.NewStyle()), span(labelText, stPurple), span(truncateMiddle(m.modelPoolSummary(pool), budget), valStyle))
 }
 
 // viewRuntimeSection renders the Runtime block: the OAuth read-only protocol

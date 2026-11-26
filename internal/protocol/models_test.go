@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/grokbuildx/gbx/internal/codexidentity"
 	"github.com/grokbuildx/gbx/internal/protocol"
@@ -331,4 +332,111 @@ func TestGetOpenAIModelInfosDecodesGrokReasoningEffortsAndCapabilities(t *testin
 	if !disabled.ReasoningKnown || len(disabled.ReasoningLevels) != 0 || disabled.DefaultReasoningLevel != "" {
 		t.Fatalf("disabled-reasoning metadata = %+v", disabled)
 	}
+}
+
+func TestNormalizeOpenAIBaseURL(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"  ", ""},
+		{"https://www.yjmaas-api.10010.com/openapi/compatible-mode/v1/chat/completions", "https://www.yjmaas-api.10010.com/openapi/compatible-mode/v1"},
+		{"https://example.com/api/v1/responses/", "https://example.com/api/v1"},
+		{"https://example.com/api/v1/models", "https://example.com/api/v1"},
+		{"https://example.com/codex", "https://example.com/codex"},
+	}
+	for _, tc := range tests {
+		if got := protocol.NormalizeOpenAIBaseURL(tc.in); got != tc.want {
+			t.Errorf("NormalizeOpenAIBaseURL(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestVerifyOpenAIGatewayModelContext(t *testing.T) {
+	t.Run("accepts 200 chat completion and strips chat/completions suffix", func(t *testing.T) {
+		var gotPath string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			if r.Header.Get("Authorization") != "Bearer sk-good" {
+				http.Error(w, `{"code":16,"msg":"unauthorized"}`, http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"OK"}}]}`))
+		}))
+		t.Cleanup(server.Close)
+
+		status, err := protocol.VerifyOpenAIGatewayModelContext(context.Background(), server.URL+"/openapi/compatible-mode/v1/chat/completions", "sk-good", "minimax-m2.5", "openai", 2*time.Second)
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("status=%d err=%v, want 200 nil", status, err)
+		}
+		if gotPath != "/openapi/compatible-mode/v1/chat/completions" {
+			t.Fatalf("path = %q, want /openapi/compatible-mode/v1/chat/completions", gotPath)
+		}
+	})
+
+	t.Run("accepts 429 JSON rate or quota response", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"code":5006,"msg":"quota exhausted"}`))
+		}))
+		t.Cleanup(server.Close)
+
+		status, err := protocol.VerifyOpenAIGatewayModelContext(context.Background(), server.URL+"/v1", "sk-good", "deepseek-v3", "openai", 2*time.Second)
+		if err != nil || status != http.StatusTooManyRequests {
+			t.Fatalf("status=%d err=%v, want 429 nil", status, err)
+		}
+	})
+
+	t.Run("rejects 403 auth failure and 200 JSON auth envelope", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			status int
+			body   string
+		}{
+			{"http_403", http.StatusForbidden, `{"code":16,"msg":"unauthorized"}`},
+			{"envelope_200", http.StatusOK, `{"code":16,"msg":"unauthorized"}`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(tc.body))
+				}))
+				t.Cleanup(server.Close)
+
+				_, err := protocol.VerifyOpenAIGatewayModelContext(context.Background(), server.URL+"/v1", "sk-bad", "minimax-m2.5", "openai", 2*time.Second)
+				if err == nil {
+					t.Fatal("expected auth failure error, got nil")
+				}
+			})
+		}
+	})
+
+	t.Run("rejects 404, 400 model_not_found, and 200 HTML fallback pages", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			status int
+			body   string
+		}{
+			{"http_404", http.StatusNotFound, ``},
+			{"model_not_found_400", http.StatusBadRequest, `{"error":{"code":"model_not_found","message":"The model bogus does not exist"}}`},
+			{"spa_html_200", http.StatusOK, `<html><body>app</body></html>`},
+			{"unrelated_json_200", http.StatusOK, `{"ok":true}`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(tc.body))
+				}))
+				t.Cleanup(server.Close)
+
+				_, err := protocol.VerifyOpenAIGatewayModelContext(context.Background(), server.URL+"/v1", "sk-good", "bogus", "openai", 2*time.Second)
+				if err == nil {
+					t.Fatalf("%s: expected probe rejection, got nil", tc.name)
+				}
+			})
+		}
+	})
 }

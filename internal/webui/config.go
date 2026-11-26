@@ -13,6 +13,7 @@ import (
 
 	"github.com/grokbuildx/gbx/internal/config"
 	"github.com/grokbuildx/gbx/internal/groklaunch"
+	"github.com/grokbuildx/gbx/internal/modelrouting"
 	"github.com/grokbuildx/gbx/internal/modelsdev"
 	"github.com/grokbuildx/gbx/internal/oauthproxy"
 	"github.com/grokbuildx/gbx/internal/protocol"
@@ -248,6 +249,9 @@ func (s *Server) handleConfigProviders(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(p.Endpoint) == "" && strings.TrimSpace(p.OAuthProvider) == "" {
 			return fmt.Errorf("endpoint is required")
 		}
+		if strings.TrimSpace(p.OAuthProvider) == "" && provider.IsOpenAICompatibleType(p.Type) {
+			p.Endpoint = protocol.NormalizeOpenAIBaseURL(p.Endpoint)
+		}
 		if err := provider.ValidateRuntime(p); err != nil {
 			return err
 		}
@@ -358,6 +362,9 @@ func (s *Server) handleConfigProvider(w http.ResponseWriter, r *http.Request) {
 			if err := applyProviderInput(&p, &input, false); err != nil {
 				return err
 			}
+			if input.Endpoint != nil && strings.TrimSpace(p.OAuthProvider) == "" && provider.IsOpenAICompatibleType(p.Type) {
+				p.Endpoint = protocol.NormalizeOpenAIBaseURL(p.Endpoint)
+			}
 			if err := provider.ValidateRuntime(p); err != nil {
 				return err
 			}
@@ -400,9 +407,11 @@ func (s *Server) handleConfigProvider(w http.ResponseWriter, r *http.Request) {
 // handleConfigProviderTest probes a provider's endpoint or runtime once.
 func (s *Server) handleConfigProviderTest(w http.ResponseWriter, r *http.Request, name string) {
 	var body struct {
-		Endpoint *string `json:"endpoint"`
-		APIKey   *string `json:"apiKey"`
-		Type     *string `json:"type"`
+		Endpoint    *string `json:"endpoint"`
+		APIKey      *string `json:"apiKey"`
+		Type        *string `json:"type"`
+		Models      *string `json:"models"`
+		CatalogOnly bool    `json:"catalogOnly"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -449,8 +458,16 @@ func (s *Server) handleConfigProviderTest(w http.ResponseWriter, r *http.Request
 			p.Type = typ
 		}
 	}
-	result, catalog := probeProviderCatalog(r.Context(), p)
-	if result.OK && !customProbe {
+	if body.Models != nil {
+		if models := strings.TrimSpace(*body.Models); models != "" {
+			if !ok || models != strings.TrimSpace(p.Model) {
+				customProbe = true
+			}
+			p.Model = models
+		}
+	}
+	result, catalog := probeProviderCatalogWithOptions(r.Context(), p, body.CatalogOnly)
+	if result.OK && !customProbe && len(catalog.models) > 0 {
 		s.recordProviderCatalog(name, catalog.models, catalog.labels, catalog.details)
 	}
 	if result.OK && !customProbe && len(result.Labels) > 0 {
@@ -566,7 +583,7 @@ func (s *Server) cachedProviderCatalog(name string) (providerRuntimeCatalog, boo
 
 func (s *Server) refreshProviderCatalog(ctx context.Context, name string, p provider.Provider) (providerRuntimeCatalog, error) {
 	if s == nil {
-		res, cat := probeProviderCatalog(ctx, p)
+		res, cat := probeProviderCatalogWithOptions(ctx, p, true)
 		if !res.OK {
 			return providerRuntimeCatalog{}, fmt.Errorf("%s", res.Message)
 		}
@@ -591,7 +608,7 @@ func (s *Server) refreshProviderCatalog(ctx context.Context, name string, p prov
 	s.catalogInflight[name] = call
 	s.catalogMu.Unlock()
 
-	res, cat := probeProviderCatalog(ctx, p)
+	res, cat := probeProviderCatalogWithOptions(ctx, p, true)
 	if !res.OK {
 		call.err = fmt.Errorf("%s", res.Message)
 	} else {
@@ -687,6 +704,10 @@ func probeProvider(ctx context.Context, p provider.Provider) ProbeResult {
 }
 
 func probeProviderCatalog(ctx context.Context, p provider.Provider) (ProbeResult, providerRuntimeCatalog) {
+	return probeProviderCatalogWithOptions(ctx, p, false)
+}
+
+func probeProviderCatalogWithOptions(ctx context.Context, p provider.Provider, catalogOnly bool) (ProbeResult, providerRuntimeCatalog) {
 	start := time.Now()
 	if p.Name == "" {
 		p.Name = "probe"
@@ -697,10 +718,12 @@ func probeProviderCatalog(ctx context.Context, p provider.Provider) (ProbeResult
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	type outcome struct {
-		models  []string
-		labels  map[string]string
-		details map[string]protocol.ModelInfo
-		err     error
+		status      int
+		models      []string
+		labels      map[string]string
+		details     map[string]protocol.ModelInfo
+		fromCatalog bool
+		err         error
 	}
 	done := make(chan outcome, 1)
 	go func() {
@@ -726,44 +749,134 @@ func probeProviderCatalog(ctx context.Context, p provider.Provider) (ProbeResult
 				}
 			}
 			session.Close()
-			done <- outcome{models: models, labels: labels, details: details}
+			done <- outcome{status: http.StatusOK, models: models, labels: labels, details: details, fromCatalog: true}
 			return
 		}
 		infos, err := protocol.GetOpenAIModelInfosContext(ctx, p.Endpoint, p.APIKey)
-		if err != nil {
-			done <- outcome{err: err}
+		if err == nil && len(infos) > 0 {
+			models := make([]string, 0, len(infos))
+			labels := make(map[string]string, len(infos))
+			details := make(map[string]protocol.ModelInfo, len(infos))
+			for _, info := range infos {
+				models = append(models, info.ID)
+				details[strings.ToLower(strings.TrimSpace(info.ID))] = info
+				if name := strings.TrimSpace(info.DisplayName); name != "" && name != info.ID {
+					labels[info.ID] = name
+				}
+			}
+			done <- outcome{status: http.StatusOK, models: models, labels: labels, details: details, fromCatalog: true}
 			return
 		}
-		models := make([]string, 0, len(infos))
-		labels := make(map[string]string, len(infos))
-		details := make(map[string]protocol.ModelInfo, len(infos))
-		for _, info := range infos {
-			models = append(models, info.ID)
-			details[strings.ToLower(strings.TrimSpace(info.ID))] = info
-			if name := strings.TrimSpace(info.DisplayName); name != "" && name != info.ID {
-				labels[info.ID] = name
+		if catalogOnly {
+			if err != nil {
+				done <- outcome{err: err}
+			} else {
+				done <- outcome{err: fmt.Errorf("endpoint returned no models")}
 			}
+			return
 		}
-		done <- outcome{models: models, labels: labels, details: details}
+		configured := configuredProbeModels(p)
+		if len(configured) == 0 {
+			if err != nil {
+				msg := err.Error()
+				if strings.Contains(msg, "404") || strings.Contains(msg, "405") || strings.Contains(msg, "501") {
+					err = fmt.Errorf("%w (gateway has no /models catalog; enter model IDs in Model Pool)", err)
+				}
+				done <- outcome{err: err}
+			} else {
+				done <- outcome{err: fmt.Errorf("endpoint returned no models; enter model IDs in Model Pool")}
+			}
+			return
+		}
+		firstModel := provider.StripContextSuffix(configured[0])
+		wireProto, targetEndpoint := resolveGatewayProbeRoute(p, firstModel)
+		if wireProto == "anthropic" {
+			status, probeErr := protocol.ProbeAnthropicMessagesStatusContext(ctx, targetEndpoint, p.APIKey, firstModel, 15*time.Second)
+			if probeErr != nil {
+				done <- outcome{status: status, err: probeErr}
+				return
+			}
+			if status == http.StatusUnauthorized || status == http.StatusForbidden {
+				done <- outcome{status: status, err: fmt.Errorf("invalid API key (HTTP %d)", status)}
+				return
+			}
+			if status == http.StatusNotFound || status == http.StatusMethodNotAllowed || status >= http.StatusInternalServerError {
+				done <- outcome{status: status, err: fmt.Errorf("verification request failed (HTTP %d)", status)}
+				return
+			}
+			done <- outcome{status: status, models: configured}
+			return
+		}
+		status, verifyErr := protocol.VerifyOpenAIGatewayModelContext(ctx, targetEndpoint, p.APIKey, firstModel, wireProto, 15*time.Second)
+		if verifyErr != nil {
+			done <- outcome{status: status, err: verifyErr}
+			return
+		}
+		done <- outcome{status: status, models: configured}
 	}()
 	select {
 	case <-ctx.Done():
 		return ProbeResult{OK: false, Message: "timed out", Elapsed: time.Since(start).Milliseconds()}, providerRuntimeCatalog{}
 	case result := <-done:
 		if result.err != nil {
-			return ProbeResult{OK: false, Message: redactSecrets(result.err.Error()), Elapsed: time.Since(start).Milliseconds()}, providerRuntimeCatalog{}
+			return ProbeResult{OK: false, Status: result.status, Message: redactSecrets(result.err.Error()), Elapsed: time.Since(start).Milliseconds()}, providerRuntimeCatalog{}
 		}
 		models := result.models
 		if len(models) > maxProbeModels {
 			models = models[:maxProbeModels]
 		}
-		catalog := providerRuntimeCatalog{
-			models:    append([]string(nil), models...),
-			labels:    result.labels,
-			details:   result.details,
-			fetchedAt: time.Now(),
+		var catalog providerRuntimeCatalog
+		if result.fromCatalog {
+			catalog = providerRuntimeCatalog{
+				models:    append([]string(nil), models...),
+				labels:    result.labels,
+				details:   result.details,
+				fetchedAt: time.Now(),
+			}
 		}
-		return ProbeResult{OK: true, Status: 200, Models: models, Labels: result.labels, Elapsed: time.Since(start).Milliseconds()}, catalog
+		status := result.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		return ProbeResult{OK: true, Status: status, Models: models, Labels: result.labels, Elapsed: time.Since(start).Milliseconds()}, catalog
+	}
+}
+
+func configuredProbeModels(p provider.Provider) []string {
+	raw := modelrouting.SplitCSV(provider.RuntimeModelSpec(p))
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	for _, item := range raw {
+		base := provider.StripContextSuffix(strings.TrimSpace(item))
+		if base == "" {
+			continue
+		}
+		key := strings.ToLower(base)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, base)
+	}
+	return out
+}
+
+func resolveGatewayProbeRoute(p provider.Provider, model string) (wireProto string, endpoint string) {
+	endpoint = p.Endpoint
+	switch {
+	case provider.IsOpenAIResponsesType(p.Type):
+		return "openai_responses", endpoint
+	case provider.IsModelsDevType(p.Type):
+		key := strings.ToLower(strings.TrimSpace(model))
+		if ep := strings.TrimSpace(p.ModelEndpoints[key]); ep != "" {
+			endpoint = ep
+		}
+		if proto := strings.TrimSpace(p.ModelProtocols[key]); proto != "" {
+			return proto, endpoint
+		}
+		return "openai", endpoint
+	default:
+		return "openai", endpoint
 	}
 }
 

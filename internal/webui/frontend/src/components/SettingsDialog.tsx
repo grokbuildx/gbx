@@ -323,26 +323,31 @@ function ProviderEditor({ api, provider, onClose, onSaved }: {
   const [catalogState, setCatalogState] = useState<"idle" | "loading" | "done" | "failed">("idle");
   const set = (field: keyof Form) => (value: string) => setForm((current) => ({ ...current, [field]: value }));
 
-  const probe = async (overwriteModels: boolean) => {
+  const probe = async (overwriteModels: boolean, catalogOnly = false) => {
     const result = await api.testProvider(form.name.trim() || "new", {
       endpoint: form.endpoint.trim() || undefined,
       apiKey: form.apiKey.trim() || undefined,
       type: form.type || undefined,
+      models: form.models.trim() || undefined,
+      catalogOnly: catalogOnly || undefined,
     });
     if (result.ok && result.models?.length) {
-      setCatalog(result.models);
+      if (catalogOnly || !form.models.trim()) {
+        setCatalog(result.models);
+      }
       setForm((current) => (overwriteModels || !current.models.trim() ? { ...current, models: result.models!.join(",") } : current));
     }
     return result;
   };
   const test = async () => {
-    if (!form.name.trim()) {
+    const label = form.name.trim() || "new";
+    if (!form.name.trim() && !form.endpoint.trim()) {
       setStatus(t("saveFirst"));
       return;
     }
-    setStatus(t("testing", { name: form.name }));
+    setStatus(t("testing", { name: label }));
     try {
-      setStatus(describe(await probe(false), t));
+      setStatus(describe(await probe(false, false), t));
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
@@ -350,7 +355,7 @@ function ProviderEditor({ api, provider, onClose, onSaved }: {
   const loadCatalog = async () => {
     setCatalogState("loading");
     try {
-      const result = await probe(true);
+      const result = await probe(true, true);
       setCatalogState(result.ok ? "done" : "failed");
       if (!result.ok) setStatus(describe(result, t));
     } catch (error) {
@@ -358,11 +363,11 @@ function ProviderEditor({ api, provider, onClose, onSaved }: {
       setStatus(error instanceof Error ? error.message : String(error));
     }
   };
-  // An existing provider with an endpoint lists its models at once without overwriting saved pins.
+  // An existing provider with an endpoint lists its /models catalog without firing a billed inference probe.
   useEffect(() => {
     if (provider?.endpoint) {
       setCatalogState("loading");
-      void probe(false)
+      void probe(false, true)
         .then((result) => setCatalogState(result.ok ? "done" : "failed"))
         .catch(() => setCatalogState("failed"));
     }
