@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const maxBatchSteps = 25
@@ -18,131 +19,51 @@ func (s *Server) registerBatchTool() {
 		}
 	}
 
-	stepProps := withTargetProps(map[string]JSONSchema{
-		"tool": {
-			Type:        "string",
-			Description: "Name of the GBX tool to invoke in this step.",
-			Enum:        allowedNames,
-		},
-		"continue_on_error": {
-			Type:        "boolean",
-			Description: "Keep running subsequent steps even if this step errors or run_command exits non-zero (default false: halt pipeline on failure).",
-		},
-		"path": {
-			Type:        "string",
-			Description: "File or directory path argument (for read_file, edit_file, write_file, list_dir, search_code, git_diff, git_log, workspace_add/remove).",
-		},
-		"paths": {
-			Type:        "array",
-			Description: "Batch file paths (for read_file or git_commit).",
-			Items:       &JSONSchema{Type: "string"},
-		},
-		"start_line": {
-			Type:        "integer",
-			Description: "1-based start line (for read_file).",
-		},
-		"end_line": {
-			Type:        "integer",
-			Description: "1-based end line (for read_file).",
-		},
-		"old_string": {
-			Type:        "string",
-			Description: "Exact existing text to replace (for edit_file).",
-		},
-		"new_string": {
-			Type:        "string",
-			Description: "Replacement text (for edit_file).",
-		},
-		"replace_all": {
-			Type:        "boolean",
-			Description: "Replace all occurrences (for edit_file).",
-		},
-		"expected_hash": {
-			Type:        "string",
-			Description: "Expected SHA-256 file hash (for edit_file or write_file).",
-		},
-		"content": {
-			Type:        "string",
-			Description: "Full file content (for write_file).",
-		},
-		"overwrite": {
-			Type:        "boolean",
-			Description: "Overwrite existing file when expected_hash is omitted (for write_file).",
-		},
-		"query": {
-			Type:        "string",
-			Description: "Search query (for search_code).",
-		},
-		"mode": {
-			Type:        "string",
-			Description: "Search mode: 'content' or 'files' (for search_code).",
-			Enum:        []string{"content", "files"},
-		},
-		"regex": {
-			Type:        "boolean",
-			Description: "Treat query as regular expression (for search_code).",
-		},
-		"case_sensitive": {
-			Type:        "boolean",
-			Description: "Case-sensitive search (for search_code).",
-		},
-		"limit": {
-			Type:        "integer",
-			Description: "Result limit (for search_code or git_log).",
-		},
-		"staged": {
-			Type:        "boolean",
-			Description: "Diff staged changes (for git_diff).",
-		},
-		"base": {
-			Type:        "string",
-			Description: "Base commit/branch ref (for git_diff).",
-		},
-		"message": {
-			Type:        "string",
-			Description: "Commit message (for git_commit).",
-		},
-		"name": {
-			Type:        "string",
-			Description: "Worktree name (for worktree_create, worktree_merge, worktree_remove).",
-		},
-		"force": {
-			Type:        "boolean",
-			Description: "Force worktree removal (for worktree_remove).",
-		},
-		"as_root": {
-			Type:        "boolean",
-			Description: "Register parent directory of multiple repos (for workspace_add).",
-		},
-		"command": {
-			Type:        "string",
-			Description: "Shell command to execute (for run_command).",
-		},
-		"cwd": {
-			Type:        "string",
-			Description: "Workspace-relative working directory (for run_command).",
-		},
-		"timeout_seconds": {
-			Type:        "integer",
-			Description: "Command timeout in seconds (for run_command).",
-		},
-		"args_json": {
-			Type:        "string",
-			Description: "Optional JSON object string carrying extra tool arguments (for example nested 'edits' for edit_file).",
-		},
-	})
+	// Keep the schema compact (3 scalar fields per step) so LLM constrained
+	// decoding compilers (such as Gemini's FunctionDeclaration FSA) compile
+	// tools/list instantaneously without combinatorial state explosion.
+	desc := `Execute an ordered pipeline of GBX coding operations in ONE call (up to 25 steps), halting automatically on failure or non-zero command exit unless continue_on_error=true.
+Available step tools and their args_json fields (all tools accept optional "workspace" and "worktree"):
+• workspace_list: {}
+• workspace_add: {"path":"/abs/dir","as_root":true}
+• list_dir: {"path":"subdir"}
+• search_code: {"query":"text","mode":"content|files","path":"subdir","regex":false,"limit":50}
+• read_file: {"path":"file.go","start_line":1,"end_line":200} or {"paths":["a.go","b.go"]}
+• edit_file: {"path":"file.go","old_string":"...","new_string":"...","replace_all":false,"expected_hash":"..."}
+• write_file: {"path":"file.go","content":"...","overwrite":true,"expected_hash":"..."}
+• git_status: {}
+• git_diff: {"staged":false,"base":"HEAD","path":"file.go"}
+• git_log: {"limit":20,"path":"file.go"}
+• git_commit: {"message":"feat: ...","paths":["a.go"]}
+• worktree_create / worktree_merge / worktree_remove: {"name":"fix-slug","force":false}
+• worktree_list: {}
+• run_command: {"command":"go test ./...","cwd":"subdir","timeout_seconds":60}`
 
 	s.addTool(ToolDef{
 		Name:        "run_batch",
-		Description: "Execute an ordered sequence of GBX tool calls in a single MCP round-trip (up to 25 steps) so the user only needs to approve once in hosts that prompt on every tool call. Automatically halts remaining steps if any step fails or if run_command returns a non-zero exit code (unless continue_on_error=true).",
+		Description: desc,
 		InputSchema: objectSchema(map[string]JSONSchema{
 			"steps": {
 				Type:        "array",
-				Description: "Ordered list of tool invocations to execute sequentially.",
+				Description: "Ordered list of tool steps to execute sequentially.",
 				Items: &JSONSchema{
-					Type:       "object",
-					Properties: stepProps,
-					Required:   []string{"tool"},
+					Type: "object",
+					Properties: map[string]JSONSchema{
+						"tool": {
+							Type:        "string",
+							Description: "Tool name to execute.",
+							Enum:        allowedNames,
+						},
+						"args_json": {
+							Type:        "string",
+							Description: "JSON object string of arguments for this tool (use \"{}\" when no arguments are needed).",
+						},
+						"continue_on_error": {
+							Type:        "boolean",
+							Description: "Keep running remaining steps even if this step fails (default false).",
+						},
+					},
+					Required: []string{"tool"},
 				},
 			},
 		}, "steps"),
@@ -205,7 +126,7 @@ func (s *Server) toolRunBatch(ctx context.Context, raw json.RawMessage) (string,
 			_ = json.Unmarshal(rawCont, &continueOnErr)
 		}
 
-		// Merge optional nested "arguments" and "args_json" with flat step fields.
+		// Accept args_json string, nested "arguments" object, and/or flat step properties.
 		merged := make(map[string]json.RawMessage, len(stepMap))
 		if rawNested, ok := stepMap["arguments"]; ok {
 			var nested map[string]json.RawMessage
@@ -217,13 +138,24 @@ func (s *Server) toolRunBatch(ctx context.Context, raw json.RawMessage) (string,
 		}
 		if rawArgsJSON, ok := stepMap["args_json"]; ok {
 			var encoded string
-			if json.Unmarshal(rawArgsJSON, &encoded) == nil && strings.TrimSpace(encoded) != "" {
-				var parsed map[string]json.RawMessage
-				if err := json.Unmarshal([]byte(encoded), &parsed); err != nil {
-					return "", fmt.Errorf("step %d invalid args_json: %w", idx, err)
+			if json.Unmarshal(rawArgsJSON, &encoded) == nil {
+				encoded = strings.TrimSpace(encoded)
+				if encoded != "" {
+					var parsed map[string]json.RawMessage
+					if err := json.Unmarshal([]byte(encoded), &parsed); err != nil {
+						return "", fmt.Errorf("step %d invalid args_json: %w", idx, err)
+					}
+					for k, v := range parsed {
+						merged[k] = v
+					}
 				}
-				for k, v := range parsed {
-					merged[k] = v
+			} else {
+				// Gracefully tolerate an LLM passing an inline JSON object instead of a string for args_json.
+				var inlineObj map[string]json.RawMessage
+				if json.Unmarshal(rawArgsJSON, &inlineObj) == nil {
+					for k, v := range inlineObj {
+						merged[k] = v
+					}
 				}
 			}
 		}
@@ -238,8 +170,11 @@ func (s *Server) toolRunBatch(ctx context.Context, raw json.RawMessage) (string,
 			return "", err
 		}
 
+		stepStart := time.Now()
 		outStr, callErr := handler(ctx, mergedBytes)
+		stepMs := time.Since(stepStart).Milliseconds()
 		if callErr != nil {
+			s.logf("  batch step %d/%d %s -> error (%dms): %s", idx+1, len(args.Steps), toolName, stepMs, callErr.Error())
 			outcomes = append(outcomes, stepOutcome{
 				Index: idx,
 				Tool:  toolName,
@@ -268,6 +203,7 @@ func (s *Server) toolRunBatch(ctx context.Context, raw json.RawMessage) (string,
 				commandFailed = true
 			}
 		}
+		s.logf("  batch step %d/%d %s -> ok=%v (%dms)", idx+1, len(args.Steps), toolName, !commandFailed, stepMs)
 
 		outcomes = append(outcomes, stepOutcome{
 			Index:  idx,

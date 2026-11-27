@@ -91,6 +91,7 @@ Workspace discovery & persistence:
 				WorktreeDir:    opts.worktreeDir,
 				ConfigPath:     opts.configPath,
 				Version:        Version,
+				LogOut:         cmd.ErrOrStderr(),
 			})
 			if err != nil {
 				return err

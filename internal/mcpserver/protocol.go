@@ -41,6 +41,7 @@ type Config struct {
 	WorktreeDir    string
 	ConfigPath     string
 	Version        string
+	LogOut         io.Writer
 }
 
 // Server serves MCP over an input/output stream pair (typically stdio).
@@ -50,6 +51,8 @@ type Server struct {
 
 	writeMu          sync.Mutex
 	out              io.Writer
+	logMu            sync.Mutex
+	logOut           io.Writer
 	useContentLength atomic.Bool
 
 	nextReqID atomic.Int64
@@ -73,7 +76,6 @@ type toolHandler func(ctx context.Context, raw json.RawMessage) (string, error)
 // ToolDef describes one MCP tool with a Gemini-compatible JSON Schema and MCP safety annotations.
 type ToolDef struct {
 	Name        string           `json:"name"`
-	Title       string           `json:"title,omitempty"`
 	Description string           `json:"description"`
 	InputSchema ToolInputSchema  `json:"inputSchema"`
 	Annotations *ToolAnnotations `json:"annotations,omitempty"`
@@ -185,6 +187,7 @@ func New(cfg Config) (*Server, error) {
 	s := &Server{
 		cfg:              cfg,
 		workspaces:       wm,
+		logOut:           cfg.LogOut,
 		pending:          make(map[int64]chan rpcMessage),
 		inFlight:         make(map[string]context.CancelFunc),
 		initialRootsDone: make(chan struct{}),
@@ -194,9 +197,21 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
+func (s *Server) logf(format string, args ...any) {
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	if s.logOut == nil {
+		return
+	}
+	ts := time.Now().Format("15:04:05.000")
+	_, _ = fmt.Fprintf(s.logOut, "[%s] [gbx-mcp] "+format+"\n", append([]any{ts}, args...)...)
+}
+
 // Serve runs the stdio JSON-RPC loop until in reaches EOF or ctx is cancelled.
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	s.out = out
+	s.logf("ready (version=%s workspaces=%d batch_only=%v lock=%v no_exec=%v)",
+		s.cfg.Version, len(s.workspaces.List()), s.cfg.BatchOnly, s.cfg.LockWorkspaces, s.cfg.DisableExec)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer s.cancelAllInFlight()
@@ -418,8 +433,15 @@ func (s *Server) dispatchFrame(ctx context.Context, wg *sync.WaitGroup, payload 
 		return
 	}
 
-	// Client-initiated request.
+	// Client-initiated request. Handle handshake and metadata requests synchronously
+	// in strict FIFO order so initialize always completes before notifications/initialized
+	// or tools/list; run tools/call asynchronously so notifications/cancelled can interrupt it.
 	idCopy := append(json.RawMessage(nil), msg.ID...)
+	if msg.Method != "tools/call" {
+		s.handleRequest(ctx, idCopy, msg.Method, msg.Params)
+		return
+	}
+
 	idKey := normalizeIDKey(idCopy)
 	reqCtx, reqCancel := context.WithCancel(ctx)
 	if idKey != "" {
@@ -604,6 +626,7 @@ func (s *Server) handleRequest(ctx context.Context, id json.RawMessage, method s
 		if supportedProtocolVersions[initParams.ProtocolVersion] {
 			protoVer = initParams.ProtocolVersion
 		}
+		s.logf("initialize (protocol=%s client_roots=%v)", protoVer, hasRoots)
 		s.sendResult(id, map[string]any{
 			"protocolVersion": protoVer,
 			"capabilities": map[string]any{
@@ -613,7 +636,7 @@ func (s *Server) handleRequest(ctx context.Context, id json.RawMessage, method s
 				"name":    "gbx",
 				"version": s.cfg.Version,
 			},
-			"instructions": "GBX local coding server. Strongly prefer using 'run_batch' to group multi-step inspection (workspace_list, list_dir, search_code, read_file, git_status) into ONE single call, and multi-step implementation/verification (worktree_create, edit_file/write_file, run_command tests, git_diff/git_commit) into ONE single call so the user only approves once per phase! If workspace_list returns empty, call workspace_add with the user's code directory (as_root=true expands child and 2-level nested Git repos and persists to ~/.gbx/mcp.json).",
+			"instructions": "GBX local coding server. Use 'run_batch' to group multi-step inspection (workspace_list, list_dir, search_code, read_file, git_status, git_diff, git_log) into ONE call, and multi-step edits/tests (worktree_create, edit_file, write_file, run_command, git_commit) into ONE call. Pass each step's arguments as a JSON string in 'args_json'.",
 		})
 
 	case "ping":
@@ -630,6 +653,7 @@ func (s *Server) handleRequest(ctx context.Context, id json.RawMessage, method s
 				}
 			}
 		}
+		s.logf("tools/list (%d tools advertised)", len(advertised))
 		s.sendResult(id, map[string]any{
 			"tools": advertised,
 		})
@@ -642,6 +666,7 @@ func (s *Server) handleRequest(ctx context.Context, id json.RawMessage, method s
 		}
 		handler, ok := s.toolMap[call.Name]
 		if !ok {
+			s.logf("tools/call %s -> unknown tool", call.Name)
 			s.sendError(id, -32602, fmt.Sprintf("unknown tool %q", call.Name))
 			return
 		}
@@ -649,14 +674,19 @@ func (s *Server) handleRequest(ctx context.Context, id json.RawMessage, method s
 		if len(bytes.TrimSpace(args)) == 0 {
 			args = json.RawMessage("{}")
 		}
+		started := time.Now()
+		s.logf("tools/call %s started", call.Name)
 		out, err := handler(ctx, args)
+		elapsed := time.Since(started).Milliseconds()
 		if err != nil {
+			s.logf("tools/call %s failed (%dms): %s", call.Name, elapsed, err.Error())
 			s.sendResult(id, callToolResult{
 				Content: []contentBlock{{Type: "text", Text: "Error: " + err.Error()}},
 				IsError: true,
 			})
 			return
 		}
+		s.logf("tools/call %s ok (%dms)", call.Name, elapsed)
 		s.sendResult(id, callToolResult{
 			Content: []contentBlock{{Type: "text", Text: out}},
 		})
@@ -678,9 +708,6 @@ func (s *Server) addTool(def ToolDef, handler toolHandler) {
 	}
 	if def.InputSchema.Properties == nil {
 		def.InputSchema.Properties = map[string]JSONSchema{}
-	}
-	if def.Title == "" && def.Annotations != nil && def.Annotations.Title != "" {
-		def.Title = def.Annotations.Title
 	}
 	s.tools = append(s.tools, def)
 	s.toolMap[def.Name] = handler
