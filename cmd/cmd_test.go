@@ -56,7 +56,7 @@ func TestRootHelpUsesNewCommandNames(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for _, want := range []string{"  codex", "  oauth", "  bypass", "  log", "  ls", "  use", "  preview", "  set", "  provider", "  cloud"} {
+	for _, want := range []string{"  codex", "  mcp-server", "  oauth", "  bypass", "  log", "  ls", "  use", "  preview", "  set", "  provider", "  cloud"} {
 		if !contains(out, want) {
 			t.Fatalf("expected root help to contain %q, got:\n%s", want, out)
 		}
@@ -95,6 +95,7 @@ func TestProviderSubcommandAliasesExist(t *testing.T) {
 		{"provider", "preview", "--help"},
 		{"preview", "--help"},
 		{"doctor", "--help"},
+		{"mcp-server", "--help"},
 		{"version", "--help"},
 		{"update", "--help"},
 	} {

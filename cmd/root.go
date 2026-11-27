@@ -29,6 +29,7 @@ Common commands:
   gbx oauth <backend>         Log in with a subscription account
   gbx codex run [-p <name>]   Connect models and open ChatGPT / Codex (auto-stop on quit)
   gbx serve -p <name>         Use Grok Build in a local browser
+  gbx mcp-server [-w <dir>]   Expose local workspace coding tools over MCP stdio
   gbx doctor                  Check environment and provider connectivity
   gbx cloud login|push|pull   Manage encrypted configuration sync
   gbx log on|off              Configure per-session logs
@@ -46,9 +47,13 @@ Grok arguments pass through. Use gbx grok to bypass gbx command names
 }
 
 func Execute() {
-	configureLogging()
-	// gbx codex start/stop recover under their own lifecycle lock.
-	if len(os.Args) < 2 || os.Args[1] != "codex" {
+	isMCPServer := len(os.Args) >= 2 && os.Args[1] == "mcp-server"
+	if !isMCPServer {
+		configureLogging()
+	}
+	// gbx codex start/stop recover under their own lifecycle lock; mcp-server
+	// runs provider-free over stdio without touching ~/.gbx or proxy state.
+	if len(os.Args) < 2 || (os.Args[1] != "codex" && !isMCPServer) {
 		recoverStaleProxy()
 	}
 

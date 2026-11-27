@@ -79,6 +79,7 @@ gbx --provider deepseek -p "你好"   # 仅本次使用 deepseek，不改变默�
 | `gbx provider cp\|mv\|rm\|models\|preview` | provider 管理与模型池探测 |
 | `gbx codex run` / `start` / `status` / `stop` | Codex 接入：启动代理并打开 ChatGPT / Codex（关客户端自动停） |
 | `gbx serve run` / `start` / `status` / `stop` | 在本地浏览器中使用 Grok Build（默认关浏览器自动退出，或 `start` 后台常驻） |
+| `gbx mcp-server [-w <dir>]` | 通过 MCP `stdio` 向外部 AI（如 Gemini App）暴露本地编码工具（无需配置模型） |
 | `gbx cloud login\|push\|pull\|status\|remote\|tag\|logout` | 加密云同步（iCloud / Google Drive） |
 | `gbx bypass [on\|off]` | 启动时附加 `--always-approve`，仅在可信环境使用 |
 | `gbx log [on\|off] [--level debug]` | 会话日志（默认关闭，写入 `~/.gbx/logs/`） |
@@ -249,6 +250,7 @@ Extra arguments reach Grok Build and can start a billed session. Put `--provider
 | `gbx provider cp\|mv\|rm\|models\|preview` | Provider management and model pool probing |
 | `gbx codex run` / `start` / `status` / `stop` | Connect provider models and open ChatGPT / Codex (auto-stop on quit) |
 | `gbx serve run` / `start` / `status` / `stop` | Use Grok Build in a local browser (auto-exit on close, or `start` in background) |
+| `gbx mcp-server [-w <dir>]` | Expose local coding tools over MCP `stdio` to external AI hosts (no model config required) |
 | `gbx cloud login\|push\|pull\|status\|remote\|tag\|logout` | Encrypted sync (iCloud / Google Drive) |
 | `gbx bypass [on\|off]` | Add `--always-approve` on launch; trusted environments only |
 | `gbx log [on\|off] [--level debug]` | Per-session logs (off by default, in `~/.gbx/logs/`) |

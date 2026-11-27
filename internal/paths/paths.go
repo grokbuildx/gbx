@@ -97,3 +97,12 @@ func ServeSessionsDir() (string, error) {
 	}
 	return filepath.Join(dir, "sessions"), nil
 }
+
+// MCPConfigPath returns ~/.gbx/mcp.json.
+func MCPConfigPath() (string, error) {
+	dir, err := GBXDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "mcp.json"), nil
+}
